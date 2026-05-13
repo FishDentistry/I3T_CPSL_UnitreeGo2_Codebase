@@ -111,7 +111,14 @@ def launch_setup(context, *args, **kwargs):
             output='screen',
             parameters=[{'use_sim_time': use_sim_time}],
             condition=IfCondition(rviz)
-        )
+        ), 
+        Node(
+            package='cpsl_nav',
+            executable='robot_slam_map_pose_publisher',
+            name='slam_map_pose',
+            output='screen'
+        ),
+
     ])
 
     return [slam]

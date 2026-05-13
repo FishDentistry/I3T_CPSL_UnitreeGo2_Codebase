@@ -26,6 +26,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'robot_slam_map_pose_publisher = cpsl_nav.robot_slam_map_pose_pub:main'
         ],
     },
 )
