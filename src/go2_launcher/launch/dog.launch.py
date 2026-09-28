@@ -21,8 +21,8 @@ def generate_launch_description():
         DeclareLaunchArgument('collect_realsense', default_value='true'),
         DeclareLaunchArgument(
             'internal_board_ip',
-            default_value='192.168.1.20',
-            description='IP address of the robot internal board (string)'
+            default_value='192.168.123.161',
+            description='IP address of the robot internal board (string). Default is default Ethernet IP of internal board.'
         ),
 
         Node(

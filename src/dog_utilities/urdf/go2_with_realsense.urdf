@@ -1404,7 +1404,7 @@ Stephen Brawner (brawner@gmail.com)
   type="fixed">
   <origin
     xyz="0.1870 0.0 0.0803"
-    rpy="0 0.000 0" /> <!-- previously 0 0.227 0-->
+    rpy="0 0.227 0" /> <!-- previously 0 0.227 0-->
   <parent
     link="imu" />
   <child

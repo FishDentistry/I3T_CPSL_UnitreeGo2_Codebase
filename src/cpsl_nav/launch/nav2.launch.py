@@ -19,11 +19,15 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, SetEnvironmentVariable,OpaqueFunction
 from launch.conditions import IfCondition
-from launch.substitutions import (AndSubstitution, LaunchConfiguration,
-                                  NotSubstitution, PathJoinSubstitution)
-from launch_ros.actions import LoadComposableNodes, SetParameter
-from launch_ros.actions import Node, SetRemap, PushRosNamespace
-from launch_ros.descriptions import ComposableNode, ParameterFile
+# OLD (ROS2 Galactic/Humble style - fails on ROS2 Foxy due to missing AndSubstitution/NotSubstitution/ParameterFile):
+# from launch.substitutions import (AndSubstitution, LaunchConfiguration,
+#                                   NotSubstitution, PathJoinSubstitution)
+# from launch_ros.descriptions import ComposableNode, ParameterFile
+
+# NEW (UNTESTED CHANGES: Foxy compatibility fixes):
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import LoadComposableNodes, SetParameter, Node, SetRemap, PushRosNamespace
+from launch_ros.descriptions import ComposableNode
 from nav2_common.launch import RewrittenYaml
 
 
@@ -135,14 +139,23 @@ def launch_setup(context, *args,**kwargs):
         # 'robot_base_frame':base_frame
     }
 
-    configured_params = ParameterFile(
-        RewrittenYaml(
-            source_file=nav_config_file,
-            root_key=namespace,
-            param_rewrites=param_substitutions,
-            convert_types=True,
-        ),
-        allow_substs=True,
+    # OLD (ROS2 Galactic/Humble style using ParameterFile wrapper - fails on ROS2 Foxy):
+    # configured_params = ParameterFile(
+    #     RewrittenYaml(
+    #         source_file=nav_config_file,
+    #         root_key=namespace,
+    #         param_rewrites=param_substitutions,
+    #         convert_types=True,
+    #     ),
+    #     allow_substs=True,
+    # )
+
+    # NEW (UNTESTED CHANGES: Direct RewrittenYaml for ROS2 Foxy compatibility):
+    configured_params = RewrittenYaml(
+        source_file=nav_config_file,
+        root_key=namespace,
+        param_rewrites=param_substitutions,
+        convert_types=True,
     )
 
     stdout_linebuf_envvar = SetEnvironmentVariable(

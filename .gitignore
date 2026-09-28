@@ -59,7 +59,8 @@ Thumbs.db
 *.bag
 *.db3
 *.mcap
-
+*.npz
+*.ply
 # =========================
 # Optional: ignore env / secrets files
 # =========================

@@ -87,12 +87,15 @@ If everything builds correctly, run `find . -name "pyrealsense2*.so"` within the
 Most of this process is taken care of by mounting the Livox according to the official docs from Unitree or whatever the target platform is. The interfacing of the Livox with the robot should be taken care of by the packages in this repo. However, you may need to change the `ip` parameter within the `src/CPSL_ROS_livox_ros_driver2/config/HAP_config.json` file to the IP of your Livox device (IP can be found on a sticker on the physical device).
 
 ## Go2 Internal IP Configuration
-In order for the Go2 to receive commands from packages like Nav2, `cmd_vel` messages must be translated and sent to the Go2's internal board which handles all of its movement. As such, the `CmdVelTranslator.py` node within the `dog_utilities` needs a parameter `internal_board_ip` passed to it either when calling the main launch file, or when running the node itself. 
+For the Go2 to receive velocity commands from packages such as Nav2, the `cmd_vel` messages must be translated and forwarded to the Go2’s internal board, which handles the robot’s movement. The `CmdVelTranslator.py` node in the `dog_utilities` package therefore accepts an `internal_board_ip` parameter, which can be specified either when launching the main launch file or when running the node directly.
+
+By default, this parameter is set to the internal board’s Ethernet IP address because the internal and external boards are connected by Ethernet. Alternatively, if the internal board is connected to the same Wi-Fi network as the external board, its Wi-Fi IP address can be supplied instead. This is useful if for some reason you're sending commands and running the translator script from a device that is not the external board.
+
 
 ## Using this repo
 1. Clone this repo and build and source the workspace
 1. Open 3 terminal windows and run the following
-    * `ros2 launch go2_launcher dog.launch.py internal_board_ip:=YOUR_IP_HERE collect_realsense:=true or false`
+    * `ros2 launch launcher dog.launch.py internal_board_ip:=OPTIONAL_YOUR_IP_HERE collect_realsense:=true or false`
     * `ros2 launch cpsl_ros2_sensors_bringup ugv_sensor_bringup.launch.py`
     * `ros2 launch cpsl_nav slam.launch.py scan_topic:=/livox/scan_best_effort`
 1. For getting a functional transform tree and mapping, that's all you need. If you want to issue Nav2 commands, open another terminal and run

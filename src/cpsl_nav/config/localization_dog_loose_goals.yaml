@@ -105,7 +105,7 @@ controller_server:
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.4
-      yaw_goal_tolerance: 3.14
+      yaw_goal_tolerance: 0.35 #3.14
       stateful: False
     # DWB parameters
     FollowPath:
@@ -113,9 +113,9 @@ controller_server:
       debug_trajectory_details: True
       min_vel_x: -0.1 #-0.2
       min_vel_y: -0.05 #-0.2
-      max_vel_x: 0.6 #0.3
+      max_vel_x: 0.4 #0.3
       max_vel_y: 0.05 #0.1
-      max_vel_theta: 1.2
+      max_vel_theta: 0.8 #1.2
       min_speed_xy: 0.0
       max_speed_xy: 1.0 #0.26
       min_speed_theta: 0.0
@@ -123,7 +123,7 @@ controller_server:
       # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
       acc_lim_x: 2.5
       acc_lim_y: 2.0 #2.0
-      acc_lim_theta: 3.2
+      acc_lim_theta: 2.5 #3.2
       decel_lim_x: -2.5
       decel_lim_y: -2.0 #-2.0
       decel_lim_theta: -3.2
@@ -139,12 +139,12 @@ controller_server:
       short_circuit_trajectory_evaluation: True
       stateful: False
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 1.0
-      PathAlign.scale: 1.5 #32.0
+      BaseObstacle.scale: 0.05
+      PathAlign.scale: 10.0 #1.5 #32.0
       PathAlign.forward_point_distance: 0.15
       GoalAlign.scale: 5.0 #50.0
       GoalAlign.forward_point_distance: 0.2 #0.2
-      PathDist.scale: 2.0 #2.0
+      PathDist.scale: 8.0 #2.0 #2.0
       GoalDist.scale: 8.0 #24.0
       RotateToGoal.scale: 25.0 #5.0 #32.0
       RotateToGoal.slowing_factor: 0.8 #5.0
@@ -170,7 +170,7 @@ local_costmap:
       plugins: ["voxel_layer","inflation_layer"] #["voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
+        cost_scaling_factor: 5.0 #3.0
         inflation_radius: 0.55
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
@@ -183,7 +183,7 @@ local_costmap:
         mark_threshold: 0
         observation_sources: scan
         scan:
-          topic: /scan
+          topic: /livox/scan_best_topic
           max_obstacle_height: 2.0
           clearing: True
           marking: True
