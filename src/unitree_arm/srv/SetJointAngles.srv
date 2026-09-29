@@ -1,0 +1,9 @@
+uint8 SMOOTH_10_HZ=0
+uint8 TRAJECTORY=1
+
+float64[7] angle_degrees
+uint8 mode
+---
+bool published
+uint32 sequence
+string message

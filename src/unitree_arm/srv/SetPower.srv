@@ -1,0 +1,5 @@
+bool powered
+---
+bool published
+uint32 sequence
+string message

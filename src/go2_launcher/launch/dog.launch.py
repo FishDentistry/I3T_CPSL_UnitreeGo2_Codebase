@@ -1,8 +1,9 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 import os
 
@@ -15,10 +16,24 @@ def generate_launch_description():
 
     collect_realsense = LaunchConfiguration('collect_realsense')
     internal_board_ip = LaunchConfiguration('internal_board_ip')
+    launch_arm = LaunchConfiguration('launch_arm')
+
+    arm_launch_file = os.path.join(
+        get_package_share_directory('unitree_arm_control'),
+        'launch',
+        'd1_arm.launch.py'
+    )
 
     return LaunchDescription([
 
         DeclareLaunchArgument('collect_realsense', default_value='true'),
+
+        DeclareLaunchArgument(
+            'launch_arm',
+            default_value='false',
+            description='Launch the D1 arm wrapper in passive mode.'
+        ),
+        
         DeclareLaunchArgument(
             'internal_board_ip',
             default_value='192.168.123.161',
@@ -52,6 +67,10 @@ def generate_launch_description():
             parameters=[{
                 'internal_board_ip': internal_board_ip
             }]
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(arm_launch_file),
+            condition=IfCondition(launch_arm)
         ),
         Node(
             package='intel_realsense_functions',

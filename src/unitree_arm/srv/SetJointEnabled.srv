@@ -1,0 +1,6 @@
+uint8 joint_id
+bool enabled
+---
+bool published
+uint32 sequence
+string message

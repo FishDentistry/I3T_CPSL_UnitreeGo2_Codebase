@@ -1,0 +1,6 @@
+uint8 joint_id
+float64 angle_degrees
+---
+bool published
+uint32 sequence
+string message

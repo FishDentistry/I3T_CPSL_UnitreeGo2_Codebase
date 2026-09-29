@@ -48,6 +48,27 @@ This will allow the expansion board to handle more data across its Ethernet bus.
 
 Finally, increase the power level of the expansion board to 25W or higher. 
 
+## D1 Arm Setup
+
+This section covers setup for the D1 arm for the Go2. 
+
+### Physical Setup
+
+1. Power off the Go2 before connecting or disconnecting the arm.
+2. Mount the D1 securely using the Unitree payload mounting instructions.
+3. Connect the arm's power lead to the dedicated external robotic-arm power
+   connector near the Go2 battery/expansion-dock power connection. **Do not
+   connect the arm to the expansion dock's 12 V or 5 V accessory outputs.**
+4. Connect the arm's communication lead to the expansion dock's
+   GH1.25-4-pin Ethernet port.
+5. Secure both cables so they cannot contact the arm joints or become pinched
+   while the Go2 or arm moves, then power the Go2 back on.
+
+For the mounting location and connector layout, refer to Unitree's
+[Payload instructions](https://support.unitree.com/home/en/developer/Payload).
+
+
+
 
 ## Go2 Expansion Board Intel RealSense Setup
 The Go2's expansion board does not come preconfigured to use the D435i depth camera with Python bindings. Since the board uses an ARM architecture, the bindings can't be installed directly through pip either, and must be built from source. Steps 1-4 outlined below are taken directly from [this official process from a RealSense Git issue](https://github.com/IntelRealSense/librealsense/issues/6964). Steps 5-6 were added by me. The process should be nearly identical for any ARM system, and should be even simpler if your target platform does not have an ARM architecture.
@@ -100,4 +121,15 @@ By default, this parameter is set to the internal board’s Ethernet IP address 
     * `ros2 launch cpsl_nav slam.launch.py scan_topic:=/livox/scan_best_effort`
 1. For getting a functional transform tree and mapping, that's all you need. If you want to issue Nav2 commands, open another terminal and run
     * `ros2 launch cpsl_nav nav2_archived.py scan_topic:=/livox/scan_best_effort`
+
+## Unitree D1 arm
+
+The `unitree_arm` package defines the D1 `ArmString` wire message and typed
+feedback/service interfaces. The `unitree_arm_control` package adds a
+passive-by-default ROS 2 wrapper for parsing `/arm_Feedback` and safely
+publishing validated commands to `/arm_Command`. It communicates through the
+existing ROS 2/CycloneDDS topics and does not require changes to Unitree SDK2.
+
+See [`src/unitree_arm_control/README.md`](src/unitree_arm_control/README.md) for
+build, feedback verification, launch, and command examples.
 
