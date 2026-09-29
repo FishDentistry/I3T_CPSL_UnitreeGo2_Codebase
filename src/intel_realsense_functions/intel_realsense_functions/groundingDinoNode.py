@@ -15,7 +15,9 @@
 
 """Detect text-specified objects and localize them with aligned depth."""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+import threading
 import time
 
 import cv2
@@ -46,6 +48,7 @@ from intel_realsense_functions.detection_geometry import transform_point
 from intel_realsense_functions.grounding_dino_backend import (
     GroundingDinoBackend,
 )
+from intel_realsense_functions.latest_frame_buffer import LatestFrameBuffer
 
 
 class GroundingDinoNode(Node):
@@ -98,15 +101,19 @@ class GroundingDinoNode(Node):
             'Grounding DINO loaded on {}'.format(self._detector.device)
         )
 
-        self._bridge = CvBridge()
+        self._input_bridge = CvBridge()
+        self._output_bridge = CvBridge()
         self._targets = []
-        self._latest_rgb = None
-        self._latest_depth = None
-        self._camera_info = None
-        self._latest_rgb_receipt = None
-        self._latest_depth_receipt = None
-        self._last_processed_rgb_receipt = None
+        self._targets_revision = 0
+        self._state_lock = threading.Lock()
+        self._frame_buffer = LatestFrameBuffer()
+        self._inference_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix='grounding-dino',
+        )
+        self._shutting_down = False
         self._warning_times = {}
+        self._warning_lock = threading.Lock()
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -153,7 +160,9 @@ class GroundingDinoNode(Node):
         )
 
         rate = float(self.get_parameter('detection_rate_hz').value)
-        self.create_timer(1.0 / rate, self._process_latest_frame)
+        self._processing_timer = self.create_timer(
+            1.0 / rate, self._process_latest_frame
+        )
         self.get_logger().info(
             'Waiting for targets on {}'.format(
                 self.get_parameter('targets_topic').value
@@ -212,7 +221,10 @@ class GroundingDinoNode(Node):
                 'Rejected detection targets: at most 20 are allowed'
             )
             return
-        self._targets = targets
+        with self._state_lock:
+            if targets != self._targets:
+                self._targets = targets
+                self._targets_revision += 1
         if targets:
             self.get_logger().info(
                 'Detection targets updated: {}'.format(', '.join(targets))
@@ -222,82 +234,75 @@ class GroundingDinoNode(Node):
 
     def _rgb_callback(self, message):
         try:
-            image = self._bridge.imgmsg_to_cv2(
+            image = self._input_bridge.imgmsg_to_cv2(
                 message, desired_encoding='rgb8'
             )
         except CvBridgeError as error:
             self._warn_throttled('rgb_conversion', str(error))
             return
-        self._latest_rgb = np.ascontiguousarray(image)
-        self._latest_rgb_receipt = time.monotonic()
+        self._frame_buffer.update_rgb(
+            np.ascontiguousarray(image), time.monotonic()
+        )
 
     def _depth_callback(self, message):
         try:
-            image = self._bridge.imgmsg_to_cv2(
+            image = self._input_bridge.imgmsg_to_cv2(
                 message, desired_encoding='32FC1'
             )
         except CvBridgeError as error:
             self._warn_throttled('depth_conversion', str(error))
             return
-        self._latest_depth = np.ascontiguousarray(
-            image, dtype=np.float32
+        self._frame_buffer.update_depth(
+            np.ascontiguousarray(image, dtype=np.float32),
+            time.monotonic(),
         )
-        self._latest_depth_receipt = time.monotonic()
 
     def _camera_info_callback(self, message):
-        self._camera_info = message
+        self._frame_buffer.update_camera_info(message)
 
     def _warn_throttled(self, key, message, period=5.0):
         now = time.monotonic()
-        last_time = self._warning_times.get(key)
-        if last_time is None or now - last_time >= period:
-            self.get_logger().warning(message)
-            self._warning_times[key] = now
+        with self._warning_lock:
+            last_time = self._warning_times.get(key)
+            if last_time is None or now - last_time >= period:
+                self.get_logger().warning(message)
+                self._warning_times[key] = now
 
-    def _frames_ready(self):
-        if (
-                self._latest_rgb is None
-                or self._latest_depth is None
-                or self._camera_info is None):
+    def _take_latest_frame(self):
+        maximum_age = float(
+            self.get_parameter('maximum_frame_age_sec').value
+        )
+        maximum_offset = float(
+            self.get_parameter('maximum_pair_offset_sec').value
+        )
+        frame, status, details = self._frame_buffer.claim(
+            time.monotonic(), maximum_age, maximum_offset
+        )
+        if status == 'missing':
             self._warn_throttled(
                 'missing_camera_data',
                 'Waiting for RGB, aligned depth, and camera intrinsics',
             )
-            return False
-
-        now = time.monotonic()
-        maximum_age = float(
-            self.get_parameter('maximum_frame_age_sec').value
-        )
-        if (
-                now - self._latest_rgb_receipt > maximum_age
-                or now - self._latest_depth_receipt > maximum_age):
+        elif status == 'stale':
+            rgb_age, depth_age = details
             self._warn_throttled(
                 'stale_camera_data',
-                'RGB or depth data is stale; skipping detection',
+                'RGB or depth data is stale; skipping detection '
+                '(ages: {:.3f}s RGB, {:.3f}s depth; limit: {:.3f}s)'.format(
+                    rgb_age, depth_age, maximum_age
+                ),
             )
-            return False
-
-        maximum_offset = float(
-            self.get_parameter('maximum_pair_offset_sec').value
-        )
-        frame_offset = abs(
-            self._latest_rgb_receipt - self._latest_depth_receipt
-        )
-        if frame_offset > maximum_offset:
+        elif status == 'unpaired':
             self._warn_throttled(
                 'unpaired_camera_data',
                 'RGB and depth receipt times differ by {:.3f} seconds'.format(
-                    frame_offset
+                    details
                 ),
             )
-            return False
-        if self._last_processed_rgb_receipt == self._latest_rgb_receipt:
-            return False
-        return True
+        return frame
 
-    def _scaled_intrinsics(self, image_width, image_height):
-        camera_info = self._camera_info
+    @staticmethod
+    def _scaled_intrinsics(camera_info, image_width, image_height):
         calibration_width = camera_info.width or image_width
         calibration_height = camera_info.height or image_height
         scale_x = float(image_width) / float(calibration_width)
@@ -309,8 +314,7 @@ class GroundingDinoNode(Node):
             float(camera_info.k[5]) * scale_y,
         )
 
-    def _latest_map_transform(self, camera_frame):
-        map_frame = self.get_parameter('map_frame').value
+    def _latest_map_transform(self, camera_frame, map_frame):
         try:
             return self._tf_buffer.lookup_transform(
                 map_frame,
@@ -349,7 +353,7 @@ class GroundingDinoNode(Node):
 
     def _process_detection(
             self, detection, depth_image, intrinsics, map_transform,
-            image_width, image_height):
+            image_width, image_height, targets, depth_settings):
         raw_box = detection['bounding_box']
         box = (
             max(0.0, min(float(image_width - 1), raw_box[0])),
@@ -361,15 +365,15 @@ class GroundingDinoNode(Node):
             depth_image,
             box,
             intrinsics,
-            float(self.get_parameter('minimum_depth_m').value),
-            float(self.get_parameter('maximum_depth_m').value),
-            float(self.get_parameter('depth_center_fraction').value),
+            depth_settings['minimum'],
+            depth_settings['maximum'],
+            depth_settings['center_fraction'],
         )
 
         result = {
             'label': detection['label'],
             'requested_target': self._matched_target(
-                detection['label'], self._targets
+                detection['label'], targets
             ),
             'score': detection['score'],
             'bounding_box_pixels': {
@@ -437,7 +441,7 @@ class GroundingDinoNode(Node):
                 cv2.LINE_AA,
             )
         try:
-            message = self._bridge.cv2_to_imgmsg(
+            message = self._output_bridge.cv2_to_imgmsg(
                 annotated, encoding='rgb8'
             )
         except CvBridgeError as error:
@@ -448,12 +452,62 @@ class GroundingDinoNode(Node):
         self._annotated_publisher.publish(message)
 
     def _process_latest_frame(self):
-        if not self._targets or not self._frames_ready():
+        with self._state_lock:
+            if self._shutting_down or not self._targets:
+                return
+            targets = tuple(self._targets)
+            targets_revision = self._targets_revision
+
+        frame = self._take_latest_frame()
+        if frame is None:
             return
 
-        image_rgb = self._latest_rgb.copy()
-        depth_image = self._latest_depth.copy()
-        self._last_processed_rgb_receipt = self._latest_rgb_receipt
+        settings = {
+            'targets': targets,
+            'targets_revision': targets_revision,
+            'box_threshold': float(
+                self.get_parameter('box_threshold').value
+            ),
+            'text_threshold': float(
+                self.get_parameter('text_threshold').value
+            ),
+            'depth': {
+                'minimum': float(
+                    self.get_parameter('minimum_depth_m').value
+                ),
+                'maximum': float(
+                    self.get_parameter('maximum_depth_m').value
+                ),
+                'center_fraction': float(
+                    self.get_parameter('depth_center_fraction').value
+                ),
+            },
+            'camera_frame': self.get_parameter('camera_frame').value,
+            'map_frame': self.get_parameter('map_frame').value,
+        }
+        try:
+            self._inference_executor.submit(
+                self._process_claimed_frame, frame, settings
+            )
+        except RuntimeError:
+            self._frame_buffer.release()
+
+    def _process_claimed_frame(self, frame, settings):
+        """Run inference in the worker and release the frame claim."""
+        try:
+            self._run_inference(frame, settings)
+        except Exception as error:
+            self._warn_throttled(
+                'frame_processing',
+                'Grounding DINO frame processing failed: {}'.format(error),
+            )
+        finally:
+            self._frame_buffer.release()
+
+    def _run_inference(self, frame, settings):
+        """Detect and publish one stable frame snapshot."""
+        image_rgb = frame.rgb
+        depth_image = frame.depth
         if image_rgb.shape[:2] != depth_image.shape:
             self._warn_throttled(
                 'image_shape',
@@ -461,18 +515,12 @@ class GroundingDinoNode(Node):
             )
             return
 
-        box_threshold = float(
-            self.get_parameter('box_threshold').value
-        )
-        text_threshold = float(
-            self.get_parameter('text_threshold').value
-        )
         try:
             raw_detections = self._detector.detect(
                 image_rgb,
-                self._targets,
-                box_threshold,
-                text_threshold,
+                settings['targets'],
+                settings['box_threshold'],
+                settings['text_threshold'],
             )
         except Exception as error:
             self._warn_throttled(
@@ -484,7 +532,7 @@ class GroundingDinoNode(Node):
         image_height, image_width = image_rgb.shape[:2]
         try:
             intrinsics = self._scaled_intrinsics(
-                image_width, image_height
+                frame.camera_info, image_width, image_height
             )
         except (IndexError, TypeError, ValueError) as error:
             self._warn_throttled(
@@ -493,9 +541,11 @@ class GroundingDinoNode(Node):
             )
             return
 
-        camera_frame = self.get_parameter('camera_frame').value
-        map_frame = self.get_parameter('map_frame').value
-        map_transform = self._latest_map_transform(camera_frame)
+        camera_frame = settings['camera_frame']
+        map_frame = settings['map_frame']
+        map_transform = self._latest_map_transform(
+            camera_frame, map_frame
+        )
         try:
             detections = [
                 self._process_detection(
@@ -505,6 +555,8 @@ class GroundingDinoNode(Node):
                     map_transform,
                     image_width,
                     image_height,
+                    settings['targets'],
+                    settings['depth'],
                 )
                 for detection in raw_detections
             ]
@@ -515,13 +567,19 @@ class GroundingDinoNode(Node):
             )
             return
 
+        with self._state_lock:
+            if (
+                    self._shutting_down
+                    or settings['targets_revision'] != self._targets_revision):
+                return
+
         stamp = self.get_clock().now().to_msg()
         payload = {
             'stamp': {
                 'sec': stamp.sec,
                 'nanosec': stamp.nanosec,
             },
-            'requested_targets': list(self._targets),
+            'requested_targets': list(settings['targets']),
             'camera_frame': camera_frame,
             'map_frame': map_frame,
             'map_transform_available': map_transform is not None,
@@ -535,6 +593,16 @@ class GroundingDinoNode(Node):
         self._publish_annotated_image(
             image_rgb, detections, stamp, camera_frame
         )
+
+    def destroy_node(self):
+        """Stop inference before destroying ROS publishers and resources."""
+        with self._state_lock:
+            self._shutting_down = True
+        if hasattr(self, '_processing_timer'):
+            self._processing_timer.cancel()
+        if hasattr(self, '_inference_executor'):
+            self._inference_executor.shutdown(wait=True)
+        return super().destroy_node()
 
 
 def main(args=None):

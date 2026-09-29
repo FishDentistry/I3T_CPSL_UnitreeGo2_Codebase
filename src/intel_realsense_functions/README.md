@@ -35,6 +35,11 @@ The node runs inference only while at least one detection target is configured.
 Detections are published continuously at the configured inference rate. It does
 not publish robot or arm commands.
 
+Inference runs in a dedicated worker so camera subscriptions remain responsive.
+The node retains only one pending RGB/depth pair: frames received while the
+model is busy replace the pending pair, and the next inference uses the newest
+valid pair instead of processing an accumulated frame queue.
+
 #### Topics
 
 | Direction | Topic | Type | Description |
@@ -292,5 +297,3 @@ messages do not currently contain acquisition timestamps or frame IDs. The
 detector therefore pairs images by local receipt time and uses the most recent
 available TF transform. `maximum_frame_age_sec` and
 `maximum_pair_offset_sec` prevent use of clearly stale or mismatched frames.
-
-
