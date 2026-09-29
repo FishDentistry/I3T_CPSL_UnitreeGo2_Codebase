@@ -59,8 +59,8 @@ class GetCameraFrames(Node):
         self.cam_info.distortion_model = 'none'
 
         # Timers
-        self.create_timer(0.5, lambda: self.camIntrPub.publish(self.cam_info))
-        self.create_timer(0.5, self.imagePubTimerCallback)
+        self.create_timer(0.1, lambda: self.camIntrPub.publish(self.cam_info))
+        self.create_timer(0.1, self.imagePubTimerCallback)
 
         self.consecutive_timeouts = 0
 
