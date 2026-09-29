@@ -107,7 +107,51 @@ python3 "$(command -v colcon)" build \
 source install/setup.bash
 ```
 
-Run the mapper after the detector:
+Start Grounding DINO and semantic mapping together:
+
+```bash
+ros2 launch semantic_mapping semantic_mapping.launch.py
+```
+
+This launch file intentionally does not start `getCameraFrames`. The camera
+publisher and the TF publishers must already be running, whether they were
+started individually or by the main robot launch system.
+
+The default model paths match the Grounding DINO installation documented by
+`intel_realsense_functions`:
+
+```text
+~/.local/share/go2_groundingdino/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py
+~/.local/share/go2_groundingdino/GroundingDINO/dino_weights/groundingdino_swint_ogc.pth
+```
+
+Paths and shared frame settings can be overridden on the launch command:
+
+```bash
+ros2 launch semantic_mapping semantic_mapping.launch.py \
+  model_config_path:=/path/to/GroundingDINO_SwinT_OGC.py \
+  model_checkpoint_path:=/path/to/groundingdino_swint_ogc.pth \
+  camera_frame:=front_camera \
+  map_frame:=map
+```
+
+The launch file exposes the following arguments:
+
+| Launch argument | Default | Applied to |
+| --- | --- | --- |
+| `model_config_path` | Standard user-local Grounding DINO path | Detector |
+| `model_checkpoint_path` | Standard user-local checkpoint path | Detector |
+| `device` | `auto` | Detector |
+| `detection_rate_hz` | `5.0` | Detector |
+| `camera_frame` | `front_camera` | Detector |
+| `map_frame` | `map` | Both nodes |
+| `detections_topic` | `/grounding_dino/detection_array` | Both nodes |
+| `minimum_confidence` | `0.50` | Semantic mapper |
+| `confirmation_observations` | `3` | Semantic mapper |
+
+The detector and mapper receive the same `map_frame` and structured detection
+topic from the launch file so the connection cannot drift through separate
+configuration. To run only the mapper for debugging, use:
 
 ```bash
 ros2 run semantic_mapping semanticMappingNode

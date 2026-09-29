@@ -1,3 +1,6 @@
+from glob import glob
+import os
+
 from setuptools import find_packages, setup
 
 
@@ -13,6 +16,10 @@ setup(
             ['resource/' + package_name],
         ),
         ('share/' + package_name, ['package.xml', 'README.md']),
+        (
+            os.path.join('share', package_name, 'launch'),
+            glob('launch/*.launch.py'),
+        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
