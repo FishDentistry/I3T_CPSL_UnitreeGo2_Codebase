@@ -1,0 +1,90 @@
+# Copyright 2026 CPSL
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for Grounding DINO target parsing and coordinate calculations."""
+
+import math
+import unittest
+
+import numpy as np
+
+from intel_realsense_functions.detection_geometry import (
+    camera_point_from_depth,
+)
+from intel_realsense_functions.detection_geometry import (
+    parse_detection_targets,
+)
+from intel_realsense_functions.detection_geometry import transform_point
+
+
+class DetectionGeometryTest(unittest.TestCase):
+    """Exercise perception helpers independently from ROS and torch."""
+
+    def test_parse_plain_and_json_targets(self):
+        """Target messages accept documented plain-text and JSON forms."""
+        self.assertEqual(
+            parse_detection_targets(' Cup, red bottle, cup '),
+            ['cup', 'red bottle'],
+        )
+        self.assertEqual(
+            parse_detection_targets('["cup", "red bottle"]'),
+            ['cup', 'red bottle'],
+        )
+        self.assertEqual(
+            parse_detection_targets('{"targets": ["cup"]}'),
+            ['cup'],
+        )
+
+    def test_project_constant_depth_at_principal_point(self):
+        """A principal-point depth sample lies on the optical Z axis."""
+        depth = np.full((5, 5), 2.0, dtype=np.float32)
+        point = camera_point_from_depth(
+            depth,
+            (1, 1, 3, 3),
+            (100.0, 100.0, 2.0, 2.0),
+            0.1,
+            5.0,
+            1.0,
+        )
+        self.assertAlmostEqual(point['x'], 0.0)
+        self.assertAlmostEqual(point['y'], 0.0)
+        self.assertAlmostEqual(point['z'], 2.0)
+        self.assertGreater(point['depth_sample_count'], 0)
+
+    def test_invalid_depth_returns_no_point(self):
+        """Invalid or out-of-range depth does not produce coordinates."""
+        depth = np.zeros((5, 5), dtype=np.float32)
+        self.assertIsNone(camera_point_from_depth(
+            depth,
+            (1, 1, 3, 3),
+            (100.0, 100.0, 2.0, 2.0),
+            0.1,
+            5.0,
+        ))
+
+    def test_transform_point_rotates_and_translates(self):
+        """Quaternion transforms follow geometry_msgs XYZW ordering."""
+        half_sqrt = math.sqrt(0.5)
+        result = transform_point(
+            (1.0, 0.0, 0.0),
+            (1.0, 2.0, 3.0),
+            (0.0, 0.0, half_sqrt, half_sqrt),
+        )
+        self.assertAlmostEqual(result[0], 1.0)
+        self.assertAlmostEqual(result[1], 3.0)
+        self.assertAlmostEqual(result[2], 3.0)
+
+
+if __name__ == '__main__':
+    unittest.main()

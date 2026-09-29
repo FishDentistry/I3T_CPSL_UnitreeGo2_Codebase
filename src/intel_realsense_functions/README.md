@@ -1,0 +1,296 @@
+# Intel RealSense functions
+
+`intel_realsense_functions` provides ROS 2 nodes for publishing aligned Intel
+RealSense RGB/depth data and for locating text-specified objects with Grounding
+DINO.
+
+## Nodes
+
+### `getCameraFrames`
+
+`getCameraFrames` connects directly to the RealSense device and publishes
+aligned 640 x 480 RGB and metric depth images at 15 frames per second.
+
+| Topic | Type | Description |
+| --- | --- | --- |
+| `/realsense_rgb_image` | `sensor_msgs/msg/Image` | RGB image using `rgb8` encoding. |
+| `/realsense_depth_image` | `sensor_msgs/msg/Image` | Aligned depth in metres using `32FC1` encoding. |
+| `/depth_camera_intrinsics` | `sensor_msgs/msg/CameraInfo` | Intrinsics for the aligned color image. |
+
+Run the node with:
+
+```bash
+ros2 run intel_realsense_functions getCameraFrames
+```
+
+### `groundingDinoNode`
+
+`groundingDinoNode` listens for text detection targets, applies Grounding DINO
+to the most recent RGB frame, estimates a robust depth from the center of each
+detection, and deprojects the result into the camera optical coordinate system.
+When the TF tree contains a transform from `front_camera` to `map`, the point is
+also transformed into map coordinates.
+
+The node runs inference only while at least one detection target is configured.
+Detections are published continuously at the configured inference rate. It does
+not publish robot or arm commands.
+
+#### Topics
+
+| Direction | Topic | Type | Description |
+| --- | --- | --- | --- |
+| Input | `/detection_targets` | `std_msgs/msg/String` | Requested object names. |
+| Input | `/realsense_rgb_image` | `sensor_msgs/msg/Image` | RGB image. |
+| Input | `/realsense_depth_image` | `sensor_msgs/msg/Image` | Aligned metric depth image. |
+| Input | `/depth_camera_intrinsics` | `sensor_msgs/msg/CameraInfo` | Aligned image intrinsics. |
+| Output | `/grounding_dino/detections` | `std_msgs/msg/String` | JSON detection results. |
+| Output | `/grounding_dino/annotated_image` | `sensor_msgs/msg/Image` | RGB image with detection boxes. |
+
+Detection targets may be provided as a single phrase, a comma-separated list,
+a JSON list, or an object containing a `targets` list:
+
+```bash
+ros2 topic pub --once /detection_targets std_msgs/msg/String \
+  "{data: 'cup'}"
+
+ros2 topic pub --once /detection_targets std_msgs/msg/String \
+  "{data: 'cup, red bottle'}"
+
+ros2 topic pub --once /detection_targets std_msgs/msg/String \
+  "{data: '[\"cup\", \"red bottle\"]'}"
+```
+
+Publishing an empty string clears the active targets and stops inference.
+
+#### Detection result schema
+
+The detection topic contains one JSON object per processed RGB/depth pair. An
+empty `detections` array is published when none of the requested targets is
+found. Coordinates use metres.
+
+```json
+{
+  "stamp": {"sec": 0, "nanosec": 0},
+  "requested_targets": ["cup"],
+  "camera_frame": "front_camera",
+  "map_frame": "map",
+  "map_transform_available": true,
+  "detections": [
+    {
+      "label": "cup",
+      "requested_target": "cup",
+      "score": 0.83,
+      "bounding_box_pixels": {
+        "x_min": 210,
+        "y_min": 120,
+        "x_max": 350,
+        "y_max": 410
+      },
+      "camera_coordinates_m": {"x": 0.1, "y": 0.0, "z": 1.2},
+      "map_coordinates_m": {"x": 2.4, "y": -0.7, "z": 0.8},
+      "depth_sample_count": 1530,
+      "depth_pixel": {"u": 280.0, "v": 265.0}
+    }
+  ]
+}
+```
+
+`camera_coordinates_m` and `map_coordinates_m` are `null` when valid aligned
+depth is unavailable. `map_coordinates_m` is also `null` when the TF lookup
+fails. A missing map transform never prevents publication of pixel and camera
+coordinates.
+
+Camera coordinates follow the optical convention used by the RealSense image:
+positive X points right, positive Y points down, and positive Z points forward.
+The `camera_frame` parameter must identify a TF frame with the same convention.
+
+## Grounding DINO installation for Python 3.8
+
+Grounding DINO and PyTorch are intentionally not installed by `rosdep` or by
+this package's `setup.py`. They must be installed in a Python 3.8
+environment appropriate for the Go2 external board and its CUDA platform.
+
+Install the declared ROS dependencies and Python virtual-environment support:
+
+```bash
+cd ~/I3T_CPSL_UnitreeGo2_Codebase
+source /opt/ros/foxy/setup.bash
+rosdep install --from-paths src/intel_realsense_functions \
+  --ignore-src --rosdistro foxy -r -y
+```
+
+If you create an environment it must include the ROS 2 Foxy system packages:
+
+```bash
+cd ~/I3T_CPSL_UnitreeGo2_Codebase
+source /opt/ros/foxy/setup.bash
+mkdir -p ~/.venvs
+python3 -m venv --system-site-packages \
+  ~/.venvs/go2-groundingdino-py38
+source ~/.venvs/go2-groundingdino-py38/bin/activate
+python3 --version
+python3 -m pip install --upgrade "pip==24.3.1" wheel ninja
+```
+
+The displayed Python version must be 3.8.x.
+
+Install a matching PyTorch and torchvision pair before Grounding DINO. Do not
+replace a working Jetson build with the generic packages from PyPI: those wheels
+are not compatible with the Jetson's ARM64 CUDA platform.
+
+For the repository's JetPack 5.1.2 deployment target, the setup uses the
+following known-compatible Python 3.8 wheels. If these versions are already
+installed and the verification command below succeeds, do not uninstall or
+reinstall them:
+
+```bash
+python3 -m pip install \
+  https://github.com/ultralytics/assets/releases/download/v0.0.0/torch-2.1.0a0+41361538.nv23.06-cp38-cp38-linux_aarch64.whl
+python3 -m pip install --no-deps \
+  https://github.com/ultralytics/assets/releases/download/v0.0.0/torchvision-0.16.2+c6f3977-cp38-cp38-linux_aarch64.whl
+```
+
+`--no-deps` on the torchvision installation prevents pip from replacing the
+Jetson-specific PyTorch wheel with a generic build. Standard x86-64 CPU-only
+development systems may instead use:
+
+```bash
+python3 -m pip install \
+  "torch==2.1.2" "torchvision==0.16.2" \
+  --index-url https://download.pytorch.org/whl/cpu
+```
+
+Install Python 3.8-compatible supporting packages:
+
+```bash
+python3 -m pip install \
+  "numpy<2" "Pillow<11" "transformers==4.30.2" \
+  "timm==0.9.12" "addict==2.4.0" "yapf==0.40.1" \
+  "pycocotools==2.0.7"
+```
+
+Clone the official Grounding DINO repository, select the release commit used by
+the Swin-T checkpoint, and install it without allowing its unpinned dependency
+list to replace the Python 3.8-compatible packages:
+
+```bash
+mkdir -p ~/.local/share/go2_groundingdino
+git clone https://github.com/IDEA-Research/GroundingDINO.git \
+  ~/.local/share/go2_groundingdino/GroundingDINO
+cd ~/.local/share/go2_groundingdino/GroundingDINO
+python3 -m pip install --no-deps -e .
+
+mkdir -p dino_weights
+wget -O dino_weights/groundingdino_swint_ogc.pth \
+  https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
+```
+
+For CUDA execution, `CUDA_HOME` must refer to the CUDA toolkit used by the
+installed PyTorch build before `pip install -e .` is run. JetPack normally
+exposes it at `/usr/local/cuda`; verify and set it before installing Grounding
+DINO if it is not already defined:
+
+```bash
+test -x /usr/local/cuda/bin/nvcc
+export CUDA_HOME=/usr/local/cuda
+```
+
+The official
+[Grounding DINO installation instructions](https://github.com/IDEA-Research/GroundingDINO#hammer_and_wrench-install)
+describe the CUDA extension build and `_C` extension troubleshooting.
+
+Verify the environment before building the ROS package:
+
+```bash
+python3 -c "import numpy, torch, torchvision, groundingdino; print(numpy.__version__); print(torch.__version__); print(torchvision.__version__); print(torch.cuda.is_available())"
+```
+
+On the JetPack 5.1.2 target this must report NumPy `1.23.5`, the Jetson-specific
+PyTorch build, torchvision `0.16.2`, and CUDA availability as `True`. Do not
+proceed with GPU deployment if the installed Torch build is CPU-only or CUDA is
+unavailable.
+
+When using a virtual environment, build with its Python interpreter so
+the generated ROS executable points to that environment. If Grounding DINO was
+installed into the existing system Python 3.8 environment, omit the activation
+line but keep the explicit `python` invocation:
+
+```bash
+cd ~/I3T_CPSL_UnitreeGo2_Codebase
+source /opt/ros/foxy/setup.bash
+source ~/.venvs/go2-groundingdino-py38/bin/activate
+python3 "$(command -v colcon)" build \
+  --packages-select intel_realsense_functions --symlink-install
+source install/setup.bash
+```
+
+Invoking the `colcon` script through `python` is deliberate. It causes the
+generated Python node wrapper to record the virtual environment's Python
+3.8 interpreter instead of the system `colcon` script's shebang if a venv is active.
+
+The interpreter recorded in the installed executable can be verified with:
+
+```bash
+head -n 1 \
+  install/intel_realsense_functions/lib/intel_realsense_functions/groundingDinoNode
+```
+
+## Running the detector
+
+Start the camera publisher and ensure that the robot TF tree includes the
+`front_camera` and `map` frames. Start the detector with the Grounding DINO
+configuration and checkpoint paths:
+
+```bash
+source /opt/ros/foxy/setup.bash
+source ~/.venvs/go2-groundingdino-py38/bin/activate
+source install/setup.bash
+
+ros2 run intel_realsense_functions groundingDinoNode --ros-args \
+  -p model_config_path:=$HOME/.local/share/go2_groundingdino/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
+  -p model_checkpoint_path:=$HOME/.local/share/go2_groundingdino/GroundingDINO/dino_weights/groundingdino_swint_ogc.pth
+```
+
+The default `device` value is `auto`, which selects CUDA when PyTorch reports
+that CUDA is available and otherwise selects the CPU. CPU inference is expected
+to be substantially slower.
+
+Monitor the results with:
+
+```bash
+ros2 topic echo /grounding_dino/detections
+ros2 run rqt_image_view rqt_image_view \
+  /grounding_dino/annotated_image
+```
+
+## Parameters
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `model_config_path` | empty | Required Grounding DINO Python config path. |
+| `model_checkpoint_path` | empty | Required model checkpoint path. |
+| `device` | `auto` | Torch device: `auto`, `cpu`, `cuda`, or `cuda:N`. |
+| `box_threshold` | `0.35` | Minimum object-box score. |
+| `text_threshold` | `0.25` | Minimum token score used to form a label. |
+| `detection_rate_hz` | `1.0` | Maximum inference frequency. |
+| `camera_frame` | `front_camera` | Optical TF frame for camera coordinates. |
+| `map_frame` | `map` | TF frame for global coordinates. |
+| `maximum_frame_age_sec` | `1.0` | Maximum accepted local receipt age. |
+| `maximum_pair_offset_sec` | `0.25` | Maximum RGB/depth receipt-time difference. |
+| `minimum_depth_m` | `0.15` | Minimum valid depth. |
+| `maximum_depth_m` | `6.0` | Maximum valid depth. |
+| `depth_center_fraction` | `0.5` | Central box fraction used for depth sampling. |
+
+All topic names are also parameters and may be remapped or overridden without
+changing the source code.
+
+## Coordinate and synchronization limitations
+
+The current `getCameraFrames` node aligns depth to the RGB stream before
+publishing, which permits direct use of the color intrinsics. Its published
+messages do not currently contain acquisition timestamps or frame IDs. The
+detector therefore pairs images by local receipt time and uses the most recent
+available TF transform. `maximum_frame_age_sec` and
+`maximum_pair_offset_sec` prevent use of clearly stale or mismatched frames.
+
+
