@@ -14,6 +14,13 @@ def generate_launch_description():
     require_fresh_feedback = LaunchConfiguration('require_fresh_feedback')
     feedback_timeout_sec = LaunchConfiguration('feedback_timeout_sec')
     enforce_joint_limits = LaunchConfiguration('enforce_joint_limits')
+    lay_down_tolerance_degrees = LaunchConfiguration(
+        'lay_down_tolerance_degrees'
+    )
+    lay_down_timeout_sec = LaunchConfiguration('lay_down_timeout_sec')
+    lay_down_required_samples = LaunchConfiguration(
+        'lay_down_required_samples'
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -42,6 +49,21 @@ def generate_launch_description():
             default_value='true',
             description='Validate J0-J5 against D1-550 mechanical limits.',
         ),
+        DeclareLaunchArgument(
+            'lay_down_tolerance_degrees',
+            default_value='2.0',
+            description='Maximum per-joint lay-down position error.',
+        ),
+        DeclareLaunchArgument(
+            'lay_down_timeout_sec',
+            default_value='15.0',
+            description='Timeout for each lay-down operation phase.',
+        ),
+        DeclareLaunchArgument(
+            'lay_down_required_samples',
+            default_value='3',
+            description='Consecutive in-tolerance samples before release.',
+        ),
         Node(
             package='unitree_arm_control',
             executable='d1_arm_controller',
@@ -54,6 +76,11 @@ def generate_launch_description():
                 'require_fresh_feedback': require_fresh_feedback,
                 'feedback_timeout_sec': feedback_timeout_sec,
                 'enforce_joint_limits': enforce_joint_limits,
+                'lay_down_tolerance_degrees': (
+                    lay_down_tolerance_degrees
+                ),
+                'lay_down_timeout_sec': lay_down_timeout_sec,
+                'lay_down_required_samples': lay_down_required_samples,
             }],
         ),
     ])

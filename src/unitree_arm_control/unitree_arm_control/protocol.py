@@ -28,6 +28,19 @@ JOINT_COUNT = 7
 SMOOTH_10_HZ = 0
 TRAJECTORY = 1
 
+# Measured /arm_Feedback values with the mounted arm in its lay-down pose.
+# Joint 1 is slightly outside the rounded published limit below, so only the
+# dedicated lay-down command is permitted to send this known pose unchanged.
+LAY_DOWN_ANGLES_DEGREES = (
+    0.20000000298023224,
+    -90.80000305175781,
+    85.30000305175781,
+    -11.399999618530273,
+    20.5,
+    0.6000000238418579,
+    0.0,
+)
+
 # Mechanical angle limits published for D1-550 joints J0 through J5.
 # J6 is the gripper and is deliberately left unbounded here because its
 # command units/range differ between D1 variants.
@@ -231,6 +244,16 @@ def set_power_command(sequence, powered):
 def zero_arm_command(sequence):
     """Build a return-to-zero command."""
     return _encode(sequence, ZERO_ARM)
+
+
+def lay_down_command(sequence):
+    """Build the fixed, measured lay-down pose command."""
+    return set_joint_angles_command(
+        sequence,
+        LAY_DOWN_ANGLES_DEGREES,
+        mode=TRAJECTORY,
+        enforce_limits=False,
+    )
 
 
 def _load_envelope(raw_json):

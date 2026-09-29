@@ -11,6 +11,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CommandResult.msg"
   "msg/JointAngles.msg"
   "msg/MotorStatus.msg"
+  "srv/LayDownArm.srv"
   "srv/SetArmEnabled.srv"
   "srv/SetJoint.srv"
   "srv/SetJointAngles.srv"

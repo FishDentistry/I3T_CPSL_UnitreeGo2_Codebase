@@ -14,6 +14,7 @@ from unitree_arm.msg import ArmString
 from unitree_arm.msg import CommandResult
 from unitree_arm.msg import JointAngles
 from unitree_arm.msg import MotorStatus
+from unitree_arm.srv import LayDownArm
 from unitree_arm.srv import SetArmEnabled
 from unitree_arm.srv import SetJoint
 from unitree_arm.srv import SetJointAngles
@@ -37,6 +38,9 @@ class D1ArmController(Node):
         self.declare_parameter('feedback_timeout_sec', 2.0)
         self.declare_parameter('enforce_joint_limits', True)
         self.declare_parameter('initial_sequence', 1)
+        self.declare_parameter('lay_down_tolerance_degrees', 2.0)
+        self.declare_parameter('lay_down_timeout_sec', 15.0)
+        self.declare_parameter('lay_down_required_samples', 3)
 
         command_topic = self._string_parameter('command_topic')
         feedback_topic = self._string_parameter('feedback_topic')
@@ -47,6 +51,7 @@ class D1ArmController(Node):
         self._last_feedback_time = None
         self._pending_commands = {}
         self._feedback_warning_active = False
+        self._lay_down_operation = None
 
         command_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -108,8 +113,14 @@ class D1ArmController(Node):
         self.create_service(
             ZeroArm, '~/zero', self._zero_callback
         )
+        self.create_service(
+            LayDownArm,
+            '~/lay_down_and_release',
+            self._lay_down_and_release_callback,
+        )
 
         self.create_timer(5.0, self._feedback_watchdog)
+        self.create_timer(0.1, self._lay_down_watchdog)
 
         self.get_logger().info(
             'D1 arm wrapper listening on {} and publishing to {}'.format(
@@ -158,6 +169,7 @@ class D1ArmController(Node):
             parsed.angle_degrees = list(feedback.angles_degrees)
             parsed.raw_json = feedback.raw_json
             self._joint_angles_publisher.publish(parsed)
+            self._update_lay_down_position(feedback.angles_degrees)
             return
 
         if isinstance(feedback, protocol.ArmStatusFeedback):
@@ -191,6 +203,7 @@ class D1ArmController(Node):
             )
             parsed.raw_json = feedback.raw_json
             self._command_result_publisher.publish(parsed)
+            self._update_lay_down_result(feedback)
             if feedback.stage == protocol.EXECUTE_RESULT:
                 self._pending_commands.pop(feedback.sequence, None)
             return
@@ -225,6 +238,8 @@ class D1ArmController(Node):
             self._feedback_warning_active = False
 
     def _command_block_reason(self):
+        if self._lay_down_operation is not None:
+            return 'lay-down-and-release is already in progress'
         if not self._bool_parameter('commanding_enabled'):
             return 'commanding_enabled is false'
         if not self._bool_parameter('require_fresh_feedback'):
@@ -253,20 +268,23 @@ class D1ArmController(Node):
         if block_reason is not None:
             return self._reject(response, block_reason)
 
-        message = ArmString()
-        message.data = payload
-        self._command_publisher.publish(message)
-        self._pending_commands[sequence] = description
+        self._send_command(payload, sequence, description)
         response.published = True
         response.sequence = sequence
         response.message = (
             'published; delivery/execution is reported on the controller\'s '
             'command_result topic'
         )
+        return response
+
+    def _send_command(self, payload, sequence, description):
+        message = ArmString()
+        message.data = payload
+        self._command_publisher.publish(message)
+        self._pending_commands[sequence] = description
         self.get_logger().info(
             'Published D1 command seq={} ({})'.format(sequence, description)
         )
-        return response
 
     def _build_and_publish(self, builder, description, response):
         sequence = self._sequences.next()
@@ -339,6 +357,157 @@ class D1ArmController(Node):
         return self._build_and_publish(
             protocol.zero_arm_command, 'return to zero', response
         )
+
+    def _lay_down_and_release_callback(self, request, response):
+        del request
+        block_reason = self._command_block_reason()
+        if block_reason is not None:
+            return self._reject(response, block_reason)
+
+        tolerance = self._double_parameter('lay_down_tolerance_degrees')
+        timeout = self._double_parameter('lay_down_timeout_sec')
+        required_samples = self._integer_parameter(
+            'lay_down_required_samples'
+        )
+        if tolerance < 0.0:
+            return self._reject(
+                response, 'lay_down_tolerance_degrees must not be negative'
+            )
+        if timeout <= 0.0:
+            return self._reject(
+                response, 'lay_down_timeout_sec must be positive'
+            )
+        if required_samples < 1:
+            return self._reject(
+                response, 'lay_down_required_samples must be at least one'
+            )
+
+        sequence = self._sequences.next()
+        payload = protocol.lay_down_command(sequence)
+        self._send_command(payload, sequence, 'move to lay-down pose')
+        self._lay_down_operation = {
+            'phase': 'moving',
+            'move_sequence': sequence,
+            'release_sequence': None,
+            'consecutive_samples': 0,
+            'position_confirmed': False,
+            'move_executed': False,
+            'deadline': time.monotonic() + timeout,
+        }
+
+        response.published = True
+        response.sequence = sequence
+        response.message = (
+            'lay-down motion started; joints will be released only after '
+            'successful execution and target confirmation from feedback'
+        )
+        return response
+
+    def _update_lay_down_position(self, angles_degrees):
+        operation = self._lay_down_operation
+        if operation is None or operation['phase'] != 'moving':
+            return
+
+        maximum_error = max(
+            abs(actual - target)
+            for actual, target in zip(
+                angles_degrees, protocol.LAY_DOWN_ANGLES_DEGREES
+            )
+        )
+        tolerance = self._double_parameter('lay_down_tolerance_degrees')
+        if maximum_error > tolerance:
+            operation['consecutive_samples'] = 0
+            operation['position_confirmed'] = False
+            return
+
+        operation['consecutive_samples'] += 1
+        required_samples = self._integer_parameter(
+            'lay_down_required_samples'
+        )
+        if operation['consecutive_samples'] < required_samples:
+            return
+
+        operation['position_confirmed'] = True
+        self._try_lay_down_release()
+
+    def _try_lay_down_release(self):
+        operation = self._lay_down_operation
+        if (
+                operation is None
+                or operation['phase'] != 'moving'
+                or not operation['position_confirmed']
+                or not operation['move_executed']):
+            return
+
+        release_sequence = self._sequences.next()
+        release_payload = protocol.set_arm_enabled_command(
+            release_sequence, False
+        )
+        operation['phase'] = 'releasing'
+        operation['release_sequence'] = release_sequence
+        operation['deadline'] = (
+            time.monotonic()
+            + self._double_parameter('lay_down_timeout_sec')
+        )
+        self._send_command(
+            release_payload,
+            release_sequence,
+            'release arm after confirmed lay-down pose',
+        )
+        self.get_logger().info(
+            'Lay-down motion execution and position confirmed; sent joint '
+            'release seq={}'.format(release_sequence)
+        )
+
+    def _update_lay_down_result(self, feedback):
+        operation = self._lay_down_operation
+        if operation is None:
+            return
+
+        if (
+                operation['phase'] == 'moving'
+                and feedback.sequence == operation['move_sequence']):
+            if not feedback.success:
+                self.get_logger().error(
+                    'Lay-down motion command failed; joints were not released'
+                )
+                self._lay_down_operation = None
+            elif feedback.stage == protocol.EXECUTE_RESULT:
+                operation['move_executed'] = True
+                self._try_lay_down_release()
+            return
+
+        if feedback.sequence != operation['release_sequence']:
+            return
+        if not feedback.success:
+            self.get_logger().error(
+                'Lay-down pose was reached, but the joint release command '
+                'failed; verify the arm state before touching it'
+            )
+            self._lay_down_operation = None
+            return
+        if feedback.stage == protocol.EXECUTE_RESULT:
+            self.get_logger().info(
+                'Lay-down-and-release completed successfully'
+            )
+            self._lay_down_operation = None
+
+    def _lay_down_watchdog(self):
+        operation = self._lay_down_operation
+        if operation is None or time.monotonic() <= operation['deadline']:
+            return
+
+        if operation['phase'] == 'moving':
+            self.get_logger().error(
+                'Lay-down motion was not both execution-acknowledged and '
+                'position-confirmed before timeout; joints were not released'
+            )
+        else:
+            self.get_logger().error(
+                'Joint release command was not confirmed before timeout; '
+                'verify the arm state before touching it'
+            )
+        self._lay_down_operation = None
 
 
 def main(args=None):

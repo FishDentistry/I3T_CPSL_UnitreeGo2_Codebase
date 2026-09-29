@@ -66,6 +66,33 @@ ros2 service call /d1_arm_controller/set_joint \
 ros2 service call /d1_arm_controller/set_arm_enabled \
   unitree_arm/srv/SetArmEnabled "{enabled: false}"
 
+# Move to the measured lay-down pose, confirm it from feedback, then release
+# all joints. Support the arm and keep its entire path clear before calling.
+ros2 service call /d1_arm_controller/lay_down_and_release \
+  unitree_arm/srv/LayDownArm "{}"
+
+The lay-down service is asynchronous: its response confirms that the motion
+command was published, not that the arm has already stopped or been released.
+The controller requires a successful motion execution acknowledgement and
+three consecutive `/arm_Feedback` samples in which every joint is within 2
+degrees of the measured pose. Only then does it publish the all-joint release
+command. If the motion is rejected or these conditions are not met within 15
+seconds, it does not release the joints. Completion and failure are reported in
+the controller log, and command acknowledgements remain available on
+`/d1_arm_controller/command_result`. Releasing the joints is not the same as
+turning motor power off; this service does not send a power-off command.
+
+The confirmation behavior can be adjusted at launch if testing shows that the
+defaults need tuning:
+
+```bash
+ros2 launch unitree_arm_control d1_arm.launch.py \
+  commanding_enabled:=true \
+  lay_down_tolerance_degrees:=2.0 \
+  lay_down_required_samples:=3 \
+  lay_down_timeout_sec:=15.0
+```
+
 # Watch receipt and execution acknowledgements.
 ros2 topic echo /d1_arm_controller/command_result
 ```

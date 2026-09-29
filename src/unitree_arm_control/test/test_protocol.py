@@ -47,6 +47,18 @@ class ProtocolTest(unittest.TestCase):
             'funcode': 7,
         })
 
+    def test_lay_down_command_uses_measured_pose(self):
+        payload = json.loads(protocol.lay_down_command(10))
+        self.assertEqual(payload['funcode'], protocol.SET_ALL_JOINTS)
+        self.assertEqual(payload['data']['mode'], protocol.TRAJECTORY)
+        self.assertEqual(
+            tuple(
+                payload['data']['angle{}'.format(index)]
+                for index in range(protocol.JOINT_COUNT)
+            ),
+            protocol.LAY_DOWN_ANGLES_DEGREES,
+        )
+
     def test_enable_and_power_commands(self):
         joint = json.loads(
             protocol.set_joint_enabled_command(1, 3, True)
