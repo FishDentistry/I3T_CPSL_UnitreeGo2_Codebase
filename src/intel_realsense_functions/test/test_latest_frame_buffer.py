@@ -15,6 +15,7 @@
 """Tests for the single-slot Grounding DINO camera-frame buffer."""
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -25,11 +26,16 @@ class LatestFrameBufferTest(unittest.TestCase):
     """Verify that inference always claims the newest available pair."""
 
     def _complete_pair(self, buffer, value, receipt):
+        stamp = SimpleNamespace(
+            sec=int(receipt),
+            nanosec=int((receipt % 1.0) * 1000000000),
+        )
         buffer.update_rgb(
-            np.full((2, 2, 3), value, dtype=np.uint8), receipt
+            np.full((2, 2, 3), value, dtype=np.uint8), receipt, stamp
         )
         buffer.update_depth(
-            np.full((2, 2), value, dtype=np.float32), receipt + 0.01
+            np.full((2, 2), value, dtype=np.float32), receipt + 0.01,
+            stamp,
         )
         buffer.update_camera_info(object())
 
@@ -64,10 +70,40 @@ class LatestFrameBufferTest(unittest.TestCase):
         self.assertEqual(status, 'stale')
         self.assertGreater(ages[0], 1.0)
 
-        buffer.update_rgb(np.zeros((2, 2, 3)), 20.0)
-        buffer.update_depth(np.zeros((2, 2)), 20.5)
+        rgb_stamp = SimpleNamespace(sec=20, nanosec=0)
+        depth_stamp = SimpleNamespace(sec=20, nanosec=500000000)
+        buffer.update_rgb(np.zeros((2, 2, 3)), 20.0, rgb_stamp)
+        buffer.update_depth(np.zeros((2, 2)), 20.5, depth_stamp)
         claimed, status, offset = buffer.claim(20.6, 1.0, 0.25)
         self.assertIsNone(claimed)
+        self.assertEqual(status, 'unpaired')
+        self.assertAlmostEqual(offset, 0.5)
+
+    def test_pairing_uses_acquisition_stamps_when_available(self):
+        """Callback delay does not split images from one acquisition."""
+        buffer = LatestFrameBuffer()
+        stamp = SimpleNamespace(sec=30, nanosec=250000000)
+        buffer.update_rgb(np.zeros((2, 2, 3)), 30.0, stamp)
+        buffer.update_depth(np.zeros((2, 2)), 30.4, stamp)
+        buffer.update_camera_info(object())
+
+        pair, status, _ = buffer.claim(30.5, 1.0, 0.05)
+
+        self.assertEqual(status, 'ready')
+        self.assertIsNotNone(pair)
+        self.assertEqual(pair.stamp_nanoseconds, 30250000000)
+
+    def test_zero_stamps_fall_back_to_receipt_times(self):
+        """Legacy camera publishers remain subject to receipt-time pairing."""
+        buffer = LatestFrameBuffer()
+        zero_stamp = SimpleNamespace(sec=0, nanosec=0)
+        buffer.update_rgb(np.zeros((2, 2, 3)), 40.0, zero_stamp)
+        buffer.update_depth(np.zeros((2, 2)), 40.5, zero_stamp)
+        buffer.update_camera_info(object())
+
+        pair, status, offset = buffer.claim(40.6, 1.0, 0.25)
+
+        self.assertIsNone(pair)
         self.assertEqual(status, 'unpaired')
         self.assertAlmostEqual(offset, 0.5)
 

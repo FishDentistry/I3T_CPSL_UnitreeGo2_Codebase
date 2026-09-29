@@ -151,6 +151,14 @@ class GetCameraFrames(Node):
             self.get_logger().warn(f"CvBridge error: {e}")
             return
 
+        # The aligned RGB/depth pair represents the same camera acquisition.
+        # Keep frame_id empty for compatibility with existing consumers that
+        # select the camera TF frame through their own parameters.
+        acquisition_stamp = self.get_clock().now().to_msg()
+        color_msg.header.stamp = acquisition_stamp
+        depth_msg.header.stamp = acquisition_stamp
+        self.cam_info.header.stamp = acquisition_stamp
+
         self.color_pub.publish(color_msg)
         self.depth_pub.publish(depth_msg)
 

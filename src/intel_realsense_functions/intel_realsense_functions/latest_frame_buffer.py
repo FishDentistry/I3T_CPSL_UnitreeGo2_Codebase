@@ -25,6 +25,8 @@ class FramePair:
     rgb: object
     depth: object
     camera_info: object
+    stamp: object
+    stamp_nanoseconds: int
     rgb_receipt: float
     depth_receipt: float
     sequence: int
@@ -38,24 +40,41 @@ class LatestFrameBuffer:
         self._rgb = None
         self._depth = None
         self._camera_info = None
+        self._rgb_stamp = None
+        self._depth_stamp = None
+        self._rgb_stamp_nanoseconds = 0
+        self._depth_stamp_nanoseconds = 0
         self._rgb_receipt = None
         self._depth_receipt = None
         self._rgb_sequence = 0
         self._last_claimed_sequence = 0
         self._claim_active = False
 
-    def update_rgb(self, image, receipt):
+    @staticmethod
+    def _stamp_nanoseconds(stamp):
+        if stamp is None:
+            return 0
+        return (
+            int(getattr(stamp, 'sec', 0)) * 1000000000
+            + int(getattr(stamp, 'nanosec', 0))
+        )
+
+    def update_rgb(self, image, receipt, stamp=None):
         """Replace the stored RGB image with the newest received image."""
         with self._lock:
             self._rgb = image
             self._rgb_receipt = float(receipt)
+            self._rgb_stamp = stamp
+            self._rgb_stamp_nanoseconds = self._stamp_nanoseconds(stamp)
             self._rgb_sequence += 1
 
-    def update_depth(self, image, receipt):
+    def update_depth(self, image, receipt, stamp=None):
         """Replace the stored aligned depth image."""
         with self._lock:
             self._depth = image
             self._depth_receipt = float(receipt)
+            self._depth_stamp = stamp
+            self._depth_stamp_nanoseconds = self._stamp_nanoseconds(stamp)
 
     def update_camera_info(self, camera_info):
         """Replace the stored camera calibration message."""
@@ -78,9 +97,17 @@ class LatestFrameBuffer:
             if rgb_age > maximum_age or depth_age > maximum_age:
                 return None, 'stale', (rgb_age, depth_age)
 
-            pair_offset = abs(
-                self._rgb_receipt - self._depth_receipt
-            )
+            if (
+                    self._rgb_stamp_nanoseconds > 0
+                    and self._depth_stamp_nanoseconds > 0):
+                pair_offset = abs(
+                    self._rgb_stamp_nanoseconds
+                    - self._depth_stamp_nanoseconds
+                ) / 1000000000.0
+            else:
+                pair_offset = abs(
+                    self._rgb_receipt - self._depth_receipt
+                )
             if pair_offset > maximum_offset:
                 return None, 'unpaired', pair_offset
             if self._rgb_sequence == self._last_claimed_sequence:
@@ -90,6 +117,8 @@ class LatestFrameBuffer:
                 rgb=self._rgb.copy(),
                 depth=self._depth.copy(),
                 camera_info=self._camera_info,
+                stamp=self._rgb_stamp,
+                stamp_nanoseconds=self._rgb_stamp_nanoseconds,
                 rgb_receipt=self._rgb_receipt,
                 depth_receipt=self._depth_receipt,
                 sequence=self._rgb_sequence,

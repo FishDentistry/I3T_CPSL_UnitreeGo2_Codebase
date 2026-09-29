@@ -10,6 +10,9 @@ DINO.
 
 `getCameraFrames` connects directly to the RealSense device and publishes
 aligned 640 x 480 RGB and metric depth images at 15 frames per second.
+Each aligned RGB/depth pair receives the same ROS acquisition timestamp. The
+message frame IDs remain empty so existing consumers can continue selecting
+their camera TF frame through configuration.
 
 | Topic | Type | Description |
 | --- | --- | --- |
@@ -49,6 +52,7 @@ valid pair instead of processing an accumulated frame queue.
 | Input | `/realsense_depth_image` | `sensor_msgs/msg/Image` | Aligned metric depth image. |
 | Input | `/depth_camera_intrinsics` | `sensor_msgs/msg/CameraInfo` | Aligned image intrinsics. |
 | Output | `/grounding_dino/detections` | `std_msgs/msg/String` | JSON detection results. |
+| Output | `/grounding_dino/detection_array` | `intel_realsense_interfaces/msg/GroundedDetectionArray` | Structured detection results. |
 | Output | `/grounding_dino/annotated_image` | `sensor_msgs/msg/Image` | RGB image with detection boxes. |
 
 Detection targets may be provided as a single phrase, a comma-separated list,
@@ -67,11 +71,21 @@ ros2 topic pub --once /detection_targets std_msgs/msg/String \
 
 Publishing an empty string clears the active targets and stops inference.
 
-#### Detection result schema
+#### Detection result schemas
 
-The detection topic contains one JSON object per processed RGB/depth pair. An
-empty `detections` array is published when none of the requested targets is
-found. Coordinates use metres.
+Both detection topics describe the same processed RGB/depth pair and use its
+acquisition timestamp. An empty `detections` array is published when none of
+the requested targets is found. Coordinates use metres.
+
+`/grounding_dino/detection_array` is the preferred interface for ROS nodes. It
+uses `intel_realsense_interfaces/msg/GroundedDetectionArray`, with one
+`GroundedDetection` for each result. Boolean fields explicitly state whether
+valid depth, camera coordinates, and map coordinates are present. Its header
+frame ID is intentionally empty; the coordinate frames are named by the
+`camera_frame` and `map_frame` fields.
+
+`/grounding_dino/detections` retains the existing JSON representation for
+compatibility with current consumers:
 
 ```json
 {
@@ -120,7 +134,8 @@ Install the declared ROS dependencies and Python virtual-environment support:
 ```bash
 cd ~/I3T_CPSL_UnitreeGo2_Codebase
 source /opt/ros/foxy/setup.bash
-rosdep install --from-paths src/intel_realsense_functions \
+rosdep install --from-paths \
+  src/intel_realsense_functions src/intel_realsense_interfaces \
   --ignore-src --rosdistro foxy -r -y
 ```
 
@@ -225,7 +240,7 @@ cd ~/I3T_CPSL_UnitreeGo2_Codebase
 source /opt/ros/foxy/setup.bash
 source ~/.venvs/go2-groundingdino-py38/bin/activate
 python3 "$(command -v colcon)" build \
-  --packages-select intel_realsense_functions --symlink-install
+  --packages-up-to intel_realsense_functions --symlink-install
 source install/setup.bash
 ```
 
@@ -263,6 +278,7 @@ to be substantially slower.
 Monitor the results with:
 
 ```bash
+ros2 topic echo /grounding_dino/detection_array
 ros2 topic echo /grounding_dino/detections
 ros2 run rqt_image_view rqt_image_view \
   /grounding_dino/annotated_image
@@ -280,8 +296,9 @@ ros2 run rqt_image_view rqt_image_view \
 | `detection_rate_hz` | `1.0` | Maximum inference frequency. |
 | `camera_frame` | `front_camera` | Optical TF frame for camera coordinates. |
 | `map_frame` | `map` | TF frame for global coordinates. |
+| `structured_detections_topic` | `/grounding_dino/detection_array` | Structured detection output topic. |
 | `maximum_frame_age_sec` | `1.0` | Maximum accepted local receipt age. |
-| `maximum_pair_offset_sec` | `0.25` | Maximum RGB/depth receipt-time difference. |
+| `maximum_pair_offset_sec` | `0.25` | Maximum RGB/depth acquisition-time difference. |
 | `minimum_depth_m` | `0.15` | Minimum valid depth. |
 | `maximum_depth_m` | `6.0` | Maximum valid depth. |
 | `depth_center_fraction` | `0.5` | Central box fraction used for depth sampling. |
@@ -292,8 +309,16 @@ changing the source code.
 ## Coordinate and synchronization limitations
 
 The current `getCameraFrames` node aligns depth to the RGB stream before
-publishing, which permits direct use of the color intrinsics. Its published
-messages do not currently contain acquisition timestamps or frame IDs. The
-detector therefore pairs images by local receipt time and uses the most recent
-available TF transform. `maximum_frame_age_sec` and
-`maximum_pair_offset_sec` prevent use of clearly stale or mismatched frames.
+publishing, which permits direct use of the color intrinsics. It assigns the
+same nonzero ROS timestamp to both images in an aligned pair without assigning
+a frame ID. The detector pairs stamped images by acquisition time and requests
+the map transform at that same time. For compatibility with other camera
+publishers, zero-stamped images fall back to local receipt-time pairing and the
+latest available transform. `maximum_frame_age_sec` still uses local receipt
+age so delayed processing cannot make old images appear fresh.
+
+The timestamp addition does not change the image topics, types, encodings,
+dimensions, publication rate, or empty frame IDs. Existing consumers using
+`message_filters.ApproximateTimeSynchronizer`, including the ArUco node, still
+receive the same RGB/depth interface; equal pair timestamps make their
+synchronization deterministic and allow TF lookup at the image time.

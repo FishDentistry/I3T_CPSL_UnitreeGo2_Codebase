@@ -22,6 +22,8 @@ import time
 
 import cv2
 from cv_bridge import CvBridge, CvBridgeError
+from intel_realsense_interfaces.msg import GroundedDetection
+from intel_realsense_interfaces.msg import GroundedDetectionArray
 import numpy as np
 import rclpy
 from rclpy.duration import Duration
@@ -65,6 +67,10 @@ class GroundingDinoNode(Node):
         self.declare_parameter('targets_topic', '/detection_targets')
         self.declare_parameter(
             'detections_topic', '/grounding_dino/detections'
+        )
+        self.declare_parameter(
+            'structured_detections_topic',
+            '/grounding_dino/detection_array',
         )
         self.declare_parameter(
             'annotated_image_topic',
@@ -121,6 +127,11 @@ class GroundingDinoNode(Node):
         self._detections_publisher = self.create_publisher(
             String,
             self.get_parameter('detections_topic').value,
+            10,
+        )
+        self._structured_detections_publisher = self.create_publisher(
+            GroundedDetectionArray,
+            self.get_parameter('structured_detections_topic').value,
             10,
         )
         self._annotated_publisher = self.create_publisher(
@@ -204,7 +215,10 @@ class GroundingDinoNode(Node):
             threshold = float(self.get_parameter(name).value)
             if not 0.0 <= threshold <= 1.0:
                 raise RuntimeError('{} must be in [0, 1]'.format(name))
-        for name in ('camera_frame', 'map_frame'):
+        for name in (
+                'camera_frame',
+                'map_frame',
+                'structured_detections_topic'):
             if not str(self.get_parameter(name).value).strip():
                 raise RuntimeError('{} must not be empty'.format(name))
 
@@ -241,7 +255,9 @@ class GroundingDinoNode(Node):
             self._warn_throttled('rgb_conversion', str(error))
             return
         self._frame_buffer.update_rgb(
-            np.ascontiguousarray(image), time.monotonic()
+            np.ascontiguousarray(image),
+            time.monotonic(),
+            message.header.stamp,
         )
 
     def _depth_callback(self, message):
@@ -255,6 +271,7 @@ class GroundingDinoNode(Node):
         self._frame_buffer.update_depth(
             np.ascontiguousarray(image, dtype=np.float32),
             time.monotonic(),
+            message.header.stamp,
         )
 
     def _camera_info_callback(self, message):
@@ -295,7 +312,7 @@ class GroundingDinoNode(Node):
         elif status == 'unpaired':
             self._warn_throttled(
                 'unpaired_camera_data',
-                'RGB and depth receipt times differ by {:.3f} seconds'.format(
+                'RGB and depth timestamps differ by {:.3f} seconds'.format(
                     details
                 ),
             )
@@ -314,12 +331,13 @@ class GroundingDinoNode(Node):
             float(camera_info.k[5]) * scale_y,
         )
 
-    def _latest_map_transform(self, camera_frame, map_frame):
+    def _latest_map_transform(
+            self, camera_frame, map_frame, acquisition_time):
         try:
             return self._tf_buffer.lookup_transform(
                 map_frame,
                 camera_frame,
-                Time(),
+                acquisition_time,
                 timeout=Duration(seconds=0.05),
             )
         except TransformException as error:
@@ -451,6 +469,55 @@ class GroundingDinoNode(Node):
         message.header.frame_id = frame
         self._annotated_publisher.publish(message)
 
+    @staticmethod
+    def _structured_detection(detection):
+        message = GroundedDetection()
+        message.label = detection['label']
+        message.requested_target = detection['requested_target']
+        message.score = float(detection['score'])
+
+        box = detection['bounding_box_pixels']
+        message.x_min = int(box['x_min'])
+        message.y_min = int(box['y_min'])
+        message.x_max = int(box['x_max'])
+        message.y_max = int(box['y_max'])
+
+        camera_position = detection['camera_coordinates_m']
+        message.has_camera_position = camera_position is not None
+        if camera_position is not None:
+            message.camera_position.x = float(camera_position['x'])
+            message.camera_position.y = float(camera_position['y'])
+            message.camera_position.z = float(camera_position['z'])
+
+        map_position = detection['map_coordinates_m']
+        message.has_map_position = map_position is not None
+        if map_position is not None:
+            message.map_position.x = float(map_position['x'])
+            message.map_position.y = float(map_position['y'])
+            message.map_position.z = float(map_position['z'])
+
+        message.depth_sample_count = int(detection['depth_sample_count'])
+        depth_pixel = detection.get('depth_pixel')
+        message.has_depth = depth_pixel is not None
+        if depth_pixel is not None:
+            message.depth_pixel_u = float(depth_pixel['u'])
+            message.depth_pixel_v = float(depth_pixel['v'])
+        return message
+
+    def _publish_structured_detections(
+            self, stamp, settings, map_transform, detections):
+        message = GroundedDetectionArray()
+        message.header.stamp = stamp
+        message.requested_targets = list(settings['targets'])
+        message.camera_frame = settings['camera_frame']
+        message.map_frame = settings['map_frame']
+        message.map_transform_available = map_transform is not None
+        message.detections = [
+            self._structured_detection(detection)
+            for detection in detections
+        ]
+        self._structured_detections_publisher.publish(message)
+
     def _process_latest_frame(self):
         with self._state_lock:
             if self._shutting_down or not self._targets:
@@ -543,8 +610,12 @@ class GroundingDinoNode(Node):
 
         camera_frame = settings['camera_frame']
         map_frame = settings['map_frame']
+        if frame.stamp_nanoseconds > 0:
+            acquisition_time = Time.from_msg(frame.stamp)
+        else:
+            acquisition_time = Time()
         map_transform = self._latest_map_transform(
-            camera_frame, map_frame
+            camera_frame, map_frame, acquisition_time
         )
         try:
             detections = [
@@ -573,7 +644,10 @@ class GroundingDinoNode(Node):
                     or settings['targets_revision'] != self._targets_revision):
                 return
 
-        stamp = self.get_clock().now().to_msg()
+        if frame.stamp_nanoseconds > 0:
+            stamp = frame.stamp
+        else:
+            stamp = self.get_clock().now().to_msg()
         payload = {
             'stamp': {
                 'sec': stamp.sec,
@@ -590,6 +664,9 @@ class GroundingDinoNode(Node):
             payload, separators=(',', ':'), allow_nan=False
         )
         self._detections_publisher.publish(message)
+        self._publish_structured_detections(
+            stamp, settings, map_transform, detections
+        )
         self._publish_annotated_image(
             image_rgb, detections, stamp, camera_frame
         )
