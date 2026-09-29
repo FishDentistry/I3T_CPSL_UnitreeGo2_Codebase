@@ -293,7 +293,7 @@ ros2 run rqt_image_view rqt_image_view \
 | `device` | `auto` | Torch device: `auto`, `cpu`, `cuda`, or `cuda:N`. |
 | `box_threshold` | `0.35` | Minimum object-box score. |
 | `text_threshold` | `0.25` | Minimum token score used to form a label. |
-| `detection_rate_hz` | `1.0` | Maximum inference frequency. |
+| `detection_rate_hz` | `5.0` | Maximum inference frequency. |
 | `camera_frame` | `front_camera` | Optical TF frame for camera coordinates. |
 | `map_frame` | `map` | TF frame for global coordinates. |
 | `structured_detections_topic` | `/grounding_dino/detection_array` | Structured detection output topic. |

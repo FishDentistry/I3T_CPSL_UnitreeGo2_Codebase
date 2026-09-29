@@ -83,7 +83,7 @@ class GroundingDinoNode(Node):
         self.declare_parameter('device', 'auto')
         self.declare_parameter('box_threshold', 0.35)
         self.declare_parameter('text_threshold', 0.25)
-        self.declare_parameter('detection_rate_hz', 1.0)
+        self.declare_parameter('detection_rate_hz', 5.0)
         self.declare_parameter('maximum_frame_age_sec', 1.0)
         self.declare_parameter('maximum_pair_offset_sec', 0.25)
         self.declare_parameter('minimum_depth_m', 0.15)
