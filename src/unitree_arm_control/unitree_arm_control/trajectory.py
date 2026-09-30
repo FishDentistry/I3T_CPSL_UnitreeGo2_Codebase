@@ -119,12 +119,19 @@ def validate_segment_velocities(
         waypoint_positions,
         start_positions,
         joint_names,
-        velocity_limits):
+        velocity_limits,
+        zero_time_start_tolerances=None):
     """Reject segments whose average velocity exceeds a joint limit."""
     if len(joint_names) != len(start_positions):
         raise TrajectoryError('joint and start position counts must match')
     if len(velocity_limits) != len(joint_names):
         raise TrajectoryError('joint and velocity limit counts must match')
+    if (
+            zero_time_start_tolerances is not None
+            and len(zero_time_start_tolerances) != len(joint_names)):
+        raise TrajectoryError(
+            'joint and zero-time start tolerance counts must match'
+        )
 
     previous_time = 0.0
     previous_positions = tuple(start_positions)
@@ -136,6 +143,13 @@ def validate_segment_velocities(
                 previous_positions, positions, velocity_limits)):
             movement = abs(end - start)
             if duration <= 0.0 and movement > 0.0:
+                if (
+                        point_index == 0
+                        and zero_time_start_tolerances is not None
+                        and movement <= zero_time_start_tolerances[
+                            joint_index
+                        ]):
+                    continue
                 raise TrajectoryError(
                     'point {} moves {} with no time available'.format(
                         point_index, joint_names[joint_index]

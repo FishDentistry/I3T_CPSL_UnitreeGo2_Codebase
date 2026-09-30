@@ -102,7 +102,7 @@ ros2 service call /d1_arm_controller/set_joint \
 ros2 service call /d1_arm_controller/set_arm_enabled \
   unitree_arm/srv/SetArmEnabled "{enabled: false}"
 
-# Move to the measured lay-down pose, confirm it from feedback, then release
+# Move to the measured lay-down stowed pose, confirm it from feedback, then release
 # all joints. Support the arm and keep its entire path clear before calling.
 ros2 service call /d1_arm_controller/lay_down_and_release \
   unitree_arm/srv/LayDownArm "{}"

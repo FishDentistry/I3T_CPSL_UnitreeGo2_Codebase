@@ -499,6 +499,16 @@ class D1ArmController(Node):
                 start_positions,
                 D1_JOINT_STATE_NAMES,
                 D1_JOINT_VELOCITY_LIMITS,
+                tuple(
+                    self._double_parameter(
+                        'trajectory_gripper_tolerance_m'
+                    )
+                    if name == 'd1_gripper_joint'
+                    else self._double_parameter(
+                        'trajectory_goal_tolerance_radians'
+                    )
+                    for name in D1_JOINT_STATE_NAMES
+                ),
             )
 
             # Validate every expanded waypoint against the configured D1

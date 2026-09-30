@@ -99,6 +99,28 @@ class TrajectoryTest(unittest.TestCase):
                 (1.0,),
             )
 
+    def test_velocity_validation_accepts_close_zero_time_start(self):
+        trajectory.validate_segment_velocities(
+            (0.0, 1.0),
+            ((0.01,), (0.5,)),
+            (0.0,),
+            ('joint_0',),
+            (1.0,),
+            (0.035,),
+        )
+
+    def test_velocity_validation_rejects_distant_zero_time_start(self):
+        with self.assertRaisesRegex(
+                trajectory.TrajectoryError, 'no time available'):
+            trajectory.validate_segment_velocities(
+                (0.0, 1.0),
+                ((0.1,), (0.5,)),
+                (0.0,),
+                ('joint_0',),
+                (1.0,),
+                (0.035,),
+            )
+
     def test_position_validation_rejects_motion_beyond_limit(self):
         with self.assertRaisesRegex(
                 trajectory.TrajectoryError, 'position limit'):
