@@ -29,6 +29,11 @@ def generate_launch_description():
         'launch',
         'd1_arm.launch.py'
     )
+    moveit_launch_file = os.path.join(
+        get_package_share_directory('unitree_arm_control'),
+        'launch',
+        'd1_moveit.launch.py'
+    )
 
     return LaunchDescription([
 
@@ -37,7 +42,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'launch_arm',
             default_value='false',
-            description='Launch the D1 arm wrapper.'
+            description='Launch the D1 arm wrapper and MoveIt.'
         ),
 
         DeclareLaunchArgument(
@@ -103,6 +108,14 @@ def generate_launch_description():
             condition=IfCondition(launch_arm),
             launch_arguments={
                 'commanding_enabled': arm_command_enabled,
+            }.items()
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(moveit_launch_file),
+            condition=IfCondition(launch_arm),
+            launch_arguments={
+                'use_rviz': 'false',
+                'allow_trajectory_execution': 'true',
             }.items()
         ),
         Node(

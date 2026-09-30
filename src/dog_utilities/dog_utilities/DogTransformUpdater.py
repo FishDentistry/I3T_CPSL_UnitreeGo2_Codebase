@@ -216,18 +216,18 @@ class RobotBaseNode(Node):
         joint_state = JointState()
         joint_state.header.stamp = self.get_clock().now().to_msg()
         joint_state.name = [
-            'robot0/FL_hip_joint',
-            'robot0/FL_thigh_joint',
-            'robot0/FL_calf_joint',
-            'robot0/FR_hip_joint',
-            'robot0/FR_thigh_joint',
-            'robot0/FR_calf_joint',
-            'robot0/RL_hip_joint',
-            'robot0/RL_thigh_joint',
-            'robot0/RL_calf_joint',
-            'robot0/RR_hip_joint',
-            'robot0/RR_thigh_joint',
-            'robot0/RR_calf_joint',
+            'FL_hip_joint',
+            'FL_thigh_joint',
+            'FL_calf_joint',
+            'FR_hip_joint',
+            'FR_thigh_joint',
+            'FR_calf_joint',
+            'RL_hip_joint',
+            'RL_thigh_joint',
+            'RL_calf_joint',
+            'RR_hip_joint',
+            'RR_thigh_joint',
+            'RR_calf_joint',
         ]
         joint_state.position = [
             msg.motor_state[3].q, msg.motor_state[4].q, msg.motor_state[5].q,

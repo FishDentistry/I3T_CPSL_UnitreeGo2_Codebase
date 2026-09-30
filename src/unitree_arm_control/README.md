@@ -313,19 +313,22 @@ source install/setup.bash
 
 ### Planning-only verification
 
-Start the normal robot stack with the arm wrapper present but physical arm
-commands disabled:
+Starting `dog.launch.py` with `launch_arm:=true` now starts the D1 wrapper and
+MoveIt `move_group`. MoveIt trajectory execution is available, but no RViz
+process is started. For the first verification, keep physical arm commands
+disabled so the D1 action server will reject any accidental execution request:
 
 ```bash
 ros2 launch go2_launcher dog.launch.py \
   launch_arm:=true arm_command_enabled:=false
 ```
 
-In another sourced terminal, start MoveIt. Trajectory execution is disabled by
-default:
+To inspect planning interactively, start only the supplied MoveIt RViz view in
+another sourced terminal. Do not start a second `move_group` process:
 
 ```bash
-ros2 launch unitree_arm_control d1_moveit.launch.py
+ros2 launch unitree_arm_control d1_moveit.launch.py \
+  start_move_group:=false
 ```
 
 RViz opens with the `d1_arm` planning group selected. Confirm that the orange
@@ -339,9 +342,10 @@ modify the Go2 navigation transforms.
 
 ### Physical execution
 
-Physical execution has two independent safety gates. The D1 wrapper must
-permit commands, and the MoveIt launch must permit trajectory execution.
-Before enabling either gate, confirm current arm feedback, model alignment,
+When `launch_arm:=true`, `dog.launch.py` starts MoveIt with trajectory
+execution enabled and without RViz. Physical motion still requires
+`arm_command_enabled:=true`; the D1 wrapper remains the final hardware-command
+safety gate. Before enabling it, confirm current arm feedback, model alignment,
 physical clearance, and access to the hardware emergency stop.
 
 Start the robot stack with D1 commands enabled:
@@ -351,11 +355,12 @@ ros2 launch go2_launcher dog.launch.py \
   launch_arm:=true arm_command_enabled:=true
 ```
 
-Then start MoveIt with execution enabled:
+If an interactive view is required, start the RViz-only launch in another
+sourced terminal:
 
 ```bash
 ros2 launch unitree_arm_control d1_moveit.launch.py \
-  allow_trajectory_execution:=true
+  start_move_group:=false
 ```
 
 Use **Plan** first and inspect the entire animated path. Only then use
@@ -369,5 +374,4 @@ The gripper is represented in the semantic model and collision geometry, but
 is not yet exposed to MoveIt through a `GripperCommand` action. Continue using
 the arm-control services for gripper commands until that action interface is
 added.
-
 

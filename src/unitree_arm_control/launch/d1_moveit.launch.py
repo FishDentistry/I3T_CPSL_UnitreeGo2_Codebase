@@ -94,7 +94,7 @@ def generate_launch_description():
         'trajectory_execution.allowed_execution_duration_scaling': 2.0,
         'trajectory_execution.allowed_goal_duration_margin': 3.0,
         'trajectory_execution.allowed_start_tolerance': 0.035,
-        'trajectory_execution.controller_connection_timeout': 5.0,
+        'trajectory_execution.controller_connection_timeout': 15.0,
     }
     planning_scene_monitor = {
         'publish_planning_scene': True,
@@ -118,6 +118,7 @@ def generate_launch_description():
             trajectory_execution,
             planning_scene_monitor,
         ],
+        condition=IfCondition(LaunchConfiguration('start_move_group')),
     )
 
     rviz = Node(
@@ -140,6 +141,11 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'start_move_group',
+            default_value='true',
+            description='Start move_group; disable for an RViz-only launch.',
+        ),
         DeclareLaunchArgument(
             'use_rviz',
             default_value='true',
