@@ -2,16 +2,21 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 import os
 
 def generate_launch_description():
-    urdf_file = os.path.join(
+    base_urdf_file = os.path.join(
         get_package_share_directory('dog_utilities'),
         'urdf',
         'go2_with_realsense.urdf'
+    )
+    arm_urdf_file = os.path.join(
+        get_package_share_directory('dog_utilities'),
+        'urdf',
+        'go2_with_realsense_and_arm.urdf'
     )
 
     collect_realsense = LaunchConfiguration('collect_realsense')
@@ -56,7 +61,20 @@ def generate_launch_description():
             package='robot_state_publisher',
             executable='robot_state_publisher',
             name='robot_state_publisher',
-            parameters=[{'robot_description': open(urdf_file).read()}],
+            parameters=[{
+                'robot_description': open(base_urdf_file).read()
+            }],
+            output='screen',
+            condition=UnlessCondition(launch_arm)
+        ),
+        Node(
+            package='robot_state_publisher',
+            executable='robot_state_publisher',
+            name='robot_state_publisher',
+            parameters=[{
+                'robot_description': open(arm_urdf_file).read()
+            }],
+            condition=IfCondition(launch_arm),
             output='screen'
         ),
         Node(
