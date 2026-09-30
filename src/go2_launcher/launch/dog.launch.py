@@ -23,6 +23,9 @@ def generate_launch_description():
     internal_board_ip = LaunchConfiguration('internal_board_ip')
     launch_arm = LaunchConfiguration('launch_arm')
     arm_command_enabled = LaunchConfiguration('arm_command_enabled')
+    grasp_execution_enabled = LaunchConfiguration(
+        'grasp_execution_enabled'
+    )
 
     arm_launch_file = os.path.join(
         get_package_share_directory('unitree_arm_control'),
@@ -50,6 +53,15 @@ def generate_launch_description():
             default_value='false',
             description=(
                 'Allow the D1 arm wrapper to publish physical commands.'
+            )
+        ),
+
+        DeclareLaunchArgument(
+            'grasp_execution_enabled',
+            default_value='false',
+            description=(
+                'Allow semantic grasp commands to execute the guarded '
+                'pre-grasp motion.'
             )
         ),
 
@@ -116,6 +128,7 @@ def generate_launch_description():
             launch_arguments={
                 'use_rviz': 'false',
                 'allow_trajectory_execution': 'true',
+                'grasp_execution_enabled': grasp_execution_enabled,
             }.items()
         ),
         Node(

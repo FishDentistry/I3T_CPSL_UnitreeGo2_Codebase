@@ -38,6 +38,8 @@ setup(
     entry_points={
         'console_scripts': [
             'd1_arm_controller = unitree_arm_control.controller:main',
+            'd1_grasp_coordinator = '
+            'unitree_arm_control.grasp_coordinator:main',
             'd1_trajectory_test = unitree_arm_control.trajectory_test:main',
         ],
     },

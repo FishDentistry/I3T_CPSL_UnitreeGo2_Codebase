@@ -88,6 +88,10 @@ def generate_launch_description():
         LaunchConfiguration('allow_trajectory_execution'),
         value_type=bool,
     )
+    grasp_execution = ParameterValue(
+        LaunchConfiguration('grasp_execution_enabled'),
+        value_type=bool,
+    )
     trajectory_execution = {
         'allow_trajectory_execution': allow_execution,
         'moveit_manage_controllers': False,
@@ -119,6 +123,20 @@ def generate_launch_description():
             planning_scene_monitor,
         ],
         condition=IfCondition(LaunchConfiguration('start_move_group')),
+    )
+
+    grasp_coordinator = Node(
+        package='unitree_arm_control',
+        executable='d1_grasp_coordinator',
+        name='d1_grasp_coordinator',
+        output='screen',
+        parameters=[
+            os.path.join(config_directory, 'grasping.yaml'),
+            {'execution_enabled': grasp_execution},
+        ],
+        condition=IfCondition(
+            LaunchConfiguration('start_grasp_coordinator')
+        ),
     )
 
     rviz = Node(
@@ -158,6 +176,23 @@ def generate_launch_description():
                 'Allow MoveIt to send plans to the physical D1 controller.'
             ),
         ),
+        DeclareLaunchArgument(
+            'start_grasp_coordinator',
+            default_value=LaunchConfiguration('start_move_group'),
+            description=(
+                'Start the semantic grasp coordinator. By default this '
+                'matches start_move_group.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'grasp_execution_enabled',
+            default_value='false',
+            description=(
+                'Allow semantic grasp commands to execute only the guarded '
+                'pre-grasp motion.'
+            ),
+        ),
         move_group,
+        grasp_coordinator,
         rviz,
     ])

@@ -375,3 +375,97 @@ is not yet exposed to MoveIt through a `GripperCommand` action. Continue using
 the arm-control services for gripper commands until that action interface is
 added.
 
+## Semantic grasp coordinator
+
+`d1_grasp_coordinator` is the command-driven foundation for semantic pick
+behavior. It subscribes to the stable object identities on `/semantic_map` and
+accepts `unitree_arm/msg/GraspCommand` messages on `/d1_grasp/command`.
+
+A command supplies a required semantic class and an optional stable object ID.
+When the ID is empty, the coordinator selects the closest eligible active
+object of that class. Supplying an ID is recommended whenever more than one
+object of the same class is present.
+
+Before planning, the coordinator requires the selected object to be active,
+recently observed, confirmed by at least three observations, and at or above
+the configured confidence threshold. It transforms the map position into
+`base_link`, applies the configured pre-grasp offset, checks the permitted
+reach and height envelope, publishes the proposed pose, and submits a pose
+goal to the existing MoveIt `move_group` action.
+
+The initial implementation deliberately stops at pre-grasp:
+
+- `grasp_execution_enabled:=false` is the default. Commands produce a plan but
+  do not move the arm.
+- When pre-grasp execution is enabled, velocity and acceleration are limited
+  to conservative scaling factors and the node stops after reaching the
+  offset pose.
+- Cartesian contact approach, gripper closure, attachment to the planning
+  scene, and retreat are not yet performed.
+- Support surfaces and detected-object geometry are not yet inserted into the
+  MoveIt planning scene. Physical pre-grasp execution therefore requires a
+  manually verified clear volume around the entire planned path.
+- Only one request is processed at a time, and the most recent request IDs are
+  not accepted twice.
+
+The defaults are stored in `config/grasping.yaml`. The initial target is 0.15
+metres above the mapped object along the map-frame Z axis, with the gripper
+tool Z axis pointing down. These values must be verified against the mounted
+arm in RViz before physical pre-grasp execution.
+
+### Plan-only command
+
+Start the robot and MoveIt normally. The coordinator starts automatically in
+plan-only mode:
+
+```bash
+ros2 launch go2_launcher dog.launch.py \
+  launch_arm:=true arm_command_enabled:=false
+```
+
+The semantic-mapping stack must also be running and publishing confirmed
+objects. Inspect the available identities and coordinator output:
+
+```bash
+ros2 topic echo /semantic_map
+ros2 topic echo /d1_grasp/status
+```
+
+Request a specific mapped cup:
+
+```bash
+ros2 topic pub --once /d1_grasp/command \
+  unitree_arm/msg/GraspCommand \
+  "{request_id: 'cup_request_001', object_class: 'cup', \
+  object_id: 'object_000001'}"
+```
+
+To select the closest eligible cup instead, leave `object_id` empty:
+
+```bash
+ros2 topic pub --once /d1_grasp/command \
+  unitree_arm/msg/GraspCommand \
+  "{request_id: 'cup_request_002', object_class: 'cup', object_id: ''}"
+```
+
+The generated pose is published as
+`geometry_msgs/msg/PoseStamped` on `/d1_grasp/pregrasp_pose` for inspection in
+RViz. A successful plan-only request terminates with
+`STAGE_PLAN_READY` on `/d1_grasp/status`.
+
+### Guarded pre-grasp execution
+
+After the generated pose and complete animated path have been inspected, the
+pre-grasp movement can be enabled independently of general arm commands:
+
+```bash
+ros2 launch go2_launcher dog.launch.py \
+  launch_arm:=true \
+  arm_command_enabled:=true \
+  grasp_execution_enabled:=true
+```
+
+Publishing a new request ID then allows MoveIt to execute only the pre-grasp
+motion. Successful completion is reported as `STAGE_PREGRASP_REACHED`, with a
+message stating that the contact safeguard stopped the sequence before the
+object was touched.

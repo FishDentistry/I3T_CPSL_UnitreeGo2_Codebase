@@ -1,4 +1,4 @@
-# Setup process and ROS code for using Unitree GO2 EDU quadruped with essential ROS functionality. Functionalities include pointcloud and laserscan acquisition, SLAM, Nav2 navigation, camera data, etc.
+# Setup process and ROS code for using Unitree GO2 EDU quadruped with essential ROS functionality. Functionalities include pointcloud and laserscan acquisition, SLAM, Nav2 navigation, camera data, D1 arm control, etc.
 ### This guide assumes you have a GO2 or other robot equipped with an Intel Realsense D435i and a Livox LiDar
 ### and that both of these components have been mounted on the robot following the official docs.
 ### It also assumes the robot is running ROS2 Foxy, but this shouldn't cause many issues.
@@ -128,7 +128,7 @@ The `unitree_arm` package defines the D1 `ArmString` wire message and typed
 feedback/service interfaces. The `unitree_arm_control` package adds a
 passive-by-default ROS 2 wrapper for parsing `/arm_Feedback` and safely
 publishing validated commands to `/arm_Command`. It communicates through the
-existing ROS 2/CycloneDDS topics and does not require changes to Unitree SDK2.
+existing ROS 2/CycloneDDS topics and does not require changes to Unitree SDK2. This repo includes MoveIt functionality for controlling the arm detailed in that packages readme.
 
 See [`src/unitree_arm_control/README.md`](src/unitree_arm_control/README.md) for
 build, feedback verification, launch, and command examples.
