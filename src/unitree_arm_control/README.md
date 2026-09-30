@@ -111,7 +111,7 @@ ros2 service call /d1_arm_controller/lay_down_and_release \
 The measured lay-down joint values in degrees, J0 through J6, are:
 
 ```text
-[-83.80000305175781, -90.80000305175781, 89.80000305175781,
+[-83.80000305175781, -90.0, 89.80000305175781,
  -10.600000381469727, 6.400000095367432, -2.0999999046325684,
  -0.8999999761581421]
 ```

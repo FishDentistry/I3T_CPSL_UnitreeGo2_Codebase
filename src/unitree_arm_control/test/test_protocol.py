@@ -51,7 +51,7 @@ class ProtocolTest(unittest.TestCase):
     def test_lay_down_command_uses_measured_pose(self):
         expected_angles = (
             -83.80000305175781,
-            -90.80000305175781,
+            -90.0,
             89.80000305175781,
             -10.600000381469727,
             6.400000095367432,

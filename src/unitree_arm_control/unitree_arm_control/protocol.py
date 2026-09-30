@@ -34,7 +34,7 @@ TRAJECTORY = 1
 # dedicated lay-down command is permitted to send this known pose unchanged.
 LAY_DOWN_ANGLES_DEGREES = (
     -83.80000305175781,
-    -90.80000305175781,
+    -90.0,
     89.80000305175781,
     -10.600000381469727,
     6.400000095367432,
