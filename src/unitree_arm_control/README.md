@@ -51,6 +51,7 @@ variants do not expose a consistent command range/unit for it.
 ## Build and verify on the robot workspace
 
 ```bash
+sudo apt install ros-foxy-control-msgs
 cd ~/I3T_CPSL_UnitreeGo2_Codebase
 source /opt/ros/foxy/setup.bash
 colcon build --packages-up-to unitree_arm_control --symlink-install
@@ -225,11 +226,14 @@ ros2 service call /d1_arm_controller/set_arm_enabled \
   unitree_arm/srv/SetArmEnabled "{enabled: true}"
 ```
 
-The included test reads the current joint state, moves only `d1_joint_5` by
-five degrees over two seconds, holds for one second, and returns to the exact
-starting joint state over two seconds. It automatically reverses the movement
-when the positive direction would cross that joint's limit. The gripper and
-all other arm joints retain their measured starting positions.
+The included test reads the current joint state, rotates only `d1_joint_5`
+(the final wrist-roll joint) by five degrees over two seconds, holds for one
+second, and returns to the exact starting joint state over two seconds. This
+is intentionally subtle: the expected visible motion is a small twist of the
+entire gripper assembly, not opening or closing the gripper fingers. The test
+automatically reverses the movement when the positive direction would cross
+that joint's limit. The gripper and all other arm joints retain their measured
+starting positions.
 
 Run the test only after visually confirming that the RViz arm pose agrees with
 the physical arm:
@@ -237,6 +241,11 @@ the physical arm:
 ```bash
 ros2 run unitree_arm_control d1_trajectory_test
 ```
+
+The test checks action feedback throughout the motion and fails if it does not
+observe at least half of the requested outward displacement. This prevents a
+stationary arm from passing merely because the trajectory finishes at the
+same position from which it started.
 
 The test displacement can be reduced or another revolute joint selected:
 
@@ -246,6 +255,16 @@ ros2 run unitree_arm_control d1_trajectory_test --ros-args \
   -p delta_degrees:=3.0 \
   -p move_duration_sec:=3.0 \
   -p hold_duration_sec:=1.0
+```
+
+After the default wrist-roll test succeeds, a slightly more visible wrist-pitch
+test can be run with the arm's local clearance checked first:
+
+```bash
+ros2 run unitree_arm_control d1_trajectory_test --ros-args \
+  -p joint_name:=d1_joint_4 \
+  -p delta_degrees:=3.0 \
+  -p move_duration_sec:=3.0
 ```
 
 Pressing `Ctrl+C` asks the action server to cancel the active trajectory and
