@@ -1413,11 +1413,12 @@ Stephen Brawner (brawner@gmail.com)
 
 
   <!-- Unitree D1-550 arm. The fixed transform places the D1 base on the
-       standard Go2 top mount. Arm joint 0 through joint 5 correspond to
-       hardware joints J0 through J5. The paired gripper represents J6, but
+       Go2 top mount with the measured installation yaw. Arm joint 0 through
+       joint 5 correspond to hardware joints J0 through J5. The paired
+       gripper represents J6, but
        J6 feedback must be converted from actuator units to finger travel. -->
   <joint name="d1_mount_joint" type="fixed">
-    <origin xyz="-0.046 0 0.083" rpy="0 0 0" />
+    <origin xyz="-0.046 0 0.083" rpy="0 0 -1.57079633" />
     <parent link="base_link" />
     <child link="d1_base_link" />
   </joint>
