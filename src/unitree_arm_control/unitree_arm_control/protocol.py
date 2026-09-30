@@ -191,6 +191,54 @@ def joint_state_positions_from_degrees(
     ) + (fraction_open * maximum_travel,)
 
 
+def d1_degrees_from_joint_state_positions(
+        joint_positions,
+        gripper_closed_degrees=0.0,
+        gripper_open_degrees=30.0,
+        gripper_max_travel_m=0.03):
+    """Convert URDF joint positions to the seven D1 command values.
+
+    The six revolute joints are converted from radians to degrees. The
+    prismatic gripper position is mapped from metres back to its configured
+    D1 command range.
+    """
+    if len(joint_positions) != JOINT_COUNT:
+        raise ProtocolError('exactly seven joint positions are required')
+
+    positions = tuple(
+        _require_number(value, 'position{}'.format(index))
+        for index, value in enumerate(joint_positions)
+    )
+    closed = _require_number(
+        gripper_closed_degrees, 'gripper_closed_degrees'
+    )
+    opened = _require_number(
+        gripper_open_degrees, 'gripper_open_degrees'
+    )
+    maximum_travel = _require_number(
+        gripper_max_travel_m, 'gripper_max_travel_m'
+    )
+    if opened == closed:
+        raise ProtocolError(
+            'gripper_open_degrees must differ from '
+            'gripper_closed_degrees'
+        )
+    if maximum_travel <= 0.0:
+        raise ProtocolError('gripper_max_travel_m must be positive')
+    if not 0.0 <= positions[6] <= maximum_travel:
+        raise ProtocolError(
+            'gripper position {} is outside [0.0, {}] metres'.format(
+                positions[6], maximum_travel
+            )
+        )
+
+    fraction_open = positions[6] / maximum_travel
+    gripper_degrees = closed + fraction_open * (opened - closed)
+    return tuple(
+        math.degrees(value) for value in positions[:ARM_JOINT_COUNT]
+    ) + (gripper_degrees,)
+
+
 def _require_flag(value, field_name):
     if value not in (0, 1) or isinstance(value, bool):
         raise ProtocolError('{} must be 0 or 1'.format(field_name))

@@ -27,6 +27,18 @@ def generate_launch_description():
     lay_down_required_samples = LaunchConfiguration(
         'lay_down_required_samples'
     )
+    trajectory_command_rate_hz = LaunchConfiguration(
+        'trajectory_command_rate_hz'
+    )
+    trajectory_goal_tolerance_radians = LaunchConfiguration(
+        'trajectory_goal_tolerance_radians'
+    )
+    trajectory_gripper_tolerance_m = LaunchConfiguration(
+        'trajectory_gripper_tolerance_m'
+    )
+    trajectory_goal_timeout_sec = LaunchConfiguration(
+        'trajectory_goal_timeout_sec'
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -88,6 +100,26 @@ def generate_launch_description():
             default_value='3',
             description='Consecutive in-tolerance samples before release.',
         ),
+        DeclareLaunchArgument(
+            'trajectory_command_rate_hz',
+            default_value='10.0',
+            description='Rate used to stream interpolated trajectory points.',
+        ),
+        DeclareLaunchArgument(
+            'trajectory_goal_tolerance_radians',
+            default_value='0.035',
+            description='Default final tolerance for arm joints.',
+        ),
+        DeclareLaunchArgument(
+            'trajectory_gripper_tolerance_m',
+            default_value='0.005',
+            description='Default final tolerance for the gripper joint.',
+        ),
+        DeclareLaunchArgument(
+            'trajectory_goal_timeout_sec',
+            default_value='3.0',
+            description='Time allowed for final feedback convergence.',
+        ),
         Node(
             package='unitree_arm_control',
             executable='d1_arm_controller',
@@ -109,6 +141,18 @@ def generate_launch_description():
                 ),
                 'lay_down_timeout_sec': lay_down_timeout_sec,
                 'lay_down_required_samples': lay_down_required_samples,
+                'trajectory_command_rate_hz': (
+                    trajectory_command_rate_hz
+                ),
+                'trajectory_goal_tolerance_radians': (
+                    trajectory_goal_tolerance_radians
+                ),
+                'trajectory_gripper_tolerance_m': (
+                    trajectory_gripper_tolerance_m
+                ),
+                'trajectory_goal_timeout_sec': (
+                    trajectory_goal_timeout_sec
+                ),
             }],
         ),
     ])

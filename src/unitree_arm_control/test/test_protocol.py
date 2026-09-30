@@ -135,6 +135,23 @@ class ProtocolTest(unittest.TestCase):
                 gripper_open_degrees=1.0,
             )
 
+    def test_joint_state_command_conversion_round_trips(self):
+        original_degrees = [10, -20, 30, -40, 50, -60, 15]
+        positions = protocol.joint_state_positions_from_degrees(
+            original_degrees
+        )
+        converted = protocol.d1_degrees_from_joint_state_positions(
+            positions
+        )
+        for actual, expected in zip(converted, original_degrees):
+            self.assertAlmostEqual(actual, expected)
+
+    def test_joint_state_command_rejects_invalid_gripper_travel(self):
+        with self.assertRaisesRegex(protocol.ProtocolError, 'outside'):
+            protocol.d1_degrees_from_joint_state_positions(
+                [0, 0, 0, 0, 0, 0, 0.031]
+            )
+
     def test_parse_status_feedback(self):
         feedback = protocol.parse_feedback(json.dumps({
             'seq': 10,

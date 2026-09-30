@@ -85,7 +85,7 @@ Examples (these can move or release the physical arm):
 ros2 service call /d1_arm_controller/set_arm_enabled \
   unitree_arm/srv/SetArmEnabled "{enabled: true}"
 
-# Enable commands for the arm after launch 
+# Enable commands for the arm after launch
 ros2 param set /d1_arm_controller commanding_enabled true
 
 # Return to zero.
@@ -105,6 +105,7 @@ ros2 service call /d1_arm_controller/set_arm_enabled \
 # all joints. Support the arm and keep its entire path clear before calling.
 ros2 service call /d1_arm_controller/lay_down_and_release \
   unitree_arm/srv/LayDownArm "{}"
+```
 
 The measured lay-down joint values in degrees, J0 through J6, are:
 
@@ -136,6 +137,7 @@ ros2 launch unitree_arm_control d1_arm.launch.py \
   lay_down_timeout_sec:=15.0
 ```
 
+```bash
 # Watch receipt and execution acknowledgements.
 ros2 topic echo /d1_arm_controller/command_result
 ```
@@ -146,4 +148,112 @@ without changing the arm firmware or this package:
 ```bash
 ros2 launch unitree_arm_control d1_arm.launch.py \
   feedback_topic:=/arm_Feedback_1 command_topic:=/arm_Command_1
+```
+
+## Trajectory interface
+
+The controller provides the standard
+`control_msgs/action/FollowJointTrajectory` action at
+`/d1_arm_controller/follow_joint_trajectory`. Trajectories must include all
+six arm joints. The gripper joint is optional; when omitted, its most recent
+feedback position is preserved.
+
+Trajectory positions use URDF/ROS units:
+
+- `d1_joint_0` through `d1_joint_5`: radians
+- `d1_gripper_joint`: metres of per-finger travel
+
+The controller linearly interpolates position waypoints and publishes D1
+smooth-mode commands at 10 Hz by default. It monitors live joint feedback and
+does not report success until the final position is within tolerance. A goal
+is rejected when commanding is disabled, feedback is stale, a required arm
+joint is missing, waypoint times are invalid, or a segment exceeds the D1
+position or velocity limits. Services that command the arm are rejected while
+a trajectory is active.
+
+The command rate and final feedback checks are configurable at launch:
+
+```bash
+ros2 launch unitree_arm_control d1_arm.launch.py \
+  commanding_enabled:=true \
+  trajectory_command_rate_hz:=10.0 \
+  trajectory_goal_tolerance_radians:=0.035 \
+  trajectory_gripper_tolerance_m:=0.005 \
+  trajectory_goal_timeout_sec:=3.0
+```
+
+This action is the controller boundary intended for later MoveIt integration.
+It is currently a position-only trajectory executor; supplied waypoint
+velocities and accelerations are not used. Path tolerances and
+velocity/acceleration goal tolerances are rejected rather than silently
+ignored.
+
+## Initial testing
+
+Build and source the affected packages:
+
+```bash
+cd ~/I3T_CPSL_UnitreeGo2_Codebase
+source /opt/ros/foxy/setup.bash
+colcon build --packages-up-to unitree_arm_control --symlink-install
+source install/setup.bash
+colcon test --packages-select unitree_arm_control
+colcon test-result --verbose
+```
+
+Start the normal robot launch in monitor-only mode:
+
+```bash
+ros2 launch go2_launcher dog.launch.py \
+  launch_arm:=true arm_command_enabled:=false
+```
+
+In another sourced terminal, verify that current feedback and the trajectory
+action are available before enabling commands:
+
+```bash
+ros2 topic echo /d1_arm_controller/joint_angles --once
+ros2 action info /d1_arm_controller/follow_joint_trajectory
+```
+
+If the arm is not already enabled and holding its position, permit commands
+and enable it:
+
+```bash
+ros2 param set /d1_arm_controller commanding_enabled true
+ros2 service call /d1_arm_controller/set_arm_enabled \
+  unitree_arm/srv/SetArmEnabled "{enabled: true}"
+```
+
+The included test reads the current joint state, moves only `d1_joint_5` by
+five degrees over two seconds, holds for one second, and returns to the exact
+starting joint state over two seconds. It automatically reverses the movement
+when the positive direction would cross that joint's limit. The gripper and
+all other arm joints retain their measured starting positions.
+
+Run the test only after visually confirming that the RViz arm pose agrees with
+the physical arm:
+
+```bash
+ros2 run unitree_arm_control d1_trajectory_test
+```
+
+The test displacement can be reduced or another revolute joint selected:
+
+```bash
+ros2 run unitree_arm_control d1_trajectory_test --ros-args \
+  -p joint_name:=d1_joint_5 \
+  -p delta_degrees:=3.0 \
+  -p move_duration_sec:=3.0 \
+  -p hold_duration_sec:=1.0
+```
+
+Pressing `Ctrl+C` asks the action server to cancel the active trajectory and
+command the most recent feedback position as a hold target. Cancellation is a
+software stop and does not replace the robot's physical emergency-stop
+procedure. After the test, confirm that the action succeeded and that joint
+feedback returned to the starting values:
+
+```bash
+ros2 topic echo /d1_arm_controller/joint_angles --once
 ```

@@ -50,7 +50,7 @@ Finally, increase the power level of the expansion board to 25W or higher.
 
 ## D1 Arm Setup
 
-This section covers setup for the D1 arm for the Go2. 
+This section covers setup for the D1 arm for the Go2. IMPORTANT: The URDF in this repo assumes the arm is mounted with the connector ports on the D1 arm facing *left* relative to the back of the Go2. Please mount the arm following this convention or edit the provided file to account for your mounting setup.
 
 ### Physical Setup
 
@@ -65,7 +65,7 @@ This section covers setup for the D1 arm for the Go2.
    while the Go2 or arm moves, then power the Go2 back on.
 
 For the mounting location and connector layout, refer to Unitree's
-[Payload instructions](https://support.unitree.com/home/en/developer/Payload).
+[Payload instructions](https://support.unitree.com/home/en/developer/Payload). 
 
 
 
