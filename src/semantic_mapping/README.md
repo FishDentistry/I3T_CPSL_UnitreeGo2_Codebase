@@ -146,12 +146,12 @@ The launch file exposes the following arguments:
 | `camera_frame` | `front_camera` | Detector |
 | `map_frame` | `map` | Both nodes |
 | `detections_topic` | `/grounding_dino/detection_array` | Both nodes |
-| `minimum_confidence` | `0.50` | Semantic mapper |
+| `minimum_confidence` | `0.60` | Semantic mapper |
 | `confirmation_observations` | `3` | Semantic mapper |
 
 The detector and mapper receive the same `map_frame` and structured detection
 topic from the launch file so the connection cannot drift through separate
-configuration. To run only the mapper for debugging, use:
+configuration. To run the mapper for debugging, use:
 
 ```bash
 ros2 run semantic_mapping semanticMappingNode
@@ -163,6 +163,7 @@ Inspect the structured map:
 ros2 topic echo /semantic_map
 ```
 
+## Rviz2 Visualization
 In RViz, set the fixed frame to `map`, add a `MarkerArray` display, and select
 `/semantic_map/markers`. Active objects are green. Stale objects are gray, and
 removed objects are deleted from the display.

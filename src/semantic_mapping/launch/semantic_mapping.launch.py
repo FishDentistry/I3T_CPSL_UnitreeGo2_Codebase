@@ -82,7 +82,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'minimum_confidence',
-            default_value='0.50',
+            default_value='0.60',
             description='Minimum score accepted by semantic mapping.',
         ),
         DeclareLaunchArgument(

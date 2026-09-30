@@ -53,6 +53,13 @@ ros2 launch unitree_arm_control d1_arm.launch.py commanding_enabled:=true
 Examples (these can move or release the physical arm):
 
 ```bash
+# Enable arm
+ros2 service call /d1_arm_controller/set_arm_enabled \
+  unitree_arm/srv/SetArmEnabled "{enabled: true}"
+
+# Enable commands for the arm after launch 
+ros2 param set /d1_arm_controller commanding_enabled true
+
 # Return to zero.
 ros2 service call /d1_arm_controller/zero \
   unitree_arm/srv/ZeroArm "{}"
@@ -70,6 +77,14 @@ ros2 service call /d1_arm_controller/set_arm_enabled \
 # all joints. Support the arm and keep its entire path clear before calling.
 ros2 service call /d1_arm_controller/lay_down_and_release \
   unitree_arm/srv/LayDownArm "{}"
+
+The measured lay-down joint values in degrees, J0 through J6, are:
+
+```text
+[-83.80000305175781, -90.80000305175781, 89.80000305175781,
+ -10.600000381469727, 6.400000095367432, -2.0999999046325684,
+ -0.8999999761581421]
+```
 
 The lay-down service is asynchronous: its response confirms that the motion
 command was published, not that the arm has already stopped or been released.

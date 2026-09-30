@@ -48,15 +48,25 @@ class ProtocolTest(unittest.TestCase):
         })
 
     def test_lay_down_command_uses_measured_pose(self):
+        expected_angles = (
+            -83.80000305175781,
+            -90.80000305175781,
+            89.80000305175781,
+            -10.600000381469727,
+            6.400000095367432,
+            -2.0999999046325684,
+            -0.8999999761581421,
+        )
         payload = json.loads(protocol.lay_down_command(10))
         self.assertEqual(payload['funcode'], protocol.SET_ALL_JOINTS)
         self.assertEqual(payload['data']['mode'], protocol.TRAJECTORY)
+        self.assertEqual(protocol.LAY_DOWN_ANGLES_DEGREES, expected_angles)
         self.assertEqual(
             tuple(
                 payload['data']['angle{}'.format(index)]
                 for index in range(protocol.JOINT_COUNT)
             ),
-            protocol.LAY_DOWN_ANGLES_DEGREES,
+            expected_angles,
         )
 
     def test_enable_and_power_commands(self):

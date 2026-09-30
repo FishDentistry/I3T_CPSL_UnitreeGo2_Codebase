@@ -32,13 +32,13 @@ TRAJECTORY = 1
 # Joint 1 is slightly outside the rounded published limit below, so only the
 # dedicated lay-down command is permitted to send this known pose unchanged.
 LAY_DOWN_ANGLES_DEGREES = (
-    0.20000000298023224,
+    -83.80000305175781,
     -90.80000305175781,
-    85.30000305175781,
-    -11.399999618530273,
-    20.5,
-    0.6000000238418579,
-    0.0,
+    89.80000305175781,
+    -10.600000381469727,
+    6.400000095367432,
+    -2.0999999046325684,
+    -0.8999999761581421,
 )
 
 # Mechanical angle limits published for D1-550 joints J0 through J5.

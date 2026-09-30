@@ -17,6 +17,7 @@ def generate_launch_description():
     collect_realsense = LaunchConfiguration('collect_realsense')
     internal_board_ip = LaunchConfiguration('internal_board_ip')
     launch_arm = LaunchConfiguration('launch_arm')
+    arm_command_enabled = LaunchConfiguration('arm_command_enabled')
 
     arm_launch_file = os.path.join(
         get_package_share_directory('unitree_arm_control'),
@@ -31,13 +32,24 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'launch_arm',
             default_value='false',
-            description='Launch the D1 arm wrapper in passive mode.'
+            description='Launch the D1 arm wrapper.'
         ),
-        
+
+        DeclareLaunchArgument(
+            'arm_command_enabled',
+            default_value='false',
+            description=(
+                'Allow the D1 arm wrapper to publish physical commands.'
+            )
+        ),
+
         DeclareLaunchArgument(
             'internal_board_ip',
             default_value='192.168.123.161',
-            description='IP address of the robot internal board (string). Default is default Ethernet IP of internal board.'
+            description=(
+                'IP address of the robot internal board. The default is its '
+                'Ethernet address.'
+            )
         ),
 
         Node(
@@ -70,7 +82,10 @@ def generate_launch_description():
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(arm_launch_file),
-            condition=IfCondition(launch_arm)
+            condition=IfCondition(launch_arm),
+            launch_arguments={
+                'commanding_enabled': arm_command_enabled,
+            }.items()
         ),
         Node(
             package='intel_realsense_functions',

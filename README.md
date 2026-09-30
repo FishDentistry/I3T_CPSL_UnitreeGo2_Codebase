@@ -116,7 +116,7 @@ By default, this parameter is set to the internal board’s Ethernet IP address 
 ## Using this repo
 1. Clone this repo and build and source the workspace
 1. Open 3 terminal windows and run the following
-    * `ros2 launch launcher dog.launch.py internal_board_ip:=OPTIONAL_YOUR_IP_HERE collect_realsense:=true or false`
+    * `ros2 launch launcher dog.launch.py internal_board_ip:=OPTIONAL_YOUR_IP_HERE collect_realsense:=true or false launch_arm:= true or false arm_command_enabled:=true or false`
     * `ros2 launch cpsl_ros2_sensors_bringup ugv_sensor_bringup.launch.py`
     * `ros2 launch cpsl_nav slam.launch.py scan_topic:=/livox/scan_best_effort`
 1. For getting a functional transform tree and mapping, that's all you need. If you want to issue Nav2 commands, open another terminal and run
