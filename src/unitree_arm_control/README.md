@@ -189,7 +189,7 @@ velocities and accelerations are not used. Path tolerances and
 velocity/acceleration goal tolerances are rejected rather than silently
 ignored.
 
-## Initial testing
+## Initial trajectory testing
 
 Build and source the affected packages:
 
@@ -202,11 +202,11 @@ colcon test --packages-select unitree_arm_control
 colcon test-result --verbose
 ```
 
-Start the normal robot launch in monitor-only mode:
+Start the normal robot launch or arm launch:
 
 ```bash
 ros2 launch go2_launcher dog.launch.py \
-  launch_arm:=true arm_command_enabled:=false
+  launch_arm:=true arm_command_enabled:=true
 ```
 
 In another sourced terminal, verify that current feedback and the trajectory
@@ -226,7 +226,7 @@ ros2 service call /d1_arm_controller/set_arm_enabled \
   unitree_arm/srv/SetArmEnabled "{enabled: true}"
 ```
 
-The included test reads the current joint state, rotates only `d1_joint_5`
+The following test reads the current joint state, rotates only `d1_joint_5`
 (the final wrist-roll joint) by five degrees over two seconds, holds for one
 second, and returns to the exact starting joint state over two seconds. This
 is intentionally subtle: the expected visible motion is a small twist of the
@@ -263,7 +263,7 @@ test can be run with the arm's local clearance checked first:
 ```bash
 ros2 run unitree_arm_control d1_trajectory_test --ros-args \
   -p joint_name:=d1_joint_4 \
-  -p delta_degrees:=3.0 \
+  -p delta_degrees:=10.0 \
   -p move_duration_sec:=3.0
 ```
 
@@ -276,3 +276,98 @@ feedback returned to the starting values:
 ```bash
 ros2 topic echo /d1_arm_controller/joint_angles --once
 ```
+
+## MoveIt 2
+
+MoveIt configuration is contained in this package. It defines the
+six-joint `d1_arm` planning group from `d1_base_link` to the
+`d1_gripper_center` tool frame, KDL inverse kinematics, conservative motion
+limits, OMPL planning, self-collision exclusions for adjacent arm links, and a
+controller mapping to the existing
+`/d1_arm_controller/follow_joint_trajectory` action. 
+
+Install the ROS 2 Foxy MoveIt binary packages on the deployment system:
+
+```bash
+source /opt/ros/foxy/setup.bash
+sudo apt update
+sudo apt install ros-foxy-moveit python3-yaml
+```
+
+No MoveIt source build, Python virtual environment, MoveIt Setup Assistant
+run, or Unitree SDK2 change is required for this initial configuration. The
+same dependencies can subsequently be checked from the workspace with:
+
+```bash
+rosdep install --from-paths src --ignore-src -r -y
+```
+
+Build and source the package after installing the dependencies:
+
+```bash
+cd ~/I3T_CPSL_UnitreeGo2_Codebase
+source /opt/ros/foxy/setup.bash
+colcon build --packages-up-to unitree_arm_control --symlink-install
+source install/setup.bash
+```
+
+### Planning-only verification
+
+Start the normal robot stack with the arm wrapper present but physical arm
+commands disabled:
+
+```bash
+ros2 launch go2_launcher dog.launch.py \
+  launch_arm:=true arm_command_enabled:=false
+```
+
+In another sourced terminal, start MoveIt. Trajectory execution is disabled by
+default:
+
+```bash
+ros2 launch unitree_arm_control d1_moveit.launch.py
+```
+
+RViz opens with the `d1_arm` planning group selected. Confirm that the orange
+interactive goal marker appears at the gripper, drag it only a small distance,
+and use **Plan**. Do not use **Plan & Execute** during this stage. A successful
+plan should animate in RViz without publishing an arm command.
+
+The MoveIt planning frame is `base_link`. Targets originating in `map` must be
+transformed into the robot model through TF before planning; MoveIt does not
+modify the Go2 navigation transforms.
+
+### Physical execution
+
+Physical execution has two independent safety gates. The D1 wrapper must
+permit commands, and the MoveIt launch must permit trajectory execution.
+Before enabling either gate, confirm current arm feedback, model alignment,
+physical clearance, and access to the hardware emergency stop.
+
+Start the robot stack with D1 commands enabled:
+
+```bash
+ros2 launch go2_launcher dog.launch.py \
+  launch_arm:=true arm_command_enabled:=true
+```
+
+Then start MoveIt with execution enabled:
+
+```bash
+ros2 launch unitree_arm_control d1_moveit.launch.py \
+  allow_trajectory_execution:=true
+```
+
+Use **Plan** first and inspect the entire animated path. Only then use
+**Execute**. The supplied RViz configuration starts with velocity and
+acceleration scaling at 10 percent. MoveIt sends the resulting six-joint
+trajectory directly to the existing D1 action server, which independently
+checks feedback age, joint limits, segment velocities, cancellation, and final
+position convergence.
+
+The gripper is represented in the semantic model and collision geometry, but
+is not yet exposed to MoveIt through a `GripperCommand` action. Continue using
+the arm-control services for gripper commands until that action interface is
+added.
+
+

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="go2_with_realsense_and_arm">
+  <group name="d1_arm">
+    <chain base_link="d1_base_link" tip_link="d1_gripper_center"/>
+  </group>
+
+  <group name="d1_gripper">
+    <joint name="d1_gripper_joint"/>
+    <link name="d1_gripper_right"/>
+  </group>
+
+  <group_state name="zero" group="d1_arm">
+    <joint name="d1_joint_0" value="0"/>
+    <joint name="d1_joint_1" value="0"/>
+    <joint name="d1_joint_2" value="0"/>
+    <joint name="d1_joint_3" value="0"/>
+    <joint name="d1_joint_4" value="0"/>
+    <joint name="d1_joint_5" value="0"/>
+  </group_state>
+
+  <group_state name="open" group="d1_gripper">
+    <joint name="d1_gripper_joint" value="0.03"/>
+  </group_state>
+  <group_state name="closed" group="d1_gripper">
+    <joint name="d1_gripper_joint" value="0"/>
+  </group_state>
+
+  <end_effector
+    name="d1_gripper"
+    parent_link="d1_link_6"
+    group="d1_gripper"
+    parent_group="d1_arm"/>
+  <passive_joint name="d1_gripper_mimic_joint"/>
+
+  <disable_collisions link1="base_link" link2="d1_base_link" reason="Adjacent"/>
+  <disable_collisions link1="d1_base_link" link2="d1_link_1" reason="Adjacent"/>
+  <disable_collisions link1="d1_link_1" link2="d1_link_2" reason="Adjacent"/>
+  <disable_collisions link1="d1_link_2" link2="d1_link_3" reason="Adjacent"/>
+  <disable_collisions link1="d1_link_3" link2="d1_link_4" reason="Adjacent"/>
+  <disable_collisions link1="d1_link_4" link2="d1_link_5" reason="Adjacent"/>
+  <disable_collisions link1="d1_link_5" link2="d1_link_6" reason="Adjacent"/>
+  <disable_collisions link1="d1_link_6" link2="d1_gripper_left" reason="Adjacent"/>
+  <disable_collisions link1="d1_link_6" link2="d1_gripper_right" reason="Adjacent"/>
+  <disable_collisions link1="d1_link_6" link2="d1_gripper_center" reason="Adjacent"/>
+  <disable_collisions link1="d1_gripper_left" link2="d1_gripper_right" reason="Default"/>
+</robot>
