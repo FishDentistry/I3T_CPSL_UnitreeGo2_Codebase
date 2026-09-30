@@ -1471,7 +1471,7 @@ Stephen Brawner (brawner@gmail.com)
     <origin xyz="0 0 0.0533" rpy="0 0 -3.1416"/>
     <parent link="d1_base_link"/>
     <child link="d1_link_1"/>
-    <axis xyz="0 0 1"/>
+    <axis xyz="0 0 -1"/>
     <limit lower="-2.35619449" upper="2.35619449" effort="3.33" velocity="1.05"/>
   </joint>
   <link name="d1_link_2">
