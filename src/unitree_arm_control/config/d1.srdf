@@ -36,6 +36,7 @@
   <disable_collisions link1="d1_base_link" link2="d1_link_1" reason="Adjacent"/>
   <disable_collisions link1="d1_link_1" link2="d1_link_2" reason="Adjacent"/>
   <disable_collisions link1="d1_link_2" link2="d1_link_3" reason="Adjacent"/>
+  <disable_collisions link1="d1_link_2" link2="d1_link_5" reason="IntentionalLayDownContact"/>
   <disable_collisions link1="d1_link_3" link2="d1_link_4" reason="Adjacent"/>
   <disable_collisions link1="d1_link_4" link2="d1_link_5" reason="Adjacent"/>
   <disable_collisions link1="d1_link_5" link2="d1_link_6" reason="Adjacent"/>
