@@ -25,6 +25,7 @@ RECEIVE_RESULT = 1
 EXECUTE_RESULT = 2
 
 JOINT_COUNT = 7
+ARM_JOINT_COUNT = 6
 SMOOTH_10_HZ = 0
 TRAJECTORY = 1
 
@@ -145,6 +146,49 @@ def _require_number(value, field_name):
     if not math.isfinite(value):
         raise ProtocolError('{} must be finite'.format(field_name))
     return value
+
+
+def joint_state_positions_from_degrees(
+        angles_degrees,
+        gripper_closed_degrees=0.0,
+        gripper_open_degrees=30.0,
+        gripper_max_travel_m=0.03):
+    """Convert D1 feedback to URDF joint positions.
+
+    J0 through J5 are converted from degrees to radians. J6 drives the
+    URDF's prismatic gripper joint, so it is linearly mapped between the
+    configured closed/open angles and clamped to the configured per-finger
+    travel.
+    """
+    if len(angles_degrees) != JOINT_COUNT:
+        raise ProtocolError('exactly seven joint angles are required')
+
+    values = tuple(
+        _require_number(value, 'angle{}'.format(index))
+        for index, value in enumerate(angles_degrees)
+    )
+    closed = _require_number(
+        gripper_closed_degrees, 'gripper_closed_degrees'
+    )
+    opened = _require_number(
+        gripper_open_degrees, 'gripper_open_degrees'
+    )
+    maximum_travel = _require_number(
+        gripper_max_travel_m, 'gripper_max_travel_m'
+    )
+    if opened == closed:
+        raise ProtocolError(
+            'gripper_open_degrees must differ from '
+            'gripper_closed_degrees'
+        )
+    if maximum_travel <= 0.0:
+        raise ProtocolError('gripper_max_travel_m must be positive')
+
+    fraction_open = (values[6] - closed) / (opened - closed)
+    fraction_open = min(1.0, max(0.0, fraction_open))
+    return tuple(
+        math.radians(value) for value in values[:ARM_JOINT_COUNT]
+    ) + (fraction_open * maximum_travel,)
 
 
 def _require_flag(value, field_name):

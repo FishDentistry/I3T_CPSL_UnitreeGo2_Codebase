@@ -10,6 +10,12 @@ def generate_launch_description():
     """Create a passive-by-default D1 arm launch description."""
     command_topic = LaunchConfiguration('command_topic')
     feedback_topic = LaunchConfiguration('feedback_topic')
+    joint_states_topic = LaunchConfiguration('joint_states_topic')
+    gripper_closed_degrees = LaunchConfiguration(
+        'gripper_closed_degrees'
+    )
+    gripper_open_degrees = LaunchConfiguration('gripper_open_degrees')
+    gripper_max_travel_m = LaunchConfiguration('gripper_max_travel_m')
     commanding_enabled = LaunchConfiguration('commanding_enabled')
     require_fresh_feedback = LaunchConfiguration('require_fresh_feedback')
     feedback_timeout_sec = LaunchConfiguration('feedback_timeout_sec')
@@ -28,6 +34,24 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'feedback_topic', default_value='/arm_Feedback'
+        ),
+        DeclareLaunchArgument(
+            'joint_states_topic', default_value='/joint_states'
+        ),
+        DeclareLaunchArgument(
+            'gripper_closed_degrees',
+            default_value='0.0',
+            description='J6 feedback value representing closed fingers.',
+        ),
+        DeclareLaunchArgument(
+            'gripper_open_degrees',
+            default_value='30.0',
+            description='J6 feedback value representing open fingers.',
+        ),
+        DeclareLaunchArgument(
+            'gripper_max_travel_m',
+            default_value='0.03',
+            description='Maximum URDF travel of each gripper finger.',
         ),
         DeclareLaunchArgument(
             'commanding_enabled',
@@ -72,6 +96,10 @@ def generate_launch_description():
             parameters=[{
                 'command_topic': command_topic,
                 'feedback_topic': feedback_topic,
+                'joint_states_topic': joint_states_topic,
+                'gripper_closed_degrees': gripper_closed_degrees,
+                'gripper_open_degrees': gripper_open_degrees,
+                'gripper_max_travel_m': gripper_max_travel_m,
                 'commanding_enabled': commanding_enabled,
                 'require_fresh_feedback': require_fresh_feedback,
                 'feedback_timeout_sec': feedback_timeout_sec,

@@ -1,6 +1,7 @@
 """Tests for D1 JSON encoding and feedback parsing."""
 
 import json
+import math
 import unittest
 
 from unitree_arm_control import protocol
@@ -99,6 +100,40 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(
             feedback.angles_degrees, (0, -1, 2, -3, 4, -5, 6)
         )
+
+    def test_joint_state_positions_convert_arm_and_gripper_units(self):
+        positions = protocol.joint_state_positions_from_degrees(
+            [0, 90, -90, 45, -45, 30, 15]
+        )
+        expected = (
+            0.0,
+            math.pi / 2.0,
+            -math.pi / 2.0,
+            math.pi / 4.0,
+            -math.pi / 4.0,
+            math.pi / 6.0,
+            0.015,
+        )
+        for actual, target in zip(positions, expected):
+            self.assertAlmostEqual(actual, target)
+
+    def test_joint_state_gripper_travel_is_clamped(self):
+        closed = protocol.joint_state_positions_from_degrees(
+            [0, 0, 0, 0, 0, 0, -5]
+        )
+        opened = protocol.joint_state_positions_from_degrees(
+            [0, 0, 0, 0, 0, 0, 50]
+        )
+        self.assertEqual(closed[-1], 0.0)
+        self.assertEqual(opened[-1], 0.03)
+
+    def test_joint_state_gripper_calibration_must_have_range(self):
+        with self.assertRaisesRegex(protocol.ProtocolError, 'must differ'):
+            protocol.joint_state_positions_from_degrees(
+                [0, 0, 0, 0, 0, 0, 0],
+                gripper_closed_degrees=1.0,
+                gripper_open_degrees=1.0,
+            )
 
     def test_parse_status_feedback(self):
         feedback = protocol.parse_feedback(json.dumps({

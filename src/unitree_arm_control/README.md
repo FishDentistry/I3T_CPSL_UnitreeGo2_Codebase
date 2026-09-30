@@ -9,6 +9,34 @@ The payload layout follows Unitree's public D1 examples, including the
 `seq`/`address`/`funcode` envelope and `angle0` through `angle6` fields:
 <https://github.com/chen37058/Grasp-with-the-Unitree-D1/tree/main/src>
 
+## Joint states and TF
+
+Each valid joint-angle feedback message is also published as a
+`sensor_msgs/msg/JointState` on `/joint_states`. The message contains only
+the D1 names (`d1_joint_0` through `d1_joint_5` and `d1_gripper_joint`), so it
+can share the topic with another publisher that supplies the robot's leg
+joints. `robot_state_publisher` combines these partial updates to publish the
+arm link transforms.
+
+J0 through J5 are converted from degrees to radians. The D1 documentation
+specifies the gripper stroke but not the J6 angle-to-stroke calibration, so
+J6 uses an adjustable linear mapping. The defaults map 0 to 30 degrees onto
+0 to 0.03 metres of per-finger travel and clamp values outside that range.
+To use measured endpoints instead:
+
+```bash
+ros2 launch unitree_arm_control d1_arm.launch.py \
+  gripper_closed_degrees:=0.0 \
+  gripper_open_degrees:=30.0 \
+  gripper_max_travel_m:=0.03
+```
+
+Joint states are published whenever the wrapper receives feedback, including
+when command publishing is disabled or the arm motors are released. This
+keeps RViz synchronized during passive monitoring and drag teaching.
+When started through `dog.launch.py`, the wrapper—and therefore the D1 joint
+state publisher—is present only when `launch_arm:=true`.
+
 ## Safety model
 
 The node starts in monitor-only mode. It will parse feedback, but every command

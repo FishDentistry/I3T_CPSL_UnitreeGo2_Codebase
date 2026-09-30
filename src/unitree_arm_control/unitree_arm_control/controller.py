@@ -8,6 +8,7 @@ from rclpy.qos import DurabilityPolicy
 from rclpy.qos import HistoryPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
+from sensor_msgs.msg import JointState
 
 from unitree_arm.msg import ArmStatus
 from unitree_arm.msg import ArmString
@@ -25,6 +26,17 @@ from unitree_arm.srv import ZeroArm
 from unitree_arm_control import protocol
 
 
+D1_JOINT_STATE_NAMES = (
+    'd1_joint_0',
+    'd1_joint_1',
+    'd1_joint_2',
+    'd1_joint_3',
+    'd1_joint_4',
+    'd1_joint_5',
+    'd1_gripper_joint',
+)
+
+
 class D1ArmController(Node):
     """Publish validated D1 commands and expose parsed feedback."""
 
@@ -33,6 +45,10 @@ class D1ArmController(Node):
 
         self.declare_parameter('command_topic', '/arm_Command')
         self.declare_parameter('feedback_topic', '/arm_Feedback')
+        self.declare_parameter('joint_states_topic', '/joint_states')
+        self.declare_parameter('gripper_closed_degrees', 0.0)
+        self.declare_parameter('gripper_open_degrees', 30.0)
+        self.declare_parameter('gripper_max_travel_m', 0.03)
         self.declare_parameter('commanding_enabled', False)
         self.declare_parameter('require_fresh_feedback', True)
         self.declare_parameter('feedback_timeout_sec', 2.0)
@@ -44,8 +60,18 @@ class D1ArmController(Node):
 
         command_topic = self._string_parameter('command_topic')
         feedback_topic = self._string_parameter('feedback_topic')
+        joint_states_topic = self._string_parameter('joint_states_topic')
         self._command_topic = command_topic
         self._feedback_topic = feedback_topic
+        self._gripper_conversion = (
+            self._double_parameter('gripper_closed_degrees'),
+            self._double_parameter('gripper_open_degrees'),
+            self._double_parameter('gripper_max_travel_m'),
+        )
+        protocol.joint_state_positions_from_degrees(
+            (0.0,) * protocol.JOINT_COUNT,
+            *self._gripper_conversion
+        )
         initial_sequence = self._integer_parameter('initial_sequence')
         self._sequences = protocol.SequenceGenerator(initial_sequence)
         self._last_feedback_time = None
@@ -78,6 +104,9 @@ class D1ArmController(Node):
 
         self._joint_angles_publisher = self.create_publisher(
             JointAngles, '~/joint_angles', 10
+        )
+        self._joint_state_publisher = self.create_publisher(
+            JointState, joint_states_topic, 10
         )
         self._arm_status_publisher = self.create_publisher(
             ArmStatus, '~/status', 10
@@ -127,6 +156,11 @@ class D1ArmController(Node):
                 feedback_topic, command_topic
             )
         )
+        self.get_logger().info(
+            'Publishing D1 joint feedback on {}'.format(
+                joint_states_topic
+            )
+        )
         if not self._bool_parameter('commanding_enabled'):
             self.get_logger().info(
                 'Commanding is disabled; feedback parsing is active. Set '
@@ -163,12 +197,14 @@ class D1ArmController(Node):
         self._feedback_warning_active = False
 
         if isinstance(feedback, protocol.JointAnglesFeedback):
+            stamp = self._now_message()
             parsed = JointAngles()
-            parsed.stamp = self._now_message()
+            parsed.stamp = stamp
             parsed.sequence = feedback.sequence
             parsed.angle_degrees = list(feedback.angles_degrees)
             parsed.raw_json = feedback.raw_json
             self._joint_angles_publisher.publish(parsed)
+            self._publish_joint_state(feedback.angles_degrees, stamp)
             self._update_lay_down_position(feedback.angles_degrees)
             return
 
@@ -213,6 +249,17 @@ class D1ArmController(Node):
                 feedback.address, feedback.function_code
             )
         )
+
+    def _publish_joint_state(self, angles_degrees, stamp):
+        joint_state = JointState()
+        joint_state.header.stamp = stamp
+        joint_state.name = list(D1_JOINT_STATE_NAMES)
+        joint_state.position = list(
+            protocol.joint_state_positions_from_degrees(
+                angles_degrees, *self._gripper_conversion
+            )
+        )
+        self._joint_state_publisher.publish(joint_state)
 
     def _feedback_watchdog(self):
         if self._last_feedback_time is None:
