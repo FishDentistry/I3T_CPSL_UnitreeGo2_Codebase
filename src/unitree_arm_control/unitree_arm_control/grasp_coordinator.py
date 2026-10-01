@@ -79,6 +79,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('move_group_action', '/move_action')
         self.declare_parameter('planning_group', 'd1_arm')
         self.declare_parameter('planning_frame', 'base_link')
+        self.declare_parameter('reach_reference_frame', 'd1_base_link')
         self.declare_parameter('tip_link', 'd1_gripper_center')
         self.declare_parameter('planner_id', '')
 
@@ -189,6 +190,9 @@ class D1GraspCoordinator(Node):
         self._planning_frame = str(
             self._parameter('planning_frame')
         ).strip()
+        self._reach_reference_frame = str(
+            self._parameter('reach_reference_frame')
+        ).strip()
         self._tip_link = str(self._parameter('tip_link')).strip()
         self._planner_id = str(self._parameter('planner_id')).strip()
         self._execution_enabled = bool(
@@ -247,6 +251,7 @@ class D1GraspCoordinator(Node):
             'move_group_action': self._move_group_action,
             'planning_group': self._planning_group,
             'planning_frame': self._planning_frame,
+            'reach_reference_frame': self._reach_reference_frame,
             'tip_link': self._tip_link,
         }
         for name, value in required_strings.items():
@@ -358,8 +363,7 @@ class D1GraspCoordinator(Node):
         if not candidates:
             self._reject(
                 command,
-                'no fresh ACTIVE object satisfies the requested class, ID, '
-                'confidence, and observation safeguards',
+                self._selection_failure_message(command),
             )
             return
 
@@ -374,11 +378,17 @@ class D1GraspCoordinator(Node):
             )
             return
 
-        selected, object_point, target_point, target_orientation = min(
+        (
+            selected,
+            object_point,
+            target_point,
+            target_orientation,
+            reach_point,
+        ) = min(
             transformed,
-            key=lambda item: grasping.distance_from_origin(item[1]),
+            key=lambda item: grasping.distance_from_origin(item[4]),
         )
-        problem = self._target_problem(target_point)
+        problem = self._target_problem(target_point, reach_point)
         if problem is not None:
             self._reject(command, problem)
             return
@@ -414,6 +424,74 @@ class D1GraspCoordinator(Node):
         )
         future.add_done_callback(self._move_group_goal_response)
 
+    def _selection_failure_message(self, command):
+        objects = list(self._latest_map.objects)
+        requested_class = grasping.normalize_label(command.object_class)
+        requested_id = command.object_id.strip()
+
+        if requested_id:
+            matching_id = [
+                candidate for candidate in objects
+                if candidate.object_id == requested_id
+            ]
+            if not matching_id:
+                class_ids = [
+                    candidate.object_id for candidate in objects
+                    if grasping.normalize_label(candidate.label)
+                    == requested_class
+                ]
+                available = ', '.join(class_ids[:5]) or 'none'
+                return (
+                    'object_id {} is not present; current IDs for class {}: '
+                    '{}'.format(requested_id, requested_class, available)
+                )
+            candidate = matching_id[0]
+            actual_class = grasping.normalize_label(candidate.label)
+            if actual_class != requested_class:
+                return (
+                    'object_id {} has class {}, not requested class {}'.format(
+                        requested_id, actual_class, requested_class
+                    )
+                )
+            relevant = matching_id
+        else:
+            relevant = [
+                candidate for candidate in objects
+                if grasping.normalize_label(candidate.label)
+                == requested_class
+            ]
+            if not relevant:
+                labels = sorted({
+                    grasping.normalize_label(candidate.label)
+                    for candidate in objects
+                    if grasping.normalize_label(candidate.label)
+                })
+                available = ', '.join(labels[:10]) or 'none'
+                return (
+                    'no object has requested class {}; available classes: '
+                    '{}'.format(requested_class, available)
+                )
+
+        descriptions = []
+        for candidate in relevant[:5]:
+            failures = grasping.object_safeguard_failures(
+                candidate,
+                self._now_seconds(),
+                self._minimum_confidence,
+                self._minimum_observations,
+                self._maximum_object_age,
+                SemanticObject.STATUS_ACTIVE,
+            )
+            descriptions.append(
+                '{}: {}'.format(
+                    candidate.object_id,
+                    '; '.join(failures) or 'no safeguard failure',
+                )
+            )
+        return 'no eligible {} object; {}'.format(
+            requested_class, ' | '.join(descriptions)
+        )
+
     def _transform_candidates(self, candidates):
         source_frame = self._latest_map.header.frame_id.strip()
         if not source_frame:
@@ -433,6 +511,27 @@ class D1GraspCoordinator(Node):
             transform_quaternion,
             grasping.quaternion_from_rpy(*self._pregrasp_rpy),
         )
+        reach_translation = None
+        reach_quaternion = None
+        if self._reach_reference_frame != self._planning_frame:
+            reach_transform = self._tf_buffer.lookup_transform(
+                self._reach_reference_frame, self._planning_frame, Time()
+            )
+            reach_translation_message = (
+                reach_transform.transform.translation
+            )
+            reach_rotation_message = reach_transform.transform.rotation
+            reach_translation = (
+                reach_translation_message.x,
+                reach_translation_message.y,
+                reach_translation_message.z,
+            )
+            reach_quaternion = (
+                reach_rotation_message.x,
+                reach_rotation_message.y,
+                reach_rotation_message.z,
+                reach_rotation_message.w,
+            )
         transformed = []
         for candidate in candidates:
             source_point = (
@@ -456,30 +555,50 @@ class D1GraspCoordinator(Node):
                 transform_translation,
                 transform_quaternion,
             )
+            if reach_translation is None:
+                reach_point = target_point
+            else:
+                reach_point = grasping.transform_point(
+                    target_point,
+                    reach_translation,
+                    reach_quaternion,
+                )
             if all(
                     math.isfinite(value)
-                    for value in object_point + target_point):
+                    for value in object_point + target_point + reach_point):
                 transformed.append(
                     (
                         candidate,
                         object_point,
                         target_point,
                         target_orientation,
+                        reach_point,
                     )
                 )
         if not transformed:
             raise RuntimeError('all transformed object positions are invalid')
         return transformed
 
-    def _target_problem(self, target_point):
-        reach = grasping.distance_from_origin(target_point)
-        if reach < self._minimum_reach:
-            return 'pre-grasp target is inside the minimum reach safeguard'
-        if reach > self._maximum_reach:
-            return 'pre-grasp target is outside the maximum reach safeguard'
+    def _target_problem(self, target_point, reach_point):
+        reach_problem = grasping.reach_safeguard_problem(
+            reach_point,
+            self._minimum_reach,
+            self._maximum_reach,
+            self._reach_reference_frame,
+        )
+        if reach_problem is not None:
+            return reach_problem
         if not self._minimum_target_z <= target_point[2] <= (
                 self._maximum_target_z):
-            return 'pre-grasp target is outside the permitted z range'
+            return (
+                'pre-grasp target z is {:.3f} m in {}, outside permitted '
+                'range [{:.3f}, {:.3f}] m'.format(
+                    target_point[2],
+                    self._planning_frame,
+                    self._minimum_target_z,
+                    self._maximum_target_z,
+                )
+            )
         return None
 
     def _target_pose(self, target_point, quaternion):

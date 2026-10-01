@@ -31,19 +31,53 @@ def eligible_objects(
             continue
         if requested_id and candidate.object_id != requested_id:
             continue
-        if candidate.status != active_status:
-            continue
-        if float(candidate.confidence) < minimum_confidence:
-            continue
-        if int(candidate.observation_count) < minimum_observations:
-            continue
-        age = now_seconds - stamp_seconds(candidate.last_observed)
-        if age < 0.0:
-            age = 0.0
-        if age > maximum_age_seconds:
+        if object_safeguard_failures(
+                candidate,
+                now_seconds,
+                minimum_confidence,
+                minimum_observations,
+                maximum_age_seconds,
+                active_status):
             continue
         matches.append(candidate)
     return matches
+
+
+def object_safeguard_failures(
+        candidate,
+        now_seconds,
+        minimum_confidence,
+        minimum_observations,
+        maximum_age_seconds,
+        active_status):
+    """Describe every safety gate that rejects one semantic object."""
+    failures = []
+    if candidate.status != active_status:
+        failures.append('status={} is not ACTIVE'.format(candidate.status))
+    confidence = float(candidate.confidence)
+    if confidence < minimum_confidence:
+        failures.append(
+            'confidence {:.3f} is below {:.3f}'.format(
+                confidence, minimum_confidence
+            )
+        )
+    observations = int(candidate.observation_count)
+    if observations < minimum_observations:
+        failures.append(
+            '{} observations is below {}'.format(
+                observations, minimum_observations
+            )
+        )
+    age = max(
+        0.0, now_seconds - stamp_seconds(candidate.last_observed)
+    )
+    if age > maximum_age_seconds:
+        failures.append(
+            'last observation is {:.1f}s old (maximum {:.1f}s)'.format(
+                age, maximum_age_seconds
+            )
+        )
+    return failures
 
 
 def quaternion_from_rpy(roll, pitch, yaw):
@@ -116,3 +150,33 @@ def transform_point(point, translation, quaternion):
 def distance_from_origin(point):
     """Return the Euclidean distance of a three-vector from its origin."""
     return math.sqrt(sum(float(value) ** 2 for value in point))
+
+
+def reach_safeguard_problem(
+        point,
+        minimum_reach,
+        maximum_reach,
+        reference_frame):
+    """Describe a reach-envelope violation in the arm reference frame."""
+    coordinates = tuple(float(value) for value in point)
+    reach = distance_from_origin(coordinates)
+    detail = (
+        '{:.3f} m from {} (xyz [{:.3f}, {:.3f}, {:.3f}] m)'.format(
+            reach,
+            reference_frame,
+            coordinates[0],
+            coordinates[1],
+            coordinates[2],
+        )
+    )
+    if reach < minimum_reach:
+        return (
+            'pre-grasp target is {}, inside minimum reach safeguard of '
+            '{:.3f} m'.format(detail, minimum_reach)
+        )
+    if reach > maximum_reach:
+        return (
+            'pre-grasp target is {}, outside maximum reach safeguard of '
+            '{:.3f} m'.format(detail, maximum_reach)
+        )
+    return None

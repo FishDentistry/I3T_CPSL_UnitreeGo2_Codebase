@@ -113,15 +113,6 @@ For the Go2 to receive velocity commands from packages such as Nav2, the `cmd_ve
 By default, this parameter is set to the internal board’s Ethernet IP address because the internal and external boards are connected by Ethernet. Alternatively, if the internal board is connected to the same Wi-Fi network as the external board, its Wi-Fi IP address can be supplied instead. This is useful if for some reason you're sending commands and running the translator script from a device that is not the external board.
 
 
-## Using this repo
-1. Clone this repo and build and source the workspace
-2. Open 3 terminal windows and run the following
-    * `ros2 launch launcher dog.launch.py internal_board_ip:=OPTIONAL_YOUR_IP_HERE collect_realsense:=true or false launch_arm:= true or false arm_command_enabled:=true or false`
-    * `ros2 launch cpsl_ros2_sensors_bringup ugv_sensor_bringup.launch.py`
-    * `ros2 launch cpsl_nav slam.launch.py scan_topic:=/livox/scan_best_effort`
-3. For getting a functional transform tree and mapping, that's all you need. If you want to issue Nav2 commands, open another terminal and run
-    * `ros2 launch cpsl_nav nav2_archived.py scan_topic:=/livox/scan_best_effort`
-
 ## Unitree D1 arm
 
 The `unitree_arm` package defines the D1 `ArmString` wire message and typed
@@ -132,4 +123,190 @@ existing ROS 2/CycloneDDS topics and does not require changes to Unitree SDK2. T
 
 See [`src/unitree_arm_control/README.md`](src/unitree_arm_control/README.md) for
 build, feedback verification, launch, and command examples.
+
+
+## Using this repo
+
+This section is a command quick start for bringing up the robot, creating a
+semantic map, and requesting an arm pre-grasp. The detailed installation and
+configuration instructions above must be completed first.
+
+### 1. Build and source the workspace
+
+From the repository root:
+
+```bash
+source /opt/ros/foxy/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+```
+
+Every new terminal used below must source ROS 2 and this workspace:
+
+```bash
+source /opt/ros/foxy/setup.bash
+source /path/to/I3T_CPSL_UnitreeGo2_Codebase/install/setup.bash
+```
+
+If Grounding DINO was installed in a Python virtual environment, activate that
+environment before sourcing the workspace in the terminal that starts semantic
+mapping.
+
+### 2. Start the robot, camera, and (if applicable) arm and MoveIt
+
+In the first terminal, start the main launch file. This example starts the
+RealSense camera and arm stack, but leaves arm command publishing and physical
+grasp execution disabled:
+
+```bash
+ros2 launch go2_launcher dog.launch.py \
+  internal_board_ip:=OPTIONAL_YOUR_IP_HERE \
+  collect_realsense:=true \
+  launch_arm:=true \
+  arm_command_enabled:=false \
+  grasp_execution_enabled:=false
+```
+
+Replace the ip if the Go2 internal board uses a different address.
+Set `launch_arm:=false` when operating without the arm. With
+`launch_arm:=true`, this launch also starts the D1 controller, MoveIt, and the
+grasp coordinator; it does not start RViz.
+
+### 3. Start the external sensors and SLAM
+
+In a second terminal:
+
+```bash
+ros2 launch cpsl_ros2_sensors_bringup ugv_sensor_bringup.launch.py
+```
+
+In a third terminal:
+
+```bash
+ros2 launch cpsl_nav slam.launch.py scan_topic:=/livox/scan_best_effort
+```
+
+These processes provide the sensor data and `map` transform needed to place
+camera detections in map coordinates.
+
+### 4. Start semantic mapping
+
+In a fourth terminal:
+
+```bash
+ros2 launch semantic_mapping semantic_mapping.launch.py
+```
+
+This launch starts Grounding DINO and the semantic-mapping node. It does not
+start the RealSense camera, so `collect_realsense:=true` must be used in the
+main launch (or the camera node must be started separately).
+
+### 5. Tell the mapper what to find
+
+Publish one or more class names to `/detection_targets`. For a single target:
+
+```bash
+ros2 topic pub --once /detection_targets std_msgs/msg/String "{data: 'cup'}"
+```
+
+For multiple targets, use a comma-separated string:
+
+```bash
+ros2 topic pub --once /detection_targets std_msgs/msg/String \
+  "{data: 'cup, bottle, remote control'}"
+```
+
+Grounding DINO will continue looking for the configured targets as new camera
+frames arrive. Publish an empty value to stop detection:
+
+```bash
+ros2 topic pub --once /detection_targets std_msgs/msg/String "{data: ''}"
+```
+
+### 6. Inspect the semantic map
+
+The mapper associates repeated detections, filters unstable observations, and
+publishes stable objects on `/semantic_map`:
+
+```bash
+ros2 topic echo /semantic_map
+```
+
+Wait for the desired object to report `status: 0` (`STATUS_ACTIVE`). Note its
+`object_id` if a specific instance should be selected. RViz markers are
+published on `/semantic_map/markers`; use `map` as the RViz fixed frame and add
+a `MarkerArray` display for that topic.
+
+To open the arm MoveIt RViz2 configuration without starting a second MoveIt or
+grasp-coordinator instance:
+
+```bash
+ros2 launch unitree_arm_control d1_moveit.launch.py start_move_group:=false
+```
+
+### 7. Request an arm pre-grasp
+
+The grasp coordinator accepts commands on `/d1_grasp/command`. To select the
+closest eligible active object of a class, leave `object_id` empty:
+
+```bash
+ros2 topic pub --once /d1_grasp/command unitree_arm/msg/GraspCommand \
+  "{request_id: 'cup_request_001', object_class: 'cup', object_id: ''}"
+```
+
+To target a particular mapped instance, use the ID reported by
+`/semantic_map`:
+
+```bash
+ros2 topic pub --once /d1_grasp/command unitree_arm/msg/GraspCommand \
+  "{request_id: 'cup_request_002', object_class: 'cup', object_id: 'object_000001'}"
+```
+
+Monitor the result in another terminal:
+
+```bash
+ros2 topic echo /d1_grasp/status
+```
+
+The proposed pose can be inspected from one more terminal:
+
+```bash
+ros2 topic echo /d1_grasp/pregrasp_pose
+```
+
+With the default `grasp_execution_enabled:=false`, the coordinator validates
+the semantic-map object and plans to a pre-grasp pose, but does not move the
+arm. Eligible objects must be `ACTIVE`, sufficiently confident, observed often
+enough, recently seen, and within the configured reach and height limits.
+
+### 8. Enable guarded pre-grasp execution
+
+Physical pre-grasp motion requires both arm command publishing and grasp
+execution to be explicitly enabled. Stop the first `dog.launch.py` process and
+restart it with:
+
+```bash
+ros2 launch go2_launcher dog.launch.py \
+  internal_board_ip:=192.168.123.161 \
+  collect_realsense:=true \
+  launch_arm:=true \
+  arm_command_enabled:=true \
+  grasp_execution_enabled:=true
+```
+
+Then publish the same `/d1_grasp/command` shown above. This currently executes
+only the guarded motion to the pre-grasp pose: it does not approach the object,
+close the gripper, lift, or verify a grasp. Before enabling execution, verify
+the selected object and proposed pose, ensure the arm path is clear, and keep
+an emergency stop available. Nearby tables and objects are not automatically
+added to the MoveIt planning scene.
+
+### 9. Nav2 bringup
+
+After SLAM is running, start Nav2 in another sourced terminal when navigation
+commands are required:
+
+```bash
+ros2 launch cpsl_nav nav2_archived.py scan_topic:=/livox/scan_best_effort
+```
 

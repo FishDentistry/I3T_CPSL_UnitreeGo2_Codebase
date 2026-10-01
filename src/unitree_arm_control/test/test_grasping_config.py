@@ -33,6 +33,17 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn("'grasp_execution_enabled'", launch)
         self.assertIn("'execution_enabled': grasp_execution", launch)
 
+    def test_reach_safeguard_uses_arm_base_frame(self):
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        self.assertIn('reach_reference_frame: d1_base_link', config)
+        self.assertIn(
+            "declare_parameter('reach_reference_frame', 'd1_base_link')",
+            coordinator,
+        )
+
     def test_dog_launch_forwards_execution_safeguard(self):
         launch = (
             LAUNCHER_ROOT / 'launch' / 'dog.launch.py'

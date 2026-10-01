@@ -70,6 +70,22 @@ class GraspingTest(unittest.TestCase):
         )
         self.assertEqual(matches, [])
 
+    def test_safeguard_failures_report_exact_reasons(self):
+        candidate = semantic_object(
+            confidence=0.4,
+            observations=2,
+            last_observed=80.0,
+            status=1,
+        )
+        failures = grasping.object_safeguard_failures(
+            candidate, 100.0, 0.65, 3, 10.0, 0
+        )
+        self.assertEqual(len(failures), 4)
+        self.assertIn('not ACTIVE', failures[0])
+        self.assertIn('confidence 0.400', failures[1])
+        self.assertIn('2 observations', failures[2])
+        self.assertIn('20.0s old', failures[3])
+
     def test_transform_point_applies_rotation_then_translation(self):
         half_angle = math.pi / 4.0
         transformed = grasping.transform_point(
@@ -100,6 +116,20 @@ class GraspingTest(unittest.TestCase):
         self.assertAlmostEqual(direction[0], 0.0)
         self.assertAlmostEqual(direction[1], 0.0)
         self.assertAlmostEqual(direction[2], -1.0)
+
+    def test_reach_safeguard_accepts_point_inside_arm_envelope(self):
+        problem = grasping.reach_safeguard_problem(
+            (0.50, 0.10, 0.20), 0.10, 0.65, 'd1_base_link'
+        )
+        self.assertIsNone(problem)
+
+    def test_reach_safeguard_reports_distance_frame_and_coordinates(self):
+        problem = grasping.reach_safeguard_problem(
+            (0.60, 0.30, 0.30), 0.10, 0.65, 'd1_base_link'
+        )
+        self.assertIn('0.735 m from d1_base_link', problem)
+        self.assertIn('xyz [0.600, 0.300, 0.300] m', problem)
+        self.assertIn('maximum reach safeguard of 0.650 m', problem)
 
 
 if __name__ == '__main__':

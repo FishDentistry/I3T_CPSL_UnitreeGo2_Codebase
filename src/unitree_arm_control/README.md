@@ -389,9 +389,10 @@ object of the same class is present.
 Before planning, the coordinator requires the selected object to be active,
 recently observed, confirmed by at least three observations, and at or above
 the configured confidence threshold. It transforms the map position into
-`base_link`, applies the configured pre-grasp offset, checks the permitted
-reach and height envelope, publishes the proposed pose, and submits a pose
-goal to the existing MoveIt `move_group` action.
+`base_link`, applies the configured pre-grasp offset, checks height in the
+planning frame, and checks reach from `d1_base_link`, the base of the arm's
+kinematic chain. It then publishes the proposed pose and submits a pose goal
+to the existing MoveIt `move_group` action.
 
 The initial implementation deliberately stops at pre-grasp:
 
@@ -411,7 +412,9 @@ The initial implementation deliberately stops at pre-grasp:
 The defaults are stored in `config/grasping.yaml`. The initial target is 0.15
 metres above the mapped object along the map-frame Z axis, with the gripper
 tool Z axis pointing down. These values must be verified against the mounted
-arm in RViz before physical pre-grasp execution.
+arm in RViz before physical pre-grasp execution. Reach rejections include the
+calculated arm-relative distance and XYZ coordinates to distinguish a genuine
+workspace violation from an incorrect transform.
 
 ### Plan-only command
 
