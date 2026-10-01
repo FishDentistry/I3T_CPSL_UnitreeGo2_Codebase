@@ -89,6 +89,12 @@ class GraspingConfigTest(unittest.TestCase):
             'if self._constrain_pregrasp_orientation:', coordinator
         )
 
+    def test_kdl_solver_uses_position_only_ik(self):
+        kinematics = (
+            CONTROL_ROOT / 'config' / 'kinematics.yaml'
+        ).read_text()
+        self.assertIn('position_only_ik: true', kinematics)
+
     def test_dog_launch_forwards_execution_safeguard(self):
         launch = (
             LAUNCHER_ROOT / 'launch' / 'dog.launch.py'
