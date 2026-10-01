@@ -413,15 +413,19 @@ The initial implementation deliberately stops at pre-grasp:
 
 The defaults are stored in `config/grasping.yaml`. The initial target is 0.15
 metres above the mapped object along the map-frame Z axis. By default,
-`preserve_current_orientation` is enabled, so the target orientation is the
-current `base_link` to `d1_gripper_center` TF orientation at the instant the
-request is received. This keeps the gripper pointing as it already is instead
-of imposing an arbitrary top-down pose. The configured pre-grasp roll, pitch,
-and yaw are used only when `preserve_current_orientation` is disabled. These
-values must be verified against the mounted-arm model in RViz before physical
-pre-grasp execution. Reach rejections include the calculated arm-relative
-distance and XYZ coordinates to distinguish a genuine workspace violation
-from an incorrect transform.
+`constrain_pregrasp_orientation` is disabled, so the MoveIt goal constrains
+only the gripper-center position. MoveIt may orient the gripper as necessary,
+but it must still satisfy every URDF joint limit and collision constraint.
+
+When `constrain_pregrasp_orientation` is enabled,
+`preserve_current_orientation` uses the current `base_link` to
+`d1_gripper_center` TF orientation at the instant the request is received.
+Setting both parameters to false uses the configured map-frame pre-grasp roll,
+pitch, and yaw instead. All physical plans must be inspected in RViz before
+execution because position-only planning can select an undesirable wrist
+orientation. Reach rejections include the calculated arm-relative distance
+and XYZ coordinates to distinguish a genuine workspace violation from an
+incorrect transform.
 
 ### Plan-only command
 

@@ -96,6 +96,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('pregrasp_offset_x_m', 0.0)
         self.declare_parameter('pregrasp_offset_y_m', 0.0)
         self.declare_parameter('pregrasp_offset_z_m', 0.15)
+        self.declare_parameter('constrain_pregrasp_orientation', False)
         self.declare_parameter('preserve_current_orientation', True)
         self.declare_parameter('pregrasp_roll_rad', math.pi)
         self.declare_parameter('pregrasp_pitch_rad', 0.0)
@@ -220,6 +221,9 @@ class D1GraspCoordinator(Node):
             float(self._parameter('pregrasp_offset_x_m')),
             float(self._parameter('pregrasp_offset_y_m')),
             float(self._parameter('pregrasp_offset_z_m')),
+        )
+        self._constrain_pregrasp_orientation = bool(
+            self._parameter('constrain_pregrasp_orientation')
         )
         self._preserve_current_orientation = bool(
             self._parameter('preserve_current_orientation')
@@ -413,8 +417,13 @@ class D1GraspCoordinator(Node):
             GraspStatus.STAGE_ACCEPTED,
             False,
             False,
-            'selected {} and generated a guarded pre-grasp pose'.format(
-                selected.object_id
+            (
+                'selected {} and generated a guarded pre-grasp {}'.format(
+                    selected.object_id,
+                    'pose' if self._constrain_pregrasp_orientation else (
+                        'position; orientation is unconstrained'
+                    ),
+                )
             ),
             selected.object_id,
             target_pose,
@@ -658,7 +667,8 @@ class D1GraspCoordinator(Node):
         constraints = Constraints()
         constraints.name = 'semantic_pregrasp'
         constraints.position_constraints = [position]
-        constraints.orientation_constraints = [orientation]
+        if self._constrain_pregrasp_orientation:
+            constraints.orientation_constraints = [orientation]
 
         goal = MoveGroup.Goal()
         goal.request.start_state.is_diff = True

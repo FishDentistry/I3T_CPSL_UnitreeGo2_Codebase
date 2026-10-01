@@ -23,12 +23,17 @@ d1_grasp_coordinator:
     minimum_target_z_m: -0.10
     maximum_target_z_m: 0.80
 
-    # Preserve the gripper orientation measured at request time. This avoids
-    # imposing an arbitrary top-down pose when perception supplies no object
-    # orientation. The fixed RPY values below are used only when this is false.
+    # Position-only planning lets MoveIt choose any orientation that satisfies
+    # the arm's joint limits and collision model. Enable the orientation
+    # constraint only after perception can supply or justify an approach pose.
     pregrasp_offset_x_m: 0.0
     pregrasp_offset_y_m: 0.0
     pregrasp_offset_z_m: 0.15
+    constrain_pregrasp_orientation: false
+
+    # These settings apply only when constrain_pregrasp_orientation is true.
+    # Preserve the live gripper orientation, or set this false to use the
+    # fixed map-frame RPY values below.
     preserve_current_orientation: true
     pregrasp_roll_rad: 3.141592653589793
     pregrasp_pitch_rad: 0.0
