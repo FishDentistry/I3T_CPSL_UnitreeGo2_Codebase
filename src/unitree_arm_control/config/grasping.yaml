@@ -23,11 +23,13 @@ d1_grasp_coordinator:
     minimum_target_z_m: -0.10
     maximum_target_z_m: 0.80
 
-    # Initial top-down pre-grasp in map-frame axes. These values must be tuned
-    # against the mounted-arm model before contact is enabled in a later stage.
+    # Preserve the gripper orientation measured at request time. This avoids
+    # imposing an arbitrary top-down pose when perception supplies no object
+    # orientation. The fixed RPY values below are used only when this is false.
     pregrasp_offset_x_m: 0.0
     pregrasp_offset_y_m: 0.0
     pregrasp_offset_z_m: 0.15
+    preserve_current_orientation: true
     pregrasp_roll_rad: 3.141592653589793
     pregrasp_pitch_rad: 0.0
     pregrasp_yaw_rad: 0.0

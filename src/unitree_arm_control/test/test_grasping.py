@@ -97,7 +97,7 @@ class GraspingTest(unittest.TestCase):
         self.assertAlmostEqual(transformed[1], 3.0)
         self.assertAlmostEqual(transformed[2], 3.0)
 
-    def test_default_pregrasp_rotation_points_local_z_down(self):
+    def test_configured_pregrasp_rotation_points_local_z_down(self):
         quaternion = grasping.quaternion_from_rpy(math.pi, 0.0, 0.0)
         direction = grasping.rotate_vector((0.0, 0.0, 1.0), quaternion)
         self.assertAlmostEqual(direction[0], 0.0)

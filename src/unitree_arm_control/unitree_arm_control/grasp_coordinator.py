@@ -96,6 +96,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('pregrasp_offset_x_m', 0.0)
         self.declare_parameter('pregrasp_offset_y_m', 0.0)
         self.declare_parameter('pregrasp_offset_z_m', 0.15)
+        self.declare_parameter('preserve_current_orientation', True)
         self.declare_parameter('pregrasp_roll_rad', math.pi)
         self.declare_parameter('pregrasp_pitch_rad', 0.0)
         self.declare_parameter('pregrasp_yaw_rad', 0.0)
@@ -219,6 +220,9 @@ class D1GraspCoordinator(Node):
             float(self._parameter('pregrasp_offset_x_m')),
             float(self._parameter('pregrasp_offset_y_m')),
             float(self._parameter('pregrasp_offset_z_m')),
+        )
+        self._preserve_current_orientation = bool(
+            self._parameter('preserve_current_orientation')
         )
         self._pregrasp_rpy = (
             float(self._parameter('pregrasp_roll_rad')),
@@ -507,10 +511,22 @@ class D1GraspCoordinator(Node):
         transform_quaternion = (
             rotation.x, rotation.y, rotation.z, rotation.w
         )
-        target_orientation = grasping.multiply_quaternions(
-            transform_quaternion,
-            grasping.quaternion_from_rpy(*self._pregrasp_rpy),
-        )
+        if self._preserve_current_orientation:
+            tip_transform = self._tf_buffer.lookup_transform(
+                self._planning_frame, self._tip_link, Time()
+            )
+            tip_rotation = tip_transform.transform.rotation
+            target_orientation = (
+                tip_rotation.x,
+                tip_rotation.y,
+                tip_rotation.z,
+                tip_rotation.w,
+            )
+        else:
+            target_orientation = grasping.multiply_quaternions(
+                transform_quaternion,
+                grasping.quaternion_from_rpy(*self._pregrasp_rpy),
+            )
         reach_translation = None
         reach_quaternion = None
         if self._reach_reference_frame != self._planning_frame:

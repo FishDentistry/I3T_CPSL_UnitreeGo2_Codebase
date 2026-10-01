@@ -412,11 +412,16 @@ The initial implementation deliberately stops at pre-grasp:
   not accepted twice.
 
 The defaults are stored in `config/grasping.yaml`. The initial target is 0.15
-metres above the mapped object along the map-frame Z axis, with the gripper
-tool Z axis pointing down. These values must be verified against the mounted
-arm in RViz before physical pre-grasp execution. Reach rejections include the
-calculated arm-relative distance and XYZ coordinates to distinguish a genuine
-workspace violation from an incorrect transform.
+metres above the mapped object along the map-frame Z axis. By default,
+`preserve_current_orientation` is enabled, so the target orientation is the
+current `base_link` to `d1_gripper_center` TF orientation at the instant the
+request is received. This keeps the gripper pointing as it already is instead
+of imposing an arbitrary top-down pose. The configured pre-grasp roll, pitch,
+and yaw are used only when `preserve_current_orientation` is disabled. These
+values must be verified against the mounted-arm model in RViz before physical
+pre-grasp execution. Reach rejections include the calculated arm-relative
+distance and XYZ coordinates to distinguish a genuine workspace violation
+from an incorrect transform.
 
 ### Plan-only command
 

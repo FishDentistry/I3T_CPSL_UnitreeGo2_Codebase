@@ -60,6 +60,21 @@ class GraspingConfigTest(unittest.TestCase):
             coordinator,
         )
 
+    def test_current_gripper_orientation_is_preserved_by_default(self):
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        self.assertIn('preserve_current_orientation: true', config)
+        self.assertIn(
+            "declare_parameter('preserve_current_orientation', True)",
+            coordinator,
+        )
+        self.assertIn(
+            'self._planning_frame, self._tip_link, Time()',
+            coordinator,
+        )
+
     def test_dog_launch_forwards_execution_safeguard(self):
         launch = (
             LAUNCHER_ROOT / 'launch' / 'dog.launch.py'
