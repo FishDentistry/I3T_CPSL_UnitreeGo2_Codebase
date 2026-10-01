@@ -28,7 +28,7 @@ d1_grasp_coordinator:
     # constraint only after perception can supply or justify an approach pose.
     pregrasp_offset_x_m: 0.0
     pregrasp_offset_y_m: 0.0
-    pregrasp_offset_z_m: 0.15
+    pregrasp_offset_z_m: 0.05
     constrain_pregrasp_orientation: false
 
     # These settings apply only when constrain_pregrasp_orientation is true.
