@@ -87,9 +87,9 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('execution_enabled', False)
         self.declare_parameter('minimum_confidence', 0.65)
         self.declare_parameter('minimum_observations', 3)
-        self.declare_parameter('maximum_object_age_sec', 10.0)
+        self.declare_parameter('maximum_object_age_sec', 20.0)
         self.declare_parameter('minimum_reach_m', 0.10)
-        self.declare_parameter('maximum_reach_m', 0.65)
+        self.declare_parameter('maximum_reach_m', 0.67)
         self.declare_parameter('minimum_target_z_m', -0.10)
         self.declare_parameter('maximum_target_z_m', 0.80)
 

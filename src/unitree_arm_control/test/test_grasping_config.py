@@ -43,6 +43,22 @@ class GraspingConfigTest(unittest.TestCase):
             "declare_parameter('reach_reference_frame', 'd1_base_link')",
             coordinator,
         )
+        self.assertIn('maximum_reach_m: 0.67', config)
+        self.assertIn(
+            "declare_parameter('maximum_reach_m', 0.67)",
+            coordinator,
+        )
+
+    def test_grasp_candidate_age_default_is_twenty_seconds(self):
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        self.assertIn('maximum_object_age_sec: 20.0', config)
+        self.assertIn(
+            "declare_parameter('maximum_object_age_sec', 20.0)",
+            coordinator,
+        )
 
     def test_dog_launch_forwards_execution_safeguard(self):
         launch = (

@@ -388,11 +388,13 @@ object of the same class is present.
 
 Before planning, the coordinator requires the selected object to be active,
 recently observed, confirmed by at least three observations, and at or above
-the configured confidence threshold. It transforms the map position into
+the configured confidence threshold. By default, an observation remains
+eligible for 20 seconds. The coordinator transforms the map position into
 `base_link`, applies the configured pre-grasp offset, checks height in the
 planning frame, and checks reach from `d1_base_link`, the base of the arm's
-kinematic chain. It then publishes the proposed pose and submits a pose goal
-to the existing MoveIt `move_group` action.
+kinematic chain, against the D1's specified 0.67-metre maximum reach. It then
+publishes the proposed pose and submits a pose goal to the existing MoveIt
+`move_group` action.
 
 The initial implementation deliberately stops at pre-grasp:
 
