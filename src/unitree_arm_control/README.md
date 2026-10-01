@@ -399,7 +399,8 @@ publishes the proposed pose and submits a pose goal to the existing MoveIt
 The initial implementation deliberately stops at pre-grasp:
 
 - `grasp_execution_enabled:=false` is the default. Commands produce a plan but
-  do not move the arm.
+  do not move the arm. Execution mode is supplied directly by the MoveIt launch
+  file; it is intentionally not duplicated in `config/grasping.yaml`.
 - When pre-grasp execution is enabled, velocity and acceleration are limited
   to conservative scaling factors and the node stops after reaching the
   offset pose.

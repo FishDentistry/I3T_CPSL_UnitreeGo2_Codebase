@@ -11,9 +11,6 @@ d1_grasp_coordinator:
     tip_link: d1_gripper_center
     planner_id: ""
 
-    # The dog launch overrides this only when explicitly requested.
-    execution_enabled: false
-
     # Reject uncertain, tentative, stale, or unreachable map entries.
     minimum_confidence: 0.65
     minimum_observations: 3

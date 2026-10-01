@@ -29,9 +29,11 @@ class GraspingConfigTest(unittest.TestCase):
         launch = (
             CONTROL_ROOT / 'launch' / 'd1_moveit.launch.py'
         ).read_text()
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
         self.assertIn("executable='d1_grasp_coordinator'", launch)
         self.assertIn("'grasp_execution_enabled'", launch)
         self.assertIn("'execution_enabled': grasp_execution", launch)
+        self.assertNotIn('execution_enabled:', config)
 
     def test_reach_safeguard_uses_arm_base_frame(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
