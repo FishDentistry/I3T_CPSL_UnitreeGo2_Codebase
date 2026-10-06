@@ -1,6 +1,7 @@
 """Coordinate guarded semantic-object grasp-and-release motions through MoveIt."""
 
 from collections import deque
+import copy
 import math
 
 from geometry_msgs.msg import Pose
@@ -188,6 +189,10 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('approach_distance_m', 0.07)
         self.declare_parameter('grasp_center_offset_m', 0.0)
         self.declare_parameter('tool_roll_rad', 0.0)
+        self.declare_parameter(
+            'tool_roll_offsets_rad',
+            [0.0, math.pi / 2.0, -math.pi / 2.0],
+        )
         self.declare_parameter('position_tolerance_m', 0.02)
         self.declare_parameter('orientation_tolerance_rad', 0.20)
 
@@ -265,6 +270,10 @@ class D1GraspCoordinator(Node):
             float(value)
             for value in self._parameter('approach_yaw_offsets_rad')
         )
+        self._tool_roll_offsets = tuple(
+            float(value)
+            for value in self._parameter('tool_roll_offsets_rad')
+        )
 
         # Short aliases keep the motion code readable.
         self._maximum_object_age = self._maximum_object_age_sec
@@ -302,6 +311,8 @@ class D1GraspCoordinator(Node):
             raise RuntimeError('target z limits are invalid')
         if not self._approach_yaw_offsets:
             raise RuntimeError('approach_yaw_offsets_rad must not be empty')
+        if not self._tool_roll_offsets:
+            raise RuntimeError('tool_roll_offsets_rad must not be empty')
         if self._approach_distance <= 0.0:
             raise RuntimeError('approach_distance_m must be positive')
         if self._grasp_center_offset < 0.0:
@@ -498,7 +509,9 @@ class D1GraspCoordinator(Node):
             'approach_origin': approach_origin,
             'candidates': candidates,
             'candidate_index': 0,
+            'validated_candidates': [],
             'candidate': None,
+            'pregrasp_trajectory': None,
             'pregrasp_pose': first_pose,
             'grasp_pose': None,
             'retreat_pose': None,
@@ -592,13 +605,22 @@ class D1GraspCoordinator(Node):
             )
             if not all(math.isfinite(value) for value in object_point):
                 continue
+            generated = []
             try:
-                generated = grasping.generate_approach_candidates(
-                    object_point, approach_origin,
-                    self._approach_yaw_offsets,
-                    self._approach_distance, self._grasp_center_offset,
-                    self._tool_roll_rad,
-                )
+                for roll_offset in self._tool_roll_offsets:
+                    roll_candidates = (
+                        grasping.generate_approach_candidates(
+                            object_point,
+                            approach_origin,
+                            self._approach_yaw_offsets,
+                            self._approach_distance,
+                            self._grasp_center_offset,
+                            self._tool_roll_rad + roll_offset,
+                        )
+                    )
+                    for candidate in roll_candidates:
+                        candidate['tool_roll_offset'] = roll_offset
+                        generated.append(candidate)
             except ValueError as error:
                 failures.append(str(error))
                 continue
@@ -678,10 +700,7 @@ class D1GraspCoordinator(Node):
         index = self._active['candidate_index']
         candidates = self._active['candidates']
         if index >= len(candidates):
-            self._finish_failure(
-                'no side-approach candidate produced both a valid pre-grasp '
-                'plan and a complete Cartesian approach'
-            )
+            self._finish_candidate_screening()
             return
         candidate = candidates[index]
         pose = self._candidate_pose(candidate, 'pregrasp_point')
@@ -750,7 +769,9 @@ class D1GraspCoordinator(Node):
         )
         goal.planning_options.planning_scene_diff.is_diff = True
         goal.planning_options.planning_scene_diff.robot_state.is_diff = True
-        goal.planning_options.plan_only = not self._execution_enabled
+        # Candidate screening is always plan-only. The selected trajectory is
+        # sent for execution only after its final Cartesian segment succeeds.
+        goal.planning_options.plan_only = True
         goal.planning_options.look_around = False
         goal.planning_options.replan = False
         return goal
@@ -819,6 +840,101 @@ class D1GraspCoordinator(Node):
             )
             return
 
+        trajectory = result.planned_trajectory
+        if not trajectory.joint_trajectory.points:
+            self._try_next_candidate('MoveIt returned an empty trajectory')
+            return
+        try:
+            end_state = self._trajectory_end_state(
+                result.trajectory_start, trajectory
+            )
+        except Exception as error:
+            self._try_next_candidate(
+                'could not construct the planned pre-grasp state: {}'.format(
+                    error
+                )
+            )
+            return
+        self._active['pending_pregrasp_trajectory'] = trajectory
+        self._request_cartesian_path(
+            self._candidate_pose(
+                self._active['candidate'], 'grasp_point'
+            ),
+            'validation',
+            GraspStatus.STAGE_PLANNING,
+            'validating the final Cartesian segment for candidate {} of {}'.format(
+                self._active['candidate_index'] + 1,
+                len(self._active['candidates']),
+            ),
+            start_state=end_state,
+        )
+
+    @staticmethod
+    def _trajectory_end_state(start_state, trajectory):
+        state = copy.deepcopy(start_state)
+        joint_trajectory = trajectory.joint_trajectory
+        if not joint_trajectory.points:
+            raise ValueError('trajectory has no points')
+        positions = joint_trajectory.points[-1].positions
+        if len(positions) != len(joint_trajectory.joint_names):
+            raise ValueError('trajectory endpoint has incomplete positions')
+        state_positions = {
+            name: position
+            for name, position in zip(
+                state.joint_state.name, state.joint_state.position
+            )
+        }
+        state_positions.update(zip(joint_trajectory.joint_names, positions))
+        state.joint_state.name = list(state_positions.keys())
+        state.joint_state.position = list(state_positions.values())
+        state.joint_state.velocity = []
+        state.joint_state.effort = []
+        state.is_diff = False
+        return state
+
+    @staticmethod
+    def _trajectory_cost(trajectory):
+        points = trajectory.joint_trajectory.points
+        if len(points) < 2:
+            return 0.0
+        cost = 0.0
+        for previous, current in zip(points, points[1:]):
+            cost += math.sqrt(sum(
+                (float(right) - float(left)) ** 2
+                for left, right in zip(
+                    previous.positions, current.positions
+                )
+            ))
+        return cost
+
+    def _finish_candidate_screening(self):
+        if self._active is None:
+            return
+        validated = self._active['validated_candidates']
+        if not validated:
+            self._finish_failure(
+                'no side-approach candidate produced both a valid pre-grasp '
+                'plan and a complete Cartesian approach'
+            )
+            return
+        selected = min(validated, key=lambda item: item['score'])
+        self._active['candidate'] = selected['candidate']
+        self._active['candidate_index'] = selected['candidate_index']
+        self._active['pregrasp_pose'] = selected['pregrasp_pose']
+        self._active['pregrasp_trajectory'] = selected['trajectory']
+        self._pregrasp_publisher.publish(selected['pregrasp_pose'])
+        self._execute_robot_trajectory(
+            selected['trajectory'],
+            'pregrasp',
+            GraspStatus.STAGE_EXECUTING,
+            'executing candidate {} after plan-only screening selected it '
+            'with motion cost {:.3f}'.format(
+                selected['candidate_index'] + 1, selected['score']
+            ),
+            selected['pregrasp_pose'],
+        )
+
+    def _begin_reacquisition(self):
         self._active['phase'] = 'reacquiring'
         self._active['required_detection_receipt'] = self._now_seconds()
         self._active['deadline'] = (
@@ -925,7 +1041,8 @@ class D1GraspCoordinator(Node):
             'fresh target acquired; computing the short Cartesian approach',
         )
 
-    def _request_cartesian_path(self, pose, purpose, stage, message):
+    def _request_cartesian_path(
+            self, pose, purpose, stage, message, start_state=None):
         if self._active is None:
             return
         self._active['phase'] = 'computing_' + purpose
@@ -934,7 +1051,10 @@ class D1GraspCoordinator(Node):
         request = GetCartesianPath.Request()
         request.header.stamp = self.get_clock().now().to_msg()
         request.header.frame_id = self._planning_frame
-        request.start_state.is_diff = True
+        if start_state is None:
+            request.start_state.is_diff = True
+        else:
+            request.start_state = copy.deepcopy(start_state)
         request.group_name = self._planning_group
         request.link_name = self._tip_link
         request.waypoints = [pose.pose]
@@ -977,8 +1097,10 @@ class D1GraspCoordinator(Node):
                     error_code, 'MoveIt error {}'.format(error_code)
                 )
             )
-            if purpose == 'approach':
+            if purpose == 'validation':
                 self._try_next_candidate(description)
+            elif purpose == 'approach':
+                self._restart_candidate_screening(description)
             else:
                 self._finish_failure(description)
             return
@@ -990,36 +1112,104 @@ class D1GraspCoordinator(Node):
                     100.0 * self._minimum_cartesian_fraction,
                 )
             )
-            if purpose == 'approach':
+            if purpose == 'validation':
                 self._try_next_candidate(description)
+            elif purpose == 'approach':
+                self._restart_candidate_screening(description)
             else:
                 self._finish_failure(description)
             return
+        if purpose == 'validation':
+            candidate = self._active['candidate']
+            trajectory = self._active['pending_pregrasp_trajectory']
+            score = self._trajectory_cost(trajectory)
+            score += 0.05 * abs(float(candidate['yaw_offset']))
+            score += 0.02 * abs(float(
+                candidate.get('tool_roll_offset', 0.0)
+            ))
+            self._active['validated_candidates'].append({
+                'candidate': candidate,
+                'candidate_index': self._active['candidate_index'],
+                'pregrasp_pose': self._active['pregrasp_pose'],
+                'trajectory': trajectory,
+                'score': score,
+            })
+            self.get_logger().info(
+                'Approach candidate {} passed plan-only screening with '
+                'motion cost {:.3f}'.format(
+                    self._active['candidate_index'] + 1, score
+                )
+            )
+            self._active['candidate_index'] += 1
+            self._start_next_pregrasp_candidate()
+            return
+        self._execute_robot_trajectory(
+            response.solution,
+            purpose,
+            GraspStatus.STAGE_APPROACHING if purpose == 'approach' else (
+                GraspStatus.STAGE_RETREATING
+            ),
+            'executing Cartesian {}'.format(purpose),
+            self._active['target_pose'],
+        )
+
+    def _execute_robot_trajectory(
+            self, trajectory, purpose, stage, message, target_pose):
+        if self._active is None:
+            return
         self._active['phase'] = 'executing_' + purpose
+        self._active['trajectory_purpose'] = purpose
+        self._publish_active_stage(stage, message, target_pose)
         goal = ExecuteTrajectory.Goal()
-        goal.trajectory = response.solution
+        goal.trajectory = trajectory
         future = self._execute_trajectory.send_goal_async(goal)
+        token = self._active['token']
         future.add_done_callback(
             lambda done, token=token:
                 self._execute_goal_response(done, token)
         )
+
+    def _restart_candidate_screening(self, reason):
+        if self._active is None:
+            return
+        failed_index = self._active['candidate_index']
+        self.get_logger().warning(
+            'Selected approach candidate {} became invalid after fresh '
+            'reacquisition: {}'.format(failed_index + 1, reason)
+        )
+        remaining = []
+        for index, candidate in enumerate(self._active['candidates']):
+            if index == failed_index:
+                continue
+            remaining.append(grasping.retarget_approach_candidate(
+                candidate,
+                self._active['object_point'],
+                self._approach_distance,
+                self._grasp_center_offset,
+            ))
+        self._active['candidates'] = tuple(remaining)
+        self._active['candidate_index'] = 0
+        self._active['validated_candidates'] = []
+        self._active['candidate'] = None
+        self._active['pending_pregrasp_trajectory'] = None
+        self._start_next_pregrasp_candidate()
 
     def _execute_goal_response(self, future, token):
         if (
                 not self._active_token_valid(token)
                 or not self._active['phase'].startswith('executing_')):
             return
-        purpose = self._active['cartesian_purpose']
+        purpose = self._active['trajectory_purpose']
         try:
             goal_handle = future.result()
         except Exception as error:
             self._finish_failure(
-                'could not execute Cartesian {}: {}'.format(purpose, error)
+                'could not execute {} trajectory: {}'.format(purpose, error)
             )
             return
         if not goal_handle.accepted:
             self._finish_failure(
-                'MoveIt rejected Cartesian {} execution'.format(purpose)
+                'MoveIt rejected {} trajectory execution'.format(purpose)
             )
             return
         result_future = goal_handle.get_result_async()
@@ -1032,25 +1222,27 @@ class D1GraspCoordinator(Node):
                 not self._active_token_valid(token)
                 or not self._active['phase'].startswith('executing_')):
             return
-        purpose = self._active['cartesian_purpose']
+        purpose = self._active['trajectory_purpose']
         try:
             result = future.result().result
             error_code = result.error_code.val
         except Exception as error:
             self._finish_failure(
-                'Cartesian {} execution failed: {}'.format(purpose, error)
+                '{} trajectory execution failed: {}'.format(purpose, error)
             )
             return
         if error_code != MoveItErrorCodes.SUCCESS:
             self._finish_failure(
-                'Cartesian {} execution failed: {}'.format(
+                '{} trajectory execution failed: {}'.format(
                     purpose, MOVEIT_ERROR_NAMES.get(
                         error_code, 'MoveIt error {}'.format(error_code)
                     )
                 )
             )
             return
-        if purpose == 'approach':
+        if purpose == 'pregrasp':
+            self._begin_reacquisition()
+        elif purpose == 'approach':
             self._command_gripper(
                 self._gripper_closed_degrees,
                 'wait_close',

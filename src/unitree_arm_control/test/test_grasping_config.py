@@ -73,12 +73,23 @@ class GraspingConfigTest(unittest.TestCase):
         ).read_text()
         self.assertIn('detections_topic: /grounding_dino/detection_array', config)
         self.assertIn('minimum_cartesian_fraction: 0.95', config)
+        self.assertIn('tool_roll_offsets_rad:', config)
         self.assertIn('GetCartesianPath', coordinator)
         self.assertIn('ExecuteTrajectory', coordinator)
         self.assertIn("'reacquiring'", coordinator)
         self.assertIn('retarget_approach_candidate(', coordinator)
         self.assertIn("if purpose == 'approach':", coordinator)
-        self.assertIn('self._try_next_candidate(description)', coordinator)
+        self.assertIn('self._restart_candidate_screening(description)', coordinator)
+
+    def test_candidates_are_screened_before_pregrasp_execution(self):
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        self.assertIn('goal.planning_options.plan_only = True', coordinator)
+        self.assertIn("'validated_candidates': []", coordinator)
+        self.assertIn('result.planned_trajectory', coordinator)
+        self.assertIn("'pregrasp',", coordinator)
+        self.assertIn("min(validated, key=lambda item: item['score'])", coordinator)
 
     def test_primary_approach_uses_current_gripper_position(self):
         coordinator = (
