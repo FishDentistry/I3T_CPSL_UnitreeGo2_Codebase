@@ -392,14 +392,16 @@ last 20 seconds, and satisfy the height and 0.67-metre D1 reach safeguards.
 The coordinator performs the following sequence when execution is enabled:
 
 1. Open the gripper and confirm its feedback position.
-2. Generate horizontal side-approach poses around the object. The direct
-   approach is tried first, followed by configured yaw alternatives if MoveIt
-   cannot plan it.
+2. Generate horizontal side-approach poses around the object from the current
+   gripper position. The direct approach is tried first, followed by configured
+   yaw alternatives when either the pre-grasp plan or final Cartesian segment
+   is incomplete.
 3. Plan and execute a full-pose MoveIt motion to a pre-grasp point 0.07 metres
    from the object.
 4. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
-   limited to 0.08 metres by default.
+   limited to 0.08 metres by default. Reacquisition preserves the selected
+   approach orientation.
 5. Compute and execute a short, slow, collision-checked Cartesian path to the
    corrected grasp point.
 6. Close the gripper. Position feedback is accepted when it reaches the closed
@@ -490,4 +492,3 @@ MoveIt trajectories use D1 firmware trajectory mode (`mode: 1`) by default,
 which produces substantially smoother physical motion than the legacy 10 Hz
 smoothing mode. For comparison only, launch with
 `arm_trajectory_command_mode:=0`.
-

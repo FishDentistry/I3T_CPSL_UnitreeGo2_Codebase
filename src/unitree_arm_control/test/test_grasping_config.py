@@ -76,6 +76,20 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn('GetCartesianPath', coordinator)
         self.assertIn('ExecuteTrajectory', coordinator)
         self.assertIn("'reacquiring'", coordinator)
+        self.assertIn('retarget_approach_candidate(', coordinator)
+        self.assertIn("if purpose == 'approach':", coordinator)
+        self.assertIn('self._try_next_candidate(description)', coordinator)
+
+    def test_primary_approach_uses_current_gripper_position(self):
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        self.assertIn(
+            'self._planning_frame, self._tip_link, Time()', coordinator
+        )
+        self.assertIn(
+            'object_point, approach_origin,', coordinator
+        )
 
     def test_gripper_sequence_holds_releases_and_does_not_lift(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()

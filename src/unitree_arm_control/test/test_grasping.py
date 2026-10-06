@@ -158,6 +158,27 @@ class GraspingTest(unittest.TestCase):
                 0.0,
             )
 
+    def test_retarget_preserves_selected_approach_orientation(self):
+        candidate = grasping.generate_approach_candidates(
+            (0.5, 0.1, 0.2),
+            (0.2, -0.1, 0.3),
+            [0.3],
+            0.07,
+            0.0,
+        )[0]
+        updated = grasping.retarget_approach_candidate(
+            candidate,
+            (0.52, 0.09, 0.21),
+            0.07,
+            0.0,
+        )
+        self.assertEqual(updated['orientation'], candidate['orientation'])
+        for updated_axis, original_axis in zip(
+                updated['approach_direction'],
+                candidate['approach_direction']):
+            self.assertAlmostEqual(updated_axis, original_axis)
+        self.assertEqual(updated['grasp_point'], (0.52, 0.09, 0.21))
+
     def test_reach_safeguard_accepts_point_inside_arm_envelope(self):
         problem = grasping.reach_safeguard_problem(
             (0.50, 0.10, 0.20), 0.10, 0.65, 'd1_base_link'

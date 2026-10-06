@@ -480,7 +480,7 @@ class D1GraspCoordinator(Node):
             return
 
         try:
-            selected, object_point, arm_origin, candidates = (
+            selected, object_point, approach_origin, candidates = (
                 self._select_object_and_candidates(objects)
             )
         except Exception as error:
@@ -495,7 +495,7 @@ class D1GraspCoordinator(Node):
             'object_id': selected.object_id,
             'object_class': object_class,
             'object_point': object_point,
-            'arm_origin': arm_origin,
+            'approach_origin': approach_origin,
             'candidates': candidates,
             'candidate_index': 0,
             'candidate': None,
@@ -514,7 +514,7 @@ class D1GraspCoordinator(Node):
         self._pregrasp_publisher.publish(first_pose)
         self._publish_active_stage(
             GraspStatus.STAGE_ACCEPTED,
-            'selected {} with {} collision-checked approach candidate(s)'.format(
+            'selected {} with {} safeguard-compatible approach candidate(s)'.format(
                 selected.object_id, len(candidates)
             ),
             first_pose,
@@ -578,6 +578,12 @@ class D1GraspCoordinator(Node):
             self._planning_frame, self._reach_reference_frame, Time()
         )
         arm_origin = self._point_tuple(arm_transform.transform.translation)
+        tip_transform = self._tf_buffer.lookup_transform(
+            self._planning_frame, self._tip_link, Time()
+        )
+        approach_origin = self._point_tuple(
+            tip_transform.transform.translation
+        )
         viable = []
         failures = []
         for item in objects:
@@ -588,7 +594,8 @@ class D1GraspCoordinator(Node):
                 continue
             try:
                 generated = grasping.generate_approach_candidates(
-                    object_point, arm_origin, self._approach_yaw_offsets,
+                    object_point, approach_origin,
+                    self._approach_yaw_offsets,
                     self._approach_distance, self._grasp_center_offset,
                     self._tool_roll_rad,
                 )
@@ -604,7 +611,7 @@ class D1GraspCoordinator(Node):
                     failures.append(problem)
             if valid:
                 viable.append((
-                    item, object_point, arm_origin, tuple(valid),
+                    item, object_point, approach_origin, tuple(valid),
                     grasping.distance_between(object_point, arm_origin),
                 ))
         if not viable:
@@ -672,7 +679,8 @@ class D1GraspCoordinator(Node):
         candidates = self._active['candidates']
         if index >= len(candidates):
             self._finish_failure(
-                'MoveIt could not plan any permitted side-approach candidate'
+                'no side-approach candidate produced both a valid pre-grasp '
+                'plan and a complete Cartesian approach'
             )
             return
         candidate = candidates[index]
@@ -832,7 +840,7 @@ class D1GraspCoordinator(Node):
         if self._active is None:
             return
         self.get_logger().warning(
-            'Pre-grasp candidate {} failed: {}'.format(
+            'Approach candidate {} failed: {}'.format(
                 self._active['candidate_index'] + 1, reason
             )
         )
@@ -897,12 +905,10 @@ class D1GraspCoordinator(Node):
             )
             return
         selected = self._active['candidate']
-        candidates = grasping.generate_approach_candidates(
-            object_point, self._active['arm_origin'],
-            [selected['yaw_offset']], self._approach_distance,
-            self._grasp_center_offset, self._tool_roll_rad,
+        candidate = grasping.retarget_approach_candidate(
+            selected, object_point, self._approach_distance,
+            self._grasp_center_offset,
         )
-        candidate = candidates[0]
         problem = self._candidate_problem(candidate)
         if problem is not None:
             self._finish_failure('reacquired target is unsafe: ' + problem)
@@ -966,21 +972,28 @@ class D1GraspCoordinator(Node):
             return
         error_code = response.error_code.val
         if error_code != MoveItErrorCodes.SUCCESS:
-            self._finish_failure(
-                'Cartesian {} failed: {}'.format(
-                    purpose, MOVEIT_ERROR_NAMES.get(
-                        error_code, 'MoveIt error {}'.format(error_code)
-                    )
+            description = 'Cartesian {} failed: {}'.format(
+                purpose, MOVEIT_ERROR_NAMES.get(
+                    error_code, 'MoveIt error {}'.format(error_code)
                 )
             )
+            if purpose == 'approach':
+                self._try_next_candidate(description)
+            else:
+                self._finish_failure(description)
             return
         if float(response.fraction) < self._minimum_cartesian_fraction:
-            self._finish_failure(
+            description = (
                 'Cartesian {} covered only {:.1f}% (minimum {:.1f}%)'.format(
-                    purpose, 100.0 * float(response.fraction),
+                    purpose,
+                    100.0 * float(response.fraction),
                     100.0 * self._minimum_cartesian_fraction,
                 )
             )
+            if purpose == 'approach':
+                self._try_next_candidate(description)
+            else:
+                self._finish_failure(description)
             return
         self._active['phase'] = 'executing_' + purpose
         goal = ExecuteTrajectory.Goal()

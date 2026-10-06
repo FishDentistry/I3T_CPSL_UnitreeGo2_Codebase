@@ -255,16 +255,16 @@ def quaternion_from_approach(approach_direction, tool_roll=0.0):
 
 def generate_approach_candidates(
         object_point,
-        arm_origin,
+        approach_origin,
         yaw_offsets,
         approach_distance,
         grasp_center_offset,
         tool_roll=0.0):
     """Generate horizontal, object-directed pre-grasp candidates.
 
-    The approach direction points from the pre-grasp toward the object. The
-    pre-grasp offset is therefore applied toward the arm, rather than upward
-    in a global frame.
+    The primary approach direction points from the current gripper position
+    toward the object. The pre-grasp offset is applied along that direction,
+    rather than upward in a global frame.
     """
     if approach_distance <= 0.0:
         raise ValueError('approach_distance must be positive')
@@ -272,8 +272,8 @@ def generate_approach_candidates(
         raise ValueError('grasp_center_offset must not be negative')
 
     radial = (
-        float(object_point[0]) - float(arm_origin[0]),
-        float(object_point[1]) - float(arm_origin[1]),
+        float(object_point[0]) - float(approach_origin[0]),
+        float(object_point[1]) - float(approach_origin[1]),
         0.0,
     )
     radial = _normalized(radial)
@@ -306,6 +306,32 @@ def generate_approach_candidates(
     return tuple(sorted(
         candidates, key=lambda item: abs(item['yaw_offset'])
     ))
+
+
+def retarget_approach_candidate(
+        candidate,
+        object_point,
+        approach_distance,
+        grasp_center_offset):
+    """Move a candidate to a refreshed object point without rotating it."""
+    if approach_distance <= 0.0:
+        raise ValueError('approach_distance must be positive')
+    if grasp_center_offset < 0.0:
+        raise ValueError('grasp_center_offset must not be negative')
+    direction = _normalized(candidate['approach_direction'])
+    grasp_point = tuple(
+        float(value) - float(grasp_center_offset) * axis
+        for value, axis in zip(object_point, direction)
+    )
+    pregrasp_point = tuple(
+        value - float(approach_distance) * axis
+        for value, axis in zip(grasp_point, direction)
+    )
+    updated = dict(candidate)
+    updated['approach_direction'] = direction
+    updated['grasp_point'] = grasp_point
+    updated['pregrasp_point'] = pregrasp_point
+    return updated
 
 
 def reach_safeguard_problem(
