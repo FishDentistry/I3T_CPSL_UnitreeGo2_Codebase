@@ -77,25 +77,25 @@ class GraspingConfigTest(unittest.TestCase):
             coordinator,
         )
 
-    def test_pregrasp_orientation_constraint_is_opt_in(self):
+    def test_pregrasp_preserves_current_orientation_by_default(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
-        self.assertIn('constrain_pregrasp_orientation: false', config)
+        self.assertIn('constrain_pregrasp_orientation: true', config)
         self.assertIn(
-            "declare_parameter('constrain_pregrasp_orientation', False)",
+            "declare_parameter('constrain_pregrasp_orientation', True)",
             coordinator,
         )
         self.assertIn(
             'if self._constrain_pregrasp_orientation:', coordinator
         )
 
-    def test_kdl_solver_uses_position_only_ik(self):
+    def test_kdl_solver_uses_full_pose_ik(self):
         kinematics = (
             CONTROL_ROOT / 'config' / 'kinematics.yaml'
         ).read_text()
-        self.assertIn('position_only_ik: true', kinematics)
+        self.assertIn('position_only_ik: false', kinematics)
 
     def test_dog_launch_forwards_execution_safeguard(self):
         launch = (

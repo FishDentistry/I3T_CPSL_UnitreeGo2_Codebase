@@ -96,7 +96,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('pregrasp_offset_x_m', 0.0)
         self.declare_parameter('pregrasp_offset_y_m', 0.0)
         self.declare_parameter('pregrasp_offset_z_m', 0.15)
-        self.declare_parameter('constrain_pregrasp_orientation', False)
+        self.declare_parameter('constrain_pregrasp_orientation', True)
         self.declare_parameter('preserve_current_orientation', True)
         self.declare_parameter('pregrasp_roll_rad', math.pi)
         self.declare_parameter('pregrasp_pitch_rad', 0.0)

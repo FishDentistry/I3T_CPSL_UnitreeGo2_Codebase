@@ -412,26 +412,23 @@ The initial implementation deliberately stops at pre-grasp:
 - Only one request is processed at a time, and the most recent request IDs are
   not accepted twice.
 
-The defaults are stored in `config/grasping.yaml`. The initial target is 0.15
+The defaults are stored in `config/grasping.yaml`. The initial target is 0.05
 metres above the mapped object along the map-frame Z axis. By default,
-`constrain_pregrasp_orientation` is disabled, so the MoveIt goal constrains
-only the gripper-center position. MoveIt may orient the gripper as necessary,
-but it must still satisfy every URDF joint limit and collision constraint.
-The KDL solver is correspondingly configured with `position_only_ik: true` in
-`config/kinematics.yaml`; omitting that solver setting can leave OMPL unable to
-sample a valid goal state even when the request contains no orientation
-constraint.
+`constrain_pregrasp_orientation` and `preserve_current_orientation` are both
+enabled. The coordinator captures the current `base_link` to
+`d1_gripper_center` TF orientation when it accepts a request, and MoveIt plans
+to the target position while preserving that live gripper orientation. The KDL
+solver is therefore configured for full-pose IK with `position_only_ik: false`
+in `config/kinematics.yaml`.
 
-When `constrain_pregrasp_orientation` is enabled,
-`preserve_current_orientation` uses the current `base_link` to
-`d1_gripper_center` TF orientation at the instant the request is received.
-Setting both parameters to false uses the configured map-frame pre-grasp roll,
-pitch, and yaw instead. KDL's `position_only_ik` setting must also be changed
-to `false` before either orientation-constrained mode can be used. All physical
-plans must be inspected in RViz before execution because position-only
-planning can select an undesirable wrist orientation. Reach rejections include
-the calculated arm-relative distance and XYZ coordinates to distinguish a
-genuine workspace violation from an incorrect transform.
+This behavior does not restore the old fixed top-down gripper pose. That fixed
+map-frame roll, pitch, and yaw is used only if
+`preserve_current_orientation` is explicitly set to false while the orientation
+constraint remains enabled. Setting `constrain_pregrasp_orientation` to false
+also requires `position_only_ik: true`; doing so again permits MoveIt to choose
+an arbitrary wrist orientation. Reach rejections include the calculated
+arm-relative distance and XYZ coordinates to distinguish a genuine workspace
+violation from an incorrect transform.
 
 ### Plan-only command
 
