@@ -1,10 +1,16 @@
 d1_grasp_coordinator:
   ros__parameters:
     semantic_map_topic: /semantic_map
+    detections_topic: /grounding_dino/detection_array
     command_topic: /d1_grasp/command
     status_topic: /d1_grasp/status
     pregrasp_pose_topic: /d1_grasp/pregrasp_pose
+    grasp_pose_topic: /d1_grasp/grasp_pose
     move_group_action: /move_action
+    execute_trajectory_action: /execute_trajectory
+    cartesian_path_service: /compute_cartesian_path
+    gripper_service: /d1_arm_controller/set_joint
+    joint_angles_topic: /d1_arm_controller/joint_angles
     planning_group: d1_arm
     planning_frame: base_link
     reach_reference_frame: d1_base_link
@@ -20,23 +26,42 @@ d1_grasp_coordinator:
     minimum_target_z_m: -0.10
     maximum_target_z_m: 0.80
 
-    # Constrain the pre-grasp to the gripper's live orientation. This restores
-    # full-pose IK without forcing the old fixed top-down orientation.
-    pregrasp_offset_x_m: 0.0
-    pregrasp_offset_y_m: 0.0
-    pregrasp_offset_z_m: 0.05
-    constrain_pregrasp_orientation: true
-
-    # Preserve the live gripper orientation. Set this false only when a
-    # deliberately configured fixed map-frame RPY approach is wanted.
-    preserve_current_orientation: true
-    pregrasp_roll_rad: 3.141592653589793
-    pregrasp_pitch_rad: 0.0
-    pregrasp_yaw_rad: 0.0
+    # Try the direct side approach first, then alternatives rotated around
+    # the object. The gripper's +Z tool axis points along the approach.
+    approach_yaw_offsets_rad: [0.0, 0.5235987756, -0.5235987756, 1.0471975512, -1.0471975512]
+    approach_distance_m: 0.07
+    grasp_center_offset_m: 0.0
+    tool_roll_rad: 0.0
     position_tolerance_m: 0.02
-    orientation_tolerance_rad: 0.15
+    orientation_tolerance_rad: 0.20
 
     planning_time_sec: 5.0
     planning_attempts: 5
     velocity_scaling: 0.15
     acceleration_scaling: 0.10
+
+    # Recheck the target after the pre-grasp and use a short, slow Cartesian
+    # segment for the final approach and retreat.
+    fresh_detection_age_sec: 5.0
+    reacquire_timeout_sec: 10.0
+    reacquire_match_distance_m: 0.25
+    maximum_reacquire_correction_m: 0.08
+    cartesian_step_m: 0.005
+    minimum_cartesian_fraction: 0.95
+    cartesian_jump_threshold: 2.0
+    cartesian_velocity_scaling: 0.05
+    cartesian_acceleration_scaling: 0.05
+
+    # The D1 reports gripper position but not contact force. A grasp is
+    # accepted when the command reaches closed, or when feedback stalls after
+    # meaningful closure. Set require_grasp_obstruction true to require stall.
+    gripper_joint_id: 6
+    gripper_open_degrees: 30.0
+    gripper_closed_degrees: 0.0
+    gripper_tolerance_degrees: 2.0
+    minimum_gripper_closure_degrees: 3.0
+    gripper_stall_delta_degrees: 0.2
+    gripper_stall_confirm_sec: 0.75
+    gripper_operation_timeout_sec: 5.0
+    require_grasp_obstruction: false
+    hold_duration_sec: 3.0

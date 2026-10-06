@@ -1,17 +1,20 @@
-"""Coordinate guarded semantic-object pre-grasp motions through MoveIt."""
+"""Coordinate guarded semantic-object grasp-and-release motions through MoveIt."""
 
 from collections import deque
 import math
 
 from geometry_msgs.msg import Pose
 from geometry_msgs.msg import PoseStamped
+from intel_realsense_interfaces.msg import GroundedDetectionArray
 from intel_realsense_interfaces.msg import SemanticMap
 from intel_realsense_interfaces.msg import SemanticObject
+from moveit_msgs.action import ExecuteTrajectory
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import Constraints
 from moveit_msgs.msg import MoveItErrorCodes
 from moveit_msgs.msg import OrientationConstraint
 from moveit_msgs.msg import PositionConstraint
+from moveit_msgs.srv import GetCartesianPath
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -24,6 +27,8 @@ from tf2_ros import Buffer
 from tf2_ros import TransformListener
 from unitree_arm.msg import GraspCommand
 from unitree_arm.msg import GraspStatus
+from unitree_arm.msg import JointAngles
+from unitree_arm.srv import SetJoint
 
 from unitree_arm_control import grasping
 
@@ -38,9 +43,7 @@ MOVEIT_ERROR_NAMES = {
     MoveItErrorCodes.CONTROL_FAILED: 'controller execution failed',
     MoveItErrorCodes.TIMED_OUT: 'planning or execution timed out',
     MoveItErrorCodes.PREEMPTED: 'request preempted',
-    MoveItErrorCodes.START_STATE_IN_COLLISION: (
-        'start state is in collision'
-    ),
+    MoveItErrorCodes.START_STATE_IN_COLLISION: 'start state is in collision',
     MoveItErrorCodes.START_STATE_VIOLATES_PATH_CONSTRAINTS: (
         'start state violates path constraints'
     ),
@@ -52,9 +55,7 @@ MOVEIT_ERROR_NAMES = {
         'goal constraints were violated'
     ),
     MoveItErrorCodes.INVALID_GROUP_NAME: 'invalid planning group',
-    MoveItErrorCodes.INVALID_GOAL_CONSTRAINTS: (
-        'invalid goal constraints'
-    ),
+    MoveItErrorCodes.INVALID_GOAL_CONSTRAINTS: 'invalid goal constraints',
     MoveItErrorCodes.INVALID_ROBOT_STATE: 'invalid robot state',
     MoveItErrorCodes.INVALID_LINK_NAME: 'invalid end-effector link',
     MoveItErrorCodes.FRAME_TRANSFORM_FAILURE: 'frame transform failed',
@@ -65,59 +66,15 @@ MOVEIT_ERROR_NAMES = {
 
 
 class D1GraspCoordinator(Node):
-    """Convert semantic grasp commands into guarded MoveIt requests."""
+    """Run a guarded pre-grasp, grasp, hold, release, and retreat sequence."""
 
     def __init__(self):
         super().__init__('d1_grasp_coordinator')
-
-        self.declare_parameter('semantic_map_topic', '/semantic_map')
-        self.declare_parameter('command_topic', '/d1_grasp/command')
-        self.declare_parameter('status_topic', '/d1_grasp/status')
-        self.declare_parameter(
-            'pregrasp_pose_topic', '/d1_grasp/pregrasp_pose'
-        )
-        self.declare_parameter('move_group_action', '/move_action')
-        self.declare_parameter('planning_group', 'd1_arm')
-        self.declare_parameter('planning_frame', 'base_link')
-        self.declare_parameter('reach_reference_frame', 'd1_base_link')
-        self.declare_parameter('tip_link', 'd1_gripper_center')
-        self.declare_parameter('planner_id', '')
-
-        # Motion is deliberately opt-in during the initial integration phase.
-        self.declare_parameter('execution_enabled', False)
-        self.declare_parameter('minimum_confidence', 0.65)
-        self.declare_parameter('minimum_observations', 3)
-        self.declare_parameter('maximum_object_age_sec', 20.0)
-        self.declare_parameter('minimum_reach_m', 0.10)
-        self.declare_parameter('maximum_reach_m', 0.67)
-        self.declare_parameter('minimum_target_z_m', -0.10)
-        self.declare_parameter('maximum_target_z_m', 0.80)
-
-        self.declare_parameter('pregrasp_offset_x_m', 0.0)
-        self.declare_parameter('pregrasp_offset_y_m', 0.0)
-        self.declare_parameter('pregrasp_offset_z_m', 0.15)
-        self.declare_parameter('constrain_pregrasp_orientation', True)
-        self.declare_parameter('preserve_current_orientation', True)
-        self.declare_parameter('pregrasp_roll_rad', math.pi)
-        self.declare_parameter('pregrasp_pitch_rad', 0.0)
-        self.declare_parameter('pregrasp_yaw_rad', 0.0)
-        self.declare_parameter('position_tolerance_m', 0.02)
-        self.declare_parameter('orientation_tolerance_rad', 0.15)
-
-        self.declare_parameter('planning_time_sec', 5.0)
-        self.declare_parameter('planning_attempts', 5)
-        self.declare_parameter('velocity_scaling', 0.15)
-        self.declare_parameter('acceleration_scaling', 0.10)
-
+        self._declare_parameters()
         self._load_parameters()
         self._validate_parameters()
 
-        map_qos = QoSProfile(
-            depth=1,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        )
-        pose_qos = QoSProfile(
+        latched_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -130,19 +87,29 @@ class D1GraspCoordinator(Node):
         self._status_publisher = self.create_publisher(
             GraspStatus, self._status_topic, status_qos
         )
-        self._pose_publisher = self.create_publisher(
-            PoseStamped, self._pregrasp_pose_topic, pose_qos
+        self._pregrasp_publisher = self.create_publisher(
+            PoseStamped, self._pregrasp_pose_topic, latched_qos
+        )
+        self._grasp_publisher = self.create_publisher(
+            PoseStamped, self._grasp_pose_topic, latched_qos
         )
         self.create_subscription(
-            SemanticMap,
-            self._semantic_map_topic,
-            self._map_callback,
-            map_qos,
+            SemanticMap, self._semantic_map_topic, self._map_callback,
+            latched_qos,
         )
         self.create_subscription(
-            GraspCommand,
-            self._command_topic,
-            self._command_callback,
+            GroundedDetectionArray,
+            self._detections_topic,
+            self._detections_callback,
+            10,
+        )
+        self.create_subscription(
+            GraspCommand, self._command_topic, self._command_callback, 10
+        )
+        self.create_subscription(
+            JointAngles,
+            self._joint_angles_topic,
+            self._joint_angles_callback,
             10,
         )
 
@@ -151,119 +118,177 @@ class D1GraspCoordinator(Node):
         self._move_group = ActionClient(
             self, MoveGroup, self._move_group_action
         )
+        self._execute_trajectory = ActionClient(
+            self, ExecuteTrajectory, self._execute_trajectory_action
+        )
+        self._cartesian_path = self.create_client(
+            GetCartesianPath, self._cartesian_path_service
+        )
+        self._set_joint = self.create_client(
+            SetJoint, self._gripper_service
+        )
         self._latest_map = None
+        self._latest_detections = None
+        self._latest_detection_receipt = 0.0
+        self._latest_gripper_angle = None
+        self._latest_gripper_receipt = 0.0
         self._active = None
         self._recent_request_ids = deque(maxlen=100)
+        self.create_timer(0.1, self._periodic_update)
 
-        mode = 'pre-grasp execution' if self._execution_enabled else (
-            'plan-only'
-        )
+        mode = 'grasp execution' if self._execution_enabled else 'plan-only'
         self.get_logger().info(
-            'D1 grasp coordinator ready on {} in {} mode; contact and '
-            'gripper closure remain disabled'.format(
+            'D1 grasp coordinator ready on {} in {} mode'.format(
                 self._command_topic, mode
             )
         )
         if self._execution_enabled:
             self.get_logger().warning(
-                'Guarded pre-grasp execution is enabled. Support surfaces '
-                'and object geometry are not yet inserted into the MoveIt '
-                'planning scene; use only a manually verified clear volume.'
+                'Physical grasp-and-release execution is enabled. Perception '
+                'provides object points, not collision geometry; use only a '
+                'manually verified clear volume.'
             )
+
+    def _declare_parameters(self):
+        string_parameters = {
+            'semantic_map_topic': '/semantic_map',
+            'detections_topic': '/grounding_dino/detection_array',
+            'command_topic': '/d1_grasp/command',
+            'status_topic': '/d1_grasp/status',
+            'pregrasp_pose_topic': '/d1_grasp/pregrasp_pose',
+            'grasp_pose_topic': '/d1_grasp/grasp_pose',
+            'move_group_action': '/move_action',
+            'execute_trajectory_action': '/execute_trajectory',
+            'cartesian_path_service': '/compute_cartesian_path',
+            'gripper_service': '/d1_arm_controller/set_joint',
+            'joint_angles_topic': '/d1_arm_controller/joint_angles',
+            'planning_group': 'd1_arm',
+            'planning_frame': 'base_link',
+            'reach_reference_frame': 'd1_base_link',
+            'tip_link': 'd1_gripper_center',
+            'planner_id': '',
+        }
+        for name, default in string_parameters.items():
+            self.declare_parameter(name, default)
+
+        self.declare_parameter('execution_enabled', False)
+        self.declare_parameter('minimum_confidence', 0.65)
+        self.declare_parameter('minimum_observations', 3)
+        self.declare_parameter('maximum_object_age_sec', 20.0)
+        self.declare_parameter('minimum_reach_m', 0.10)
+        self.declare_parameter('maximum_reach_m', 0.67)
+        self.declare_parameter('minimum_target_z_m', -0.10)
+        self.declare_parameter('maximum_target_z_m', 0.80)
+
+        self.declare_parameter(
+            'approach_yaw_offsets_rad',
+            [0.0, math.pi / 6.0, -math.pi / 6.0,
+             math.pi / 3.0, -math.pi / 3.0],
+        )
+        self.declare_parameter('approach_distance_m', 0.07)
+        self.declare_parameter('grasp_center_offset_m', 0.0)
+        self.declare_parameter('tool_roll_rad', 0.0)
+        self.declare_parameter('position_tolerance_m', 0.02)
+        self.declare_parameter('orientation_tolerance_rad', 0.20)
+
+        self.declare_parameter('planning_time_sec', 5.0)
+        self.declare_parameter('planning_attempts', 5)
+        self.declare_parameter('velocity_scaling', 0.15)
+        self.declare_parameter('acceleration_scaling', 0.10)
+        self.declare_parameter('fresh_detection_age_sec', 5.0)
+        self.declare_parameter('reacquire_timeout_sec', 10.0)
+        self.declare_parameter('reacquire_match_distance_m', 0.25)
+        self.declare_parameter('maximum_reacquire_correction_m', 0.08)
+        self.declare_parameter('cartesian_step_m', 0.005)
+        self.declare_parameter('minimum_cartesian_fraction', 0.95)
+        self.declare_parameter('cartesian_jump_threshold', 2.0)
+        self.declare_parameter('cartesian_velocity_scaling', 0.05)
+        self.declare_parameter('cartesian_acceleration_scaling', 0.05)
+
+        self.declare_parameter('gripper_joint_id', 6)
+        self.declare_parameter('gripper_open_degrees', 30.0)
+        self.declare_parameter('gripper_closed_degrees', 0.0)
+        self.declare_parameter('gripper_tolerance_degrees', 2.0)
+        self.declare_parameter('minimum_gripper_closure_degrees', 3.0)
+        self.declare_parameter('gripper_stall_delta_degrees', 0.2)
+        self.declare_parameter('gripper_stall_confirm_sec', 0.75)
+        self.declare_parameter('gripper_operation_timeout_sec', 5.0)
+        self.declare_parameter('require_grasp_obstruction', False)
+        self.declare_parameter('hold_duration_sec', 3.0)
 
     def _parameter(self, name):
         return self.get_parameter(name).value
 
     def _load_parameters(self):
-        self._semantic_map_topic = str(
-            self._parameter('semantic_map_topic')
-        ).strip()
-        self._command_topic = str(self._parameter('command_topic')).strip()
-        self._status_topic = str(self._parameter('status_topic')).strip()
-        self._pregrasp_pose_topic = str(
-            self._parameter('pregrasp_pose_topic')
-        ).strip()
-        self._move_group_action = str(
-            self._parameter('move_group_action')
-        ).strip()
-        self._planning_group = str(
-            self._parameter('planning_group')
-        ).strip()
-        self._planning_frame = str(
-            self._parameter('planning_frame')
-        ).strip()
-        self._reach_reference_frame = str(
-            self._parameter('reach_reference_frame')
-        ).strip()
-        self._tip_link = str(self._parameter('tip_link')).strip()
-        self._planner_id = str(self._parameter('planner_id')).strip()
-        self._execution_enabled = bool(
-            self._parameter('execution_enabled')
+        string_names = (
+            'semantic_map_topic', 'detections_topic', 'command_topic',
+            'status_topic', 'pregrasp_pose_topic', 'grasp_pose_topic',
+            'move_group_action', 'execute_trajectory_action',
+            'cartesian_path_service', 'gripper_service',
+            'joint_angles_topic', 'planning_group', 'planning_frame',
+            'reach_reference_frame', 'tip_link', 'planner_id',
         )
-        self._minimum_confidence = float(
-            self._parameter('minimum_confidence')
+        for name in string_names:
+            setattr(self, '_' + name, str(self._parameter(name)).strip())
+
+        bool_names = ('execution_enabled', 'require_grasp_obstruction')
+        for name in bool_names:
+            setattr(self, '_' + name, bool(self._parameter(name)))
+
+        float_names = (
+            'minimum_confidence', 'maximum_object_age_sec',
+            'minimum_reach_m', 'maximum_reach_m', 'minimum_target_z_m',
+            'maximum_target_z_m', 'approach_distance_m',
+            'grasp_center_offset_m', 'tool_roll_rad',
+            'position_tolerance_m', 'orientation_tolerance_rad',
+            'planning_time_sec', 'velocity_scaling',
+            'acceleration_scaling', 'fresh_detection_age_sec',
+            'reacquire_timeout_sec', 'reacquire_match_distance_m',
+            'maximum_reacquire_correction_m', 'cartesian_step_m',
+            'minimum_cartesian_fraction', 'cartesian_jump_threshold',
+            'cartesian_velocity_scaling',
+            'cartesian_acceleration_scaling', 'gripper_open_degrees',
+            'gripper_closed_degrees', 'gripper_tolerance_degrees',
+            'minimum_gripper_closure_degrees',
+            'gripper_stall_delta_degrees', 'gripper_stall_confirm_sec',
+            'gripper_operation_timeout_sec', 'hold_duration_sec',
         )
+        for name in float_names:
+            setattr(self, '_' + name, float(self._parameter(name)))
+
         self._minimum_observations = int(
             self._parameter('minimum_observations')
         )
-        self._maximum_object_age = float(
-            self._parameter('maximum_object_age_sec')
-        )
-        self._minimum_reach = float(self._parameter('minimum_reach_m'))
-        self._maximum_reach = float(self._parameter('maximum_reach_m'))
-        self._minimum_target_z = float(
-            self._parameter('minimum_target_z_m')
-        )
-        self._maximum_target_z = float(
-            self._parameter('maximum_target_z_m')
-        )
-        self._pregrasp_offset = (
-            float(self._parameter('pregrasp_offset_x_m')),
-            float(self._parameter('pregrasp_offset_y_m')),
-            float(self._parameter('pregrasp_offset_z_m')),
-        )
-        self._constrain_pregrasp_orientation = bool(
-            self._parameter('constrain_pregrasp_orientation')
-        )
-        self._preserve_current_orientation = bool(
-            self._parameter('preserve_current_orientation')
-        )
-        self._pregrasp_rpy = (
-            float(self._parameter('pregrasp_roll_rad')),
-            float(self._parameter('pregrasp_pitch_rad')),
-            float(self._parameter('pregrasp_yaw_rad')),
-        )
-        self._position_tolerance = float(
-            self._parameter('position_tolerance_m')
-        )
-        self._orientation_tolerance = float(
-            self._parameter('orientation_tolerance_rad')
-        )
-        self._planning_time = float(self._parameter('planning_time_sec'))
-        self._planning_attempts = int(
-            self._parameter('planning_attempts')
-        )
-        self._velocity_scaling = float(
-            self._parameter('velocity_scaling')
-        )
-        self._acceleration_scaling = float(
-            self._parameter('acceleration_scaling')
+        self._planning_attempts = int(self._parameter('planning_attempts'))
+        self._gripper_joint_id = int(self._parameter('gripper_joint_id'))
+        self._approach_yaw_offsets = tuple(
+            float(value)
+            for value in self._parameter('approach_yaw_offsets_rad')
         )
 
+        # Short aliases keep the motion code readable.
+        self._maximum_object_age = self._maximum_object_age_sec
+        self._minimum_reach = self._minimum_reach_m
+        self._maximum_reach = self._maximum_reach_m
+        self._minimum_target_z = self._minimum_target_z_m
+        self._maximum_target_z = self._maximum_target_z_m
+        self._approach_distance = self._approach_distance_m
+        self._grasp_center_offset = self._grasp_center_offset_m
+        self._position_tolerance = self._position_tolerance_m
+        self._orientation_tolerance = self._orientation_tolerance_rad
+        self._planning_time = self._planning_time_sec
+
     def _validate_parameters(self):
-        required_strings = {
-            'semantic_map_topic': self._semantic_map_topic,
-            'command_topic': self._command_topic,
-            'status_topic': self._status_topic,
-            'pregrasp_pose_topic': self._pregrasp_pose_topic,
-            'move_group_action': self._move_group_action,
-            'planning_group': self._planning_group,
-            'planning_frame': self._planning_frame,
-            'reach_reference_frame': self._reach_reference_frame,
-            'tip_link': self._tip_link,
-        }
-        for name, value in required_strings.items():
-            if not value:
+        required_strings = (
+            'semantic_map_topic', 'detections_topic', 'command_topic',
+            'status_topic', 'pregrasp_pose_topic', 'grasp_pose_topic',
+            'move_group_action', 'execute_trajectory_action',
+            'cartesian_path_service', 'gripper_service',
+            'joint_angles_topic', 'planning_group', 'planning_frame',
+            'reach_reference_frame', 'tip_link',
+        )
+        for name in required_strings:
+            if not getattr(self, '_' + name):
                 raise RuntimeError('{} must not be empty'.format(name))
         if not 0.0 <= self._minimum_confidence <= 1.0:
             raise RuntimeError('minimum_confidence must be in [0, 1]')
@@ -275,20 +300,72 @@ class D1GraspCoordinator(Node):
             raise RuntimeError('reach limits are invalid')
         if self._minimum_target_z >= self._maximum_target_z:
             raise RuntimeError('target z limits are invalid')
+        if not self._approach_yaw_offsets:
+            raise RuntimeError('approach_yaw_offsets_rad must not be empty')
+        if self._approach_distance <= 0.0:
+            raise RuntimeError('approach_distance_m must be positive')
+        if self._grasp_center_offset < 0.0:
+            raise RuntimeError('grasp_center_offset_m must not be negative')
         if self._position_tolerance <= 0.0:
             raise RuntimeError('position_tolerance_m must be positive')
         if self._orientation_tolerance <= 0.0:
             raise RuntimeError('orientation_tolerance_rad must be positive')
         if self._planning_time <= 0.0 or self._planning_attempts < 1:
             raise RuntimeError('planning limits are invalid')
-        for name, value in (
-                ('velocity_scaling', self._velocity_scaling),
-                ('acceleration_scaling', self._acceleration_scaling)):
+        for name in (
+                'velocity_scaling', 'acceleration_scaling',
+                'cartesian_velocity_scaling',
+                'cartesian_acceleration_scaling'):
+            value = getattr(self, '_' + name)
             if not 0.0 < value <= 1.0:
                 raise RuntimeError('{} must be in (0, 1]'.format(name))
+        if self._fresh_detection_age_sec <= 0.0:
+            raise RuntimeError('fresh_detection_age_sec must be positive')
+        if self._reacquire_timeout_sec <= 0.0:
+            raise RuntimeError('reacquire_timeout_sec must be positive')
+        if self._reacquire_match_distance_m <= 0.0:
+            raise RuntimeError('reacquire_match_distance_m must be positive')
+        if self._maximum_reacquire_correction_m <= 0.0:
+            raise RuntimeError(
+                'maximum_reacquire_correction_m must be positive'
+            )
+        if self._cartesian_step_m <= 0.0:
+            raise RuntimeError('cartesian_step_m must be positive')
+        if not 0.0 < self._minimum_cartesian_fraction <= 1.0:
+            raise RuntimeError('minimum_cartesian_fraction must be in (0, 1]')
+        if not 0 <= self._gripper_joint_id <= 6:
+            raise RuntimeError('gripper_joint_id must be in [0, 6]')
+        if self._gripper_open_degrees == self._gripper_closed_degrees:
+            raise RuntimeError('gripper open and closed values must differ')
+        for name in (
+                'gripper_tolerance_degrees',
+                'minimum_gripper_closure_degrees',
+                'gripper_stall_delta_degrees',
+                'gripper_stall_confirm_sec',
+                'gripper_operation_timeout_sec'):
+            if getattr(self, '_' + name) <= 0.0:
+                raise RuntimeError('{} must be positive'.format(name))
+        if self._hold_duration_sec < 0.0:
+            raise RuntimeError('hold_duration_sec must not be negative')
 
     def _map_callback(self, message):
         self._latest_map = message
+
+    def _detections_callback(self, message):
+        self._latest_detections = message
+        self._latest_detection_receipt = self._now_seconds()
+        if self._active is not None and (
+                self._active['phase'] == 'reacquiring'):
+            self._try_reacquire(message, self._latest_detection_receipt)
+
+    def _joint_angles_callback(self, message):
+        if len(message.angle_degrees) <= self._gripper_joint_id:
+            return
+        value = float(message.angle_degrees[self._gripper_joint_id])
+        if not math.isfinite(value):
+            return
+        self._latest_gripper_angle = value
+        self._latest_gripper_receipt = self._now_seconds()
 
     def _now_seconds(self):
         return self.get_clock().now().nanoseconds * 1e-9
@@ -300,15 +377,26 @@ class D1GraspCoordinator(Node):
         pose.pose.orientation.w = 1.0
         return pose
 
+    def _target_pose(self, point, quaternion):
+        pose = PoseStamped()
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.header.frame_id = self._planning_frame
+        pose.pose.position.x = point[0]
+        pose.pose.position.y = point[1]
+        pose.pose.position.z = point[2]
+        pose.pose.orientation.x = quaternion[0]
+        pose.pose.orientation.y = quaternion[1]
+        pose.pose.orientation.z = quaternion[2]
+        pose.pose.orientation.w = quaternion[3]
+        return pose
+
+    @staticmethod
+    def _point_tuple(point):
+        return (float(point.x), float(point.y), float(point.z))
+
     def _publish_status(
-            self,
-            command,
-            stage,
-            terminal,
-            success,
-            message,
-            object_id='',
-            target_pose=None):
+            self, command, stage, terminal, success, message,
+            object_id='', target_pose=None):
         status = GraspStatus()
         status.header.stamp = self.get_clock().now().to_msg()
         status.header.frame_id = self._planning_frame
@@ -322,6 +410,17 @@ class D1GraspCoordinator(Node):
         status.target_pose = target_pose or self._empty_pose()
         self._status_publisher.publish(status)
 
+    def _publish_active_stage(self, stage, message, pose=None):
+        if self._active is None:
+            return
+        target_pose = pose or self._active.get('target_pose')
+        self._active['target_pose'] = target_pose
+        self._active['last_stage'] = stage
+        self._publish_status(
+            self._active['command'], stage, False, False, message,
+            self._active['object_id'], target_pose,
+        )
+
     def _reject(self, command, message):
         self.get_logger().warning(
             'Rejected grasp request {}: {}'.format(
@@ -329,11 +428,7 @@ class D1GraspCoordinator(Node):
             )
         )
         self._publish_status(
-            command,
-            GraspStatus.STAGE_REJECTED,
-            True,
-            False,
-            message,
+            command, GraspStatus.STAGE_REJECTED, True, False, message
         )
 
     def _command_callback(self, command):
@@ -357,293 +452,257 @@ class D1GraspCoordinator(Node):
         if not self._move_group.wait_for_server(timeout_sec=0.0):
             self._reject(command, 'MoveIt move_group action is unavailable')
             return
+        if self._execution_enabled:
+            missing = []
+            if not self._execute_trajectory.wait_for_server(timeout_sec=0.0):
+                missing.append(self._execute_trajectory_action)
+            if not self._cartesian_path.wait_for_service(timeout_sec=0.0):
+                missing.append(self._cartesian_path_service)
+            if not self._set_joint.wait_for_service(timeout_sec=0.0):
+                missing.append(self._gripper_service)
+            if missing:
+                self._reject(
+                    command,
+                    'required execution interfaces are unavailable: {}'.format(
+                        ', '.join(missing)
+                    ),
+                )
+                return
 
-        candidates = grasping.eligible_objects(
-            self._latest_map.objects,
-            object_class,
-            command.object_id,
-            self._now_seconds(),
-            self._minimum_confidence,
-            self._minimum_observations,
-            self._maximum_object_age,
+        objects = grasping.eligible_objects(
+            self._latest_map.objects, object_class, command.object_id,
+            self._now_seconds(), self._minimum_confidence,
+            self._minimum_observations, self._maximum_object_age,
             SemanticObject.STATUS_ACTIVE,
         )
-        if not candidates:
-            self._reject(
-                command,
-                self._selection_failure_message(command),
-            )
+        if not objects:
+            self._reject(command, self._selection_failure_message(command))
             return
 
         try:
-            transformed = self._transform_candidates(candidates)
-        except Exception as error:
-            self._reject(
-                command,
-                'could not transform semantic-map position into {}: {}'.format(
-                    self._planning_frame, error
-                ),
+            selected, object_point, arm_origin, candidates = (
+                self._select_object_and_candidates(objects)
             )
+        except Exception as error:
+            self._reject(command, str(error))
             return
 
-        (
-            selected,
-            object_point,
-            target_point,
-            target_orientation,
-            reach_point,
-        ) = min(
-            transformed,
-            key=lambda item: grasping.distance_from_origin(item[4]),
-        )
-        problem = self._target_problem(target_point, reach_point)
-        if problem is not None:
-            self._reject(command, problem)
-            return
-
-        target_pose = self._target_pose(
-            target_point, target_orientation
-        )
-        self._pose_publisher.publish(target_pose)
         self._recent_request_ids.append(request_id)
+        first_pose = self._candidate_pose(candidates[0], 'pregrasp_point')
         self._active = {
+            'token': object(),
             'command': command,
             'object_id': selected.object_id,
-            'target_pose': target_pose,
+            'object_class': object_class,
+            'object_point': object_point,
+            'arm_origin': arm_origin,
+            'candidates': candidates,
+            'candidate_index': 0,
+            'candidate': None,
+            'pregrasp_pose': first_pose,
+            'grasp_pose': None,
+            'retreat_pose': None,
+            'target_pose': first_pose,
             'last_stage': None,
+            'phase': 'accepted',
+            'deadline': 0.0,
+            'required_detection_receipt': 0.0,
+            'gripper_start_angle': None,
+            'gripper_last_angle': None,
+            'gripper_last_change': 0.0,
         }
-        self._publish_status(
-            command,
-            GraspStatus.STAGE_ACCEPTED,
-            False,
-            False,
-            (
-                'selected {} and generated a guarded pre-grasp {}'.format(
-                    selected.object_id,
-                    'pose' if self._constrain_pregrasp_orientation else (
-                        'position; orientation is unconstrained'
-                    ),
-                )
-            ),
-            selected.object_id,
-            target_pose,
-        )
+        self._pregrasp_publisher.publish(first_pose)
         self._publish_active_stage(
-            GraspStatus.STAGE_PLANNING, 'MoveIt is planning to pre-grasp'
+            GraspStatus.STAGE_ACCEPTED,
+            'selected {} with {} collision-checked approach candidate(s)'.format(
+                selected.object_id, len(candidates)
+            ),
+            first_pose,
         )
-        future = self._move_group.send_goal_async(
-            self._move_group_goal(target_pose),
-            feedback_callback=self._move_group_feedback,
-        )
-        future.add_done_callback(self._move_group_goal_response)
+        if self._execution_enabled:
+            self._command_gripper(
+                self._gripper_open_degrees,
+                'wait_open_before_pregrasp',
+                GraspStatus.STAGE_OPENING,
+                'opening gripper before planning the pre-grasp',
+            )
+        else:
+            self._start_next_pregrasp_candidate()
 
     def _selection_failure_message(self, command):
         objects = list(self._latest_map.objects)
         requested_class = grasping.normalize_label(command.object_class)
         requested_id = command.object_id.strip()
-
+        relevant = [
+            item for item in objects
+            if grasping.normalize_label(item.label) == requested_class
+        ]
         if requested_id:
-            matching_id = [
-                candidate for candidate in objects
-                if candidate.object_id == requested_id
-            ]
-            if not matching_id:
-                class_ids = [
-                    candidate.object_id for candidate in objects
-                    if grasping.normalize_label(candidate.label)
-                    == requested_class
-                ]
-                available = ', '.join(class_ids[:5]) or 'none'
-                return (
-                    'object_id {} is not present; current IDs for class {}: '
-                    '{}'.format(requested_id, requested_class, available)
+            by_id = [item for item in objects if item.object_id == requested_id]
+            if not by_id:
+                available = ', '.join(item.object_id for item in relevant[:5])
+                return 'object_id {} is absent; class IDs: {}'.format(
+                    requested_id, available or 'none'
                 )
-            candidate = matching_id[0]
-            actual_class = grasping.normalize_label(candidate.label)
-            if actual_class != requested_class:
-                return (
-                    'object_id {} has class {}, not requested class {}'.format(
-                        requested_id, actual_class, requested_class
-                    )
-                )
-            relevant = matching_id
-        else:
-            relevant = [
-                candidate for candidate in objects
-                if grasping.normalize_label(candidate.label)
-                == requested_class
-            ]
-            if not relevant:
-                labels = sorted({
-                    grasping.normalize_label(candidate.label)
-                    for candidate in objects
-                    if grasping.normalize_label(candidate.label)
-                })
-                available = ', '.join(labels[:10]) or 'none'
-                return (
-                    'no object has requested class {}; available classes: '
-                    '{}'.format(requested_class, available)
-                )
-
-        descriptions = []
-        for candidate in relevant[:5]:
+            relevant = by_id
+        if not relevant:
+            labels = sorted({
+                grasping.normalize_label(item.label) for item in objects
+                if grasping.normalize_label(item.label)
+            })
+            return 'no object has class {}; available classes: {}'.format(
+                requested_class, ', '.join(labels[:10]) or 'none'
+            )
+        details = []
+        for item in relevant[:5]:
             failures = grasping.object_safeguard_failures(
-                candidate,
-                self._now_seconds(),
-                self._minimum_confidence,
-                self._minimum_observations,
-                self._maximum_object_age,
+                item, self._now_seconds(), self._minimum_confidence,
+                self._minimum_observations, self._maximum_object_age,
                 SemanticObject.STATUS_ACTIVE,
             )
-            descriptions.append(
-                '{}: {}'.format(
-                    candidate.object_id,
-                    '; '.join(failures) or 'no safeguard failure',
-                )
-            )
+            details.append('{}: {}'.format(
+                item.object_id, '; '.join(failures) or 'class/ID mismatch'
+            ))
         return 'no eligible {} object; {}'.format(
-            requested_class, ' | '.join(descriptions)
+            requested_class, ' | '.join(details)
         )
 
-    def _transform_candidates(self, candidates):
+    def _select_object_and_candidates(self, objects):
         source_frame = self._latest_map.header.frame_id.strip()
         if not source_frame:
             raise RuntimeError('semantic map frame_id is empty')
-        transform = self._tf_buffer.lookup_transform(
-            self._planning_frame, source_frame, Time()
+        source_to_planning = self._lookup_transform(
+            self._planning_frame, source_frame
         )
-        translation = transform.transform.translation
-        rotation = transform.transform.rotation
-        transform_translation = (
-            translation.x, translation.y, translation.z
+        arm_transform = self._tf_buffer.lookup_transform(
+            self._planning_frame, self._reach_reference_frame, Time()
         )
-        transform_quaternion = (
-            rotation.x, rotation.y, rotation.z, rotation.w
-        )
-        if self._preserve_current_orientation:
-            tip_transform = self._tf_buffer.lookup_transform(
-                self._planning_frame, self._tip_link, Time()
+        arm_origin = self._point_tuple(arm_transform.transform.translation)
+        viable = []
+        failures = []
+        for item in objects:
+            object_point = self._transform_point(
+                self._point_tuple(item.position), source_to_planning
             )
-            tip_rotation = tip_transform.transform.rotation
-            target_orientation = (
-                tip_rotation.x,
-                tip_rotation.y,
-                tip_rotation.z,
-                tip_rotation.w,
-            )
-        else:
-            target_orientation = grasping.multiply_quaternions(
-                transform_quaternion,
-                grasping.quaternion_from_rpy(*self._pregrasp_rpy),
-            )
-        reach_translation = None
-        reach_quaternion = None
-        if self._reach_reference_frame != self._planning_frame:
-            reach_transform = self._tf_buffer.lookup_transform(
-                self._reach_reference_frame, self._planning_frame, Time()
-            )
-            reach_translation_message = (
-                reach_transform.transform.translation
-            )
-            reach_rotation_message = reach_transform.transform.rotation
-            reach_translation = (
-                reach_translation_message.x,
-                reach_translation_message.y,
-                reach_translation_message.z,
-            )
-            reach_quaternion = (
-                reach_rotation_message.x,
-                reach_rotation_message.y,
-                reach_rotation_message.z,
-                reach_rotation_message.w,
-            )
-        transformed = []
-        for candidate in candidates:
-            source_point = (
-                candidate.position.x,
-                candidate.position.y,
-                candidate.position.z,
-            )
-            source_target = tuple(
-                value + offset
-                for value, offset in zip(
-                    source_point, self._pregrasp_offset
+            if not all(math.isfinite(value) for value in object_point):
+                continue
+            try:
+                generated = grasping.generate_approach_candidates(
+                    object_point, arm_origin, self._approach_yaw_offsets,
+                    self._approach_distance, self._grasp_center_offset,
+                    self._tool_roll_rad,
                 )
+            except ValueError as error:
+                failures.append(str(error))
+                continue
+            valid = []
+            for candidate in generated:
+                problem = self._candidate_problem(candidate)
+                if problem is None:
+                    valid.append(candidate)
+                else:
+                    failures.append(problem)
+            if valid:
+                viable.append((
+                    item, object_point, arm_origin, tuple(valid),
+                    grasping.distance_between(object_point, arm_origin),
+                ))
+        if not viable:
+            detail = failures[0] if failures else 'no finite object position'
+            raise RuntimeError(
+                'no approach candidate satisfies reach and height safeguards: '
+                + detail
             )
-            object_point = grasping.transform_point(
-                source_point,
-                transform_translation,
-                transform_quaternion,
-            )
-            target_point = grasping.transform_point(
-                source_target,
-                transform_translation,
-                transform_quaternion,
-            )
-            if reach_translation is None:
-                reach_point = target_point
-            else:
-                reach_point = grasping.transform_point(
-                    target_point,
-                    reach_translation,
-                    reach_quaternion,
-                )
-            if all(
-                    math.isfinite(value)
-                    for value in object_point + target_point + reach_point):
-                transformed.append(
-                    (
-                        candidate,
-                        object_point,
-                        target_point,
-                        target_orientation,
-                        reach_point,
-                    )
-                )
-        if not transformed:
-            raise RuntimeError('all transformed object positions are invalid')
-        return transformed
+        selected = min(viable, key=lambda value: value[4])
+        return selected[0], selected[1], selected[2], selected[3]
 
-    def _target_problem(self, target_point, reach_point):
-        reach_problem = grasping.reach_safeguard_problem(
-            reach_point,
-            self._minimum_reach,
-            self._maximum_reach,
+    def _lookup_transform(self, target_frame, source_frame):
+        if target_frame == source_frame:
+            return None
+        return self._tf_buffer.lookup_transform(
+            target_frame, source_frame, Time()
+        )
+
+    def _transform_point(self, point, transform):
+        if transform is None:
+            return tuple(point)
+        translation = self._point_tuple(transform.transform.translation)
+        rotation = transform.transform.rotation
+        quaternion = (rotation.x, rotation.y, rotation.z, rotation.w)
+        return grasping.transform_point(point, translation, quaternion)
+
+    def _point_in_reach_frame(self, point):
+        transform = self._lookup_transform(
+            self._reach_reference_frame, self._planning_frame
+        )
+        return self._transform_point(point, transform)
+
+    def _target_problem(self, point, description):
+        reach_point = self._point_in_reach_frame(point)
+        problem = grasping.reach_safeguard_problem(
+            reach_point, self._minimum_reach, self._maximum_reach,
             self._reach_reference_frame,
         )
-        if reach_problem is not None:
-            return reach_problem
-        if not self._minimum_target_z <= target_point[2] <= (
-                self._maximum_target_z):
+        if problem is not None:
+            return problem.replace('pre-grasp target', description)
+        if not self._minimum_target_z <= point[2] <= self._maximum_target_z:
             return (
-                'pre-grasp target z is {:.3f} m in {}, outside permitted '
-                'range [{:.3f}, {:.3f}] m'.format(
-                    target_point[2],
-                    self._planning_frame,
-                    self._minimum_target_z,
-                    self._maximum_target_z,
+                '{} z is {:.3f} m in {}, outside [{:.3f}, {:.3f}] m'.format(
+                    description, point[2], self._planning_frame,
+                    self._minimum_target_z, self._maximum_target_z,
                 )
             )
         return None
 
-    def _target_pose(self, target_point, quaternion):
-        pose = PoseStamped()
-        pose.header.stamp = self.get_clock().now().to_msg()
-        pose.header.frame_id = self._planning_frame
-        pose.pose.position.x = target_point[0]
-        pose.pose.position.y = target_point[1]
-        pose.pose.position.z = target_point[2]
-        pose.pose.orientation.x = quaternion[0]
-        pose.pose.orientation.y = quaternion[1]
-        pose.pose.orientation.z = quaternion[2]
-        pose.pose.orientation.w = quaternion[3]
-        return pose
+    def _candidate_problem(self, candidate):
+        return (
+            self._target_problem(candidate['pregrasp_point'], 'pre-grasp target')
+            or self._target_problem(candidate['grasp_point'], 'grasp target')
+        )
+
+    def _candidate_pose(self, candidate, point_name):
+        return self._target_pose(
+            candidate[point_name], candidate['orientation']
+        )
+
+    def _start_next_pregrasp_candidate(self):
+        if self._active is None:
+            return
+        index = self._active['candidate_index']
+        candidates = self._active['candidates']
+        if index >= len(candidates):
+            self._finish_failure(
+                'MoveIt could not plan any permitted side-approach candidate'
+            )
+            return
+        candidate = candidates[index]
+        pose = self._candidate_pose(candidate, 'pregrasp_point')
+        self._active['candidate'] = candidate
+        self._active['pregrasp_pose'] = pose
+        self._active['phase'] = 'planning_pregrasp'
+        self._pregrasp_publisher.publish(pose)
+        self._publish_active_stage(
+            GraspStatus.STAGE_PLANNING,
+            'MoveIt is planning pre-grasp candidate {} of {}'.format(
+                index + 1, len(candidates)
+            ),
+            pose,
+        )
+        future = self._move_group.send_goal_async(
+            self._move_group_goal(pose),
+            feedback_callback=lambda message, token=self._active['token']:
+                self._move_group_feedback(message, token),
+        )
+        token = self._active['token']
+        future.add_done_callback(
+            lambda done, token=token:
+                self._move_group_goal_response(done, token)
+        )
 
     def _move_group_goal(self, target_pose):
         primitive = SolidPrimitive()
         primitive.type = SolidPrimitive.SPHERE
         primitive.dimensions = [self._position_tolerance]
-
         region_pose = Pose()
         region_pose.position = target_pose.pose.position
         region_pose.orientation.w = 1.0
@@ -667,8 +726,7 @@ class D1GraspCoordinator(Node):
         constraints = Constraints()
         constraints.name = 'semantic_pregrasp'
         constraints.position_constraints = [position]
-        if self._constrain_pregrasp_orientation:
-            constraints.orientation_constraints = [orientation]
+        constraints.orientation_constraints = [orientation]
 
         goal = MoveGroup.Goal()
         goal.request.start_state.is_diff = True
@@ -689,55 +747,44 @@ class D1GraspCoordinator(Node):
         goal.planning_options.replan = False
         return goal
 
-    def _publish_active_stage(self, stage, message):
-        if self._active is None or self._active['last_stage'] == stage:
-            return
-        self._active['last_stage'] = stage
-        self._publish_status(
-            self._active['command'],
-            stage,
-            False,
-            False,
-            message,
-            self._active['object_id'],
-            self._active['target_pose'],
-        )
+    def _active_token_valid(self, token):
+        return self._active is not None and self._active['token'] is token
 
-    def _move_group_feedback(self, feedback_message):
-        if self._active is None:
+    def _move_group_feedback(self, feedback_message, token):
+        if not self._active_token_valid(token):
             return
         state = feedback_message.feedback.state.strip()
-        lowered = state.lower()
-        if 'execut' in lowered or 'monitor' in lowered:
-            stage = GraspStatus.STAGE_EXECUTING
-        else:
-            stage = GraspStatus.STAGE_PLANNING
-        self._publish_active_stage(
-            stage, 'MoveIt state: {}'.format(state or 'unknown')
-        )
+        if 'execut' in state.lower() or 'monitor' in state.lower():
+            self._publish_active_stage(
+                GraspStatus.STAGE_EXECUTING,
+                'MoveIt state: {}'.format(state or 'unknown'),
+            )
 
-    def _move_group_goal_response(self, future):
-        if self._active is None:
+    def _move_group_goal_response(self, future, token):
+        if not self._active_token_valid(token) or (
+                self._active['phase'] != 'planning_pregrasp'):
             return
         try:
             goal_handle = future.result()
         except Exception as error:
             self._finish_failure(
-                'failed to send request to MoveIt: {}'.format(error)
+                'failed to send pre-grasp request: {}'.format(error)
             )
             return
         if not goal_handle.accepted:
-            self._finish_failure('MoveIt rejected the pre-grasp request')
+            self._try_next_candidate('MoveIt rejected the candidate')
             return
         result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._move_group_result)
+        result_future.add_done_callback(
+            lambda done, token=token: self._move_group_result(done, token)
+        )
 
-    def _move_group_result(self, future):
-        if self._active is None:
+    def _move_group_result(self, future, token):
+        if not self._active_token_valid(token) or (
+                self._active['phase'] != 'planning_pregrasp'):
             return
         try:
-            wrapped_result = future.result()
-            result = wrapped_result.result
+            result = future.result().result
             error_code = result.error_code.val
         except Exception as error:
             self._finish_failure(
@@ -748,36 +795,413 @@ class D1GraspCoordinator(Node):
             description = MOVEIT_ERROR_NAMES.get(
                 error_code, 'MoveIt error {}'.format(error_code)
             )
-            self._finish_failure(description)
+            if error_code in (
+                    MoveItErrorCodes.CONTROL_FAILED,
+                    MoveItErrorCodes.COMMUNICATION_FAILURE,
+                    MoveItErrorCodes.ROBOT_STATE_STALE):
+                self._finish_failure(description)
+            else:
+                self._try_next_candidate(description)
             return
 
-        command = self._active['command']
-        object_id = self._active['object_id']
-        target_pose = self._active['target_pose']
-        if self._execution_enabled:
-            stage = GraspStatus.STAGE_PREGRASP_REACHED
-            message = (
-                'pre-grasp reached; safety stop active, so no contact or '
-                'gripper closure was attempted'
+        if not self._execution_enabled:
+            self._finish_success(
+                GraspStatus.STAGE_PLAN_READY,
+                'pre-grasp plan succeeded; execution_enabled is false',
+            )
+            return
+
+        self._active['phase'] = 'reacquiring'
+        self._active['required_detection_receipt'] = self._now_seconds()
+        self._active['deadline'] = (
+            self._now_seconds() + self._reacquire_timeout_sec
+        )
+        self._publish_active_stage(
+            GraspStatus.STAGE_PREGRASP_REACHED,
+            'pre-grasp reached; waiting for a new target observation before '
+            'the final approach',
+            self._active['pregrasp_pose'],
+        )
+        self._publish_active_stage(
+            GraspStatus.STAGE_REACQUIRING,
+            'reacquiring the selected object from a fresh detection',
+            self._active['pregrasp_pose'],
+        )
+
+    def _try_next_candidate(self, reason):
+        if self._active is None:
+            return
+        self.get_logger().warning(
+            'Pre-grasp candidate {} failed: {}'.format(
+                self._active['candidate_index'] + 1, reason
+            )
+        )
+        self._active['candidate_index'] += 1
+        self._start_next_pregrasp_candidate()
+
+    def _try_reacquire(self, message, receipt_time):
+        if self._active is None or self._active['phase'] != 'reacquiring':
+            return
+        if receipt_time <= self._active['required_detection_receipt']:
+            return
+        if self._now_seconds() - receipt_time > self._fresh_detection_age_sec:
+            return
+        matches = []
+        for detection in message.detections:
+            label = detection.requested_target.strip()
+            if not label:
+                label = detection.label.strip()
+            if grasping.normalize_label(label) != self._active['object_class']:
+                continue
+            if float(detection.score) < self._minimum_confidence:
+                continue
+            if message.map_transform_available and detection.has_map_position:
+                source_point = self._point_tuple(detection.map_position)
+                source_frame = message.map_frame.strip()
+            elif detection.has_camera_position:
+                source_point = self._point_tuple(detection.camera_position)
+                source_frame = message.camera_frame.strip()
+            else:
+                continue
+            if not source_frame:
+                source_frame = message.header.frame_id.strip()
+            if not source_frame:
+                continue
+            try:
+                transform = self._lookup_transform(
+                    self._planning_frame, source_frame
+                )
+            except Exception as error:
+                self.get_logger().warning(
+                    'Could not transform fresh detection from {}: {}'.format(
+                        source_frame, error
+                    )
+                )
+                continue
+            point = self._transform_point(source_point, transform)
+            separation = grasping.distance_between(
+                point, self._active['object_point']
+            )
+            if separation <= self._reacquire_match_distance_m:
+                matches.append((separation, point, detection))
+        if not matches:
+            return
+
+        separation, object_point, _ = min(matches, key=lambda item: item[0])
+        if separation > self._maximum_reacquire_correction_m:
+            self._finish_failure(
+                'fresh detection moved {:.3f} m from the mapped point, above '
+                'the {:.3f} m correction safeguard'.format(
+                    separation, self._maximum_reacquire_correction_m
+                )
+            )
+            return
+        selected = self._active['candidate']
+        candidates = grasping.generate_approach_candidates(
+            object_point, self._active['arm_origin'],
+            [selected['yaw_offset']], self._approach_distance,
+            self._grasp_center_offset, self._tool_roll_rad,
+        )
+        candidate = candidates[0]
+        problem = self._candidate_problem(candidate)
+        if problem is not None:
+            self._finish_failure('reacquired target is unsafe: ' + problem)
+            return
+        grasp_pose = self._candidate_pose(candidate, 'grasp_point')
+        retreat_pose = self._candidate_pose(candidate, 'pregrasp_point')
+        self._active['object_point'] = object_point
+        self._active['candidate'] = candidate
+        self._active['grasp_pose'] = grasp_pose
+        self._active['retreat_pose'] = retreat_pose
+        self._grasp_publisher.publish(grasp_pose)
+        self._request_cartesian_path(
+            grasp_pose, 'approach', GraspStatus.STAGE_APPROACHING,
+            'fresh target acquired; computing the short Cartesian approach',
+        )
+
+    def _request_cartesian_path(self, pose, purpose, stage, message):
+        if self._active is None:
+            return
+        self._active['phase'] = 'computing_' + purpose
+        self._active['cartesian_purpose'] = purpose
+        self._publish_active_stage(stage, message, pose)
+        request = GetCartesianPath.Request()
+        request.header.stamp = self.get_clock().now().to_msg()
+        request.header.frame_id = self._planning_frame
+        request.start_state.is_diff = True
+        request.group_name = self._planning_group
+        request.link_name = self._tip_link
+        request.waypoints = [pose.pose]
+        request.max_step = self._cartesian_step_m
+        if hasattr(request, 'jump_threshold'):
+            request.jump_threshold = self._cartesian_jump_threshold
+        request.avoid_collisions = True
+        if hasattr(request, 'max_velocity_scaling_factor'):
+            request.max_velocity_scaling_factor = (
+                self._cartesian_velocity_scaling
+            )
+        if hasattr(request, 'max_acceleration_scaling_factor'):
+            request.max_acceleration_scaling_factor = (
+                self._cartesian_acceleration_scaling
+            )
+        future = self._cartesian_path.call_async(request)
+        token = self._active['token']
+        future.add_done_callback(
+            lambda done, token=token:
+                self._cartesian_path_result(done, token)
+        )
+
+    def _cartesian_path_result(self, future, token):
+        if (
+                not self._active_token_valid(token)
+                or not self._active['phase'].startswith('computing_')):
+            return
+        purpose = self._active['cartesian_purpose']
+        try:
+            response = future.result()
+        except Exception as error:
+            self._finish_failure(
+                'Cartesian {} service failed: {}'.format(purpose, error)
+            )
+            return
+        error_code = response.error_code.val
+        if error_code != MoveItErrorCodes.SUCCESS:
+            self._finish_failure(
+                'Cartesian {} failed: {}'.format(
+                    purpose, MOVEIT_ERROR_NAMES.get(
+                        error_code, 'MoveIt error {}'.format(error_code)
+                    )
+                )
+            )
+            return
+        if float(response.fraction) < self._minimum_cartesian_fraction:
+            self._finish_failure(
+                'Cartesian {} covered only {:.1f}% (minimum {:.1f}%)'.format(
+                    purpose, 100.0 * float(response.fraction),
+                    100.0 * self._minimum_cartesian_fraction,
+                )
+            )
+            return
+        self._active['phase'] = 'executing_' + purpose
+        goal = ExecuteTrajectory.Goal()
+        goal.trajectory = response.solution
+        future = self._execute_trajectory.send_goal_async(goal)
+        future.add_done_callback(
+            lambda done, token=token:
+                self._execute_goal_response(done, token)
+        )
+
+    def _execute_goal_response(self, future, token):
+        if (
+                not self._active_token_valid(token)
+                or not self._active['phase'].startswith('executing_')):
+            return
+        purpose = self._active['cartesian_purpose']
+        try:
+            goal_handle = future.result()
+        except Exception as error:
+            self._finish_failure(
+                'could not execute Cartesian {}: {}'.format(purpose, error)
+            )
+            return
+        if not goal_handle.accepted:
+            self._finish_failure(
+                'MoveIt rejected Cartesian {} execution'.format(purpose)
+            )
+            return
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda done, token=token: self._execute_result(done, token)
+        )
+
+    def _execute_result(self, future, token):
+        if (
+                not self._active_token_valid(token)
+                or not self._active['phase'].startswith('executing_')):
+            return
+        purpose = self._active['cartesian_purpose']
+        try:
+            result = future.result().result
+            error_code = result.error_code.val
+        except Exception as error:
+            self._finish_failure(
+                'Cartesian {} execution failed: {}'.format(purpose, error)
+            )
+            return
+        if error_code != MoveItErrorCodes.SUCCESS:
+            self._finish_failure(
+                'Cartesian {} execution failed: {}'.format(
+                    purpose, MOVEIT_ERROR_NAMES.get(
+                        error_code, 'MoveIt error {}'.format(error_code)
+                    )
+                )
+            )
+            return
+        if purpose == 'approach':
+            self._command_gripper(
+                self._gripper_closed_degrees,
+                'wait_close',
+                GraspStatus.STAGE_CLOSING,
+                'final approach complete; closing the gripper',
             )
         else:
-            stage = GraspStatus.STAGE_PLAN_READY
-            message = (
-                'pre-grasp plan succeeded; execution_enabled is false, so '
-                'the arm was not moved'
+            self._finish_success(
+                GraspStatus.STAGE_RELEASED,
+                'object released and the arm retreated to pre-grasp; no lift '
+                'was attempted',
             )
+
+    def _command_gripper(self, angle, next_phase, stage, message):
+        if self._active is None:
+            return
+        request = SetJoint.Request()
+        request.joint_id = self._gripper_joint_id
+        request.angle_degrees = float(angle)
+        self._active['pending_gripper_phase'] = next_phase
+        self._active['pending_gripper_target'] = float(angle)
+        self._publish_active_stage(stage, message)
+        future = self._set_joint.call_async(request)
+        token = self._active['token']
+        future.add_done_callback(
+            lambda done, token=token:
+                self._gripper_command_result(done, token)
+        )
+
+    def _gripper_command_result(self, future, token):
+        if not self._active_token_valid(token):
+            return
+        try:
+            response = future.result()
+        except Exception as error:
+            self._finish_failure('gripper service failed: {}'.format(error))
+            return
+        if not response.published:
+            self._finish_failure(
+                'gripper command was rejected: {}'.format(response.message)
+            )
+            return
+        now = self._now_seconds()
+        phase = self._active['pending_gripper_phase']
+        self._active['phase'] = phase
+        self._active['deadline'] = now + self._gripper_operation_timeout_sec
+        self._active['gripper_start_angle'] = self._latest_gripper_angle
+        self._active['gripper_last_angle'] = self._latest_gripper_angle
+        self._active['gripper_last_change'] = now
+
+    def _periodic_update(self):
+        if self._active is None:
+            return
+        phase = self._active['phase']
+        now = self._now_seconds()
+        if phase == 'reacquiring':
+            if now > self._active['deadline']:
+                self._finish_failure(
+                    'no fresh matching detection arrived within {:.1f}s'.format(
+                        self._reacquire_timeout_sec
+                    )
+                )
+            return
+        if phase in (
+                'wait_open_before_pregrasp', 'wait_close',
+                'wait_open_before_retreat'):
+            self._update_gripper_operation(phase, now)
+            return
+        if phase == 'holding' and now >= self._active['deadline']:
+            self._command_gripper(
+                self._gripper_open_degrees,
+                'wait_open_before_retreat',
+                GraspStatus.STAGE_RELEASING,
+                'hold complete; opening the gripper to release the object',
+            )
+
+    def _update_gripper_operation(self, phase, now):
+        if now > self._active['deadline']:
+            self._finish_failure(
+                'gripper did not complete within {:.1f}s'.format(
+                    self._gripper_operation_timeout_sec
+                )
+            )
+            return
+        if self._latest_gripper_angle is None:
+            return
+        if now - self._latest_gripper_receipt > 1.0:
+            return
+        current = self._latest_gripper_angle
+        target = self._active['pending_gripper_target']
+        if abs(current - target) <= self._gripper_tolerance_degrees:
+            if phase == 'wait_open_before_pregrasp':
+                self._start_next_pregrasp_candidate()
+            elif phase == 'wait_close':
+                if self._require_grasp_obstruction:
+                    self._finish_failure(
+                        'gripper reached the fully closed position; no '
+                        'obstruction was detected'
+                    )
+                else:
+                    self._start_hold(
+                        'gripper reached its commanded closed position'
+                    )
+            else:
+                self._start_retreat()
+            return
+        if phase != 'wait_close':
+            return
+
+        start = self._active['gripper_start_angle']
+        if start is None:
+            self._active['gripper_start_angle'] = current
+            start = current
+        previous = self._active['gripper_last_angle']
+        if previous is None or abs(current - previous) > (
+                self._gripper_stall_delta_degrees):
+            self._active['gripper_last_angle'] = current
+            self._active['gripper_last_change'] = now
+            return
+        start_distance = abs(start - self._gripper_closed_degrees)
+        current_distance = abs(current - self._gripper_closed_degrees)
+        closure = start_distance - current_distance
+        stalled_for = now - self._active['gripper_last_change']
+        if closure >= self._minimum_gripper_closure_degrees and (
+                stalled_for >= self._gripper_stall_confirm_sec):
+            self._start_hold(
+                'gripper stopped {:.1f} degrees before fully closed after '
+                '{:.1f} degrees of closure'.format(current_distance, closure)
+            )
+
+    def _start_hold(self, detail):
+        if self._active is None:
+            return
+        self._active['phase'] = 'holding'
+        self._active['deadline'] = (
+            self._now_seconds() + self._hold_duration_sec
+        )
+        self._publish_active_stage(
+            GraspStatus.STAGE_HOLDING,
+            '{}; holding for {:.1f}s without lifting'.format(
+                detail, self._hold_duration_sec
+            ),
+            self._active['grasp_pose'],
+        )
+
+    def _start_retreat(self):
+        self._request_cartesian_path(
+            self._active['retreat_pose'],
+            'retreat',
+            GraspStatus.STAGE_RETREATING,
+            'object released; computing the Cartesian retreat to pre-grasp',
+        )
+
+    def _finish_success(self, stage, message):
+        if self._active is None:
+            return
+        command = self._active['command']
         self._publish_status(
-            command,
-            stage,
-            True,
-            True,
-            message,
-            object_id,
-            target_pose,
+            command, stage, True, True, message,
+            self._active['object_id'], self._active['target_pose'],
         )
         self.get_logger().info(
-            'Grasp request {} completed at guarded stage {}'.format(
-                command.request_id, stage
+            'Grasp request {} completed: {}'.format(
+                command.request_id, message
             )
         )
         self._active = None
@@ -785,21 +1209,25 @@ class D1GraspCoordinator(Node):
     def _finish_failure(self, message):
         if self._active is None:
             return
-        command = self._active['command']
+        active = self._active
         self.get_logger().error(
             'Grasp request {} failed: {}'.format(
-                command.request_id, message
+                active['command'].request_id, message
             )
         )
         self._publish_status(
-            command,
-            GraspStatus.STAGE_FAILED,
-            True,
-            False,
-            message,
-            self._active['object_id'],
-            self._active['target_pose'],
+            active['command'], GraspStatus.STAGE_FAILED, True, False,
+            message, active['object_id'], active.get('target_pose'),
         )
+        # If contact may have occurred, issue a best-effort release. Do not
+        # delay or hide the original failure if this secondary call fails.
+        if self._execution_enabled and active.get('phase') in (
+                'wait_close', 'holding', 'wait_open_before_retreat',
+                'computing_retreat', 'executing_retreat'):
+            request = SetJoint.Request()
+            request.joint_id = self._gripper_joint_id
+            request.angle_degrees = self._gripper_open_degrees
+            self._set_joint.call_async(request)
         self._active = None
 
 

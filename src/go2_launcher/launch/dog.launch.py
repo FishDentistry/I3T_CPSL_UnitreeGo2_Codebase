@@ -23,6 +23,9 @@ def generate_launch_description():
     internal_board_ip = LaunchConfiguration('internal_board_ip')
     launch_arm = LaunchConfiguration('launch_arm')
     arm_command_enabled = LaunchConfiguration('arm_command_enabled')
+    arm_trajectory_command_mode = LaunchConfiguration(
+        'arm_trajectory_command_mode'
+    )
     grasp_execution_enabled = LaunchConfiguration(
         'grasp_execution_enabled'
     )
@@ -57,11 +60,19 @@ def generate_launch_description():
         ),
 
         DeclareLaunchArgument(
+            'arm_trajectory_command_mode',
+            default_value='1',
+            description=(
+                'D1 command mode used for MoveIt trajectory samples.'
+            )
+        ),
+
+        DeclareLaunchArgument(
             'grasp_execution_enabled',
             default_value='false',
             description=(
                 'Allow semantic grasp commands to execute the guarded '
-                'pre-grasp motion.'
+                'grasp, hold, release, and retreat sequence without lifting.'
             )
         ),
 
@@ -120,6 +131,7 @@ def generate_launch_description():
             condition=IfCondition(launch_arm),
             launch_arguments={
                 'commanding_enabled': arm_command_enabled,
+                'trajectory_command_mode': arm_trajectory_command_mode,
             }.items()
         ),
         IncludeLaunchDescription(

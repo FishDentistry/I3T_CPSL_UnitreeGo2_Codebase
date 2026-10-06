@@ -377,58 +377,58 @@ added.
 
 ## Semantic grasp coordinator
 
-`d1_grasp_coordinator` is the command-driven foundation for semantic pick
-behavior. It subscribes to the stable object identities on `/semantic_map` and
-accepts `unitree_arm/msg/GraspCommand` messages on `/d1_grasp/command`.
+`d1_grasp_coordinator` turns a semantic-map object request into a guarded
+grasp-and-release sequence. It subscribes to stable identities on
+`/semantic_map`, accepts `unitree_arm/msg/GraspCommand` on
+`/d1_grasp/command`, and uses fresh results from
+`/grounding_dino/detection_array` before making contact.
 
-A command supplies a required semantic class and an optional stable object ID.
-When the ID is empty, the coordinator selects the closest eligible active
-object of that class. Supplying an ID is recommended whenever more than one
-object of the same class is present.
+A command contains a required semantic class and an optional stable object ID.
+When the ID is empty, the closest eligible active object of that class is
+selected. Before planning, the object must be active, have at least three
+observations, meet the confidence threshold, have been observed within the
+last 20 seconds, and satisfy the height and 0.67-metre D1 reach safeguards.
 
-Before planning, the coordinator requires the selected object to be active,
-recently observed, confirmed by at least three observations, and at or above
-the configured confidence threshold. By default, an observation remains
-eligible for 20 seconds. The coordinator transforms the map position into
-`base_link`, applies the configured pre-grasp offset, checks height in the
-planning frame, and checks reach from `d1_base_link`, the base of the arm's
-kinematic chain, against the D1's specified 0.67-metre maximum reach. It then
-publishes the proposed pose and submits a pose goal to the existing MoveIt
-`move_group` action.
+The coordinator performs the following sequence when execution is enabled:
 
-The initial implementation deliberately stops at pre-grasp:
+1. Open the gripper and confirm its feedback position.
+2. Generate horizontal side-approach poses around the object. The direct
+   approach is tried first, followed by configured yaw alternatives if MoveIt
+   cannot plan it.
+3. Plan and execute a full-pose MoveIt motion to a pre-grasp point 0.07 metres
+   from the object.
+4. Require a new matching Grounding DINO observation after pre-grasp. The
+   observation must remain close to the mapped point, and the correction is
+   limited to 0.08 metres by default.
+5. Compute and execute a short, slow, collision-checked Cartesian path to the
+   corrected grasp point.
+6. Close the gripper. Position feedback is accepted when it reaches the closed
+   target or stalls after meaningful closure, then the object is held for
+   three seconds.
+7. Open the gripper and confirm release, then follow a Cartesian retreat to
+   the corrected pre-grasp point.
 
-- `grasp_execution_enabled:=false` is the default. Commands produce a plan but
-  do not move the arm. Execution mode is supplied directly by the MoveIt launch
-  file; it is intentionally not duplicated in `config/grasping.yaml`.
-- When pre-grasp execution is enabled, velocity and acceleration are limited
-  to conservative scaling factors and the node stops after reaching the
-  offset pose.
-- Cartesian contact approach, gripper closure, attachment to the planning
-  scene, and retreat are not yet performed.
-- Support surfaces and detected-object geometry are not yet inserted into the
-  MoveIt planning scene. Physical pre-grasp execution therefore requires a
-  manually verified clear volume around the entire planned path.
-- Only one request is processed at a time, and the most recent request IDs are
-  not accepted twice.
+No lift is performed. Failures after contact cause a best-effort gripper-open
+command. Only one request is processed at a time, and recent request IDs cannot
+be reused.
 
-The defaults are stored in `config/grasping.yaml`. The initial target is 0.05
-metres above the mapped object along the map-frame Z axis. By default,
-`constrain_pregrasp_orientation` and `preserve_current_orientation` are both
-enabled. The coordinator captures the current `base_link` to
-`d1_gripper_center` TF orientation when it accepts a request, and MoveIt plans
-to the target position while preserving that live gripper orientation. The KDL
-solver is therefore configured for full-pose IK with `position_only_ik: false`
-in `config/kinematics.yaml`.
+The generated poses are published on `/d1_grasp/pregrasp_pose` and
+`/d1_grasp/grasp_pose`. Progress and terminal results are published on
+`/d1_grasp/status`, including opening, reacquiring, approaching, closing,
+holding, releasing, retreating, and released stages.
 
-This behavior does not restore the old fixed top-down gripper pose. That fixed
-map-frame roll, pitch, and yaw is used only if
-`preserve_current_orientation` is explicitly set to false while the orientation
-constraint remains enabled. Setting `constrain_pregrasp_orientation` to false
-also requires `position_only_ik: true`; doing so again permits MoveIt to choose
-an arbitrary wrist orientation. Reach rejections include the calculated
-arm-relative distance and XYZ coordinates to distinguish a genuine workspace
-violation from an incorrect transform.
+The defaults are in `config/grasping.yaml`. `d1_gripper_center` local +Z is
+treated as the approach axis; `tool_roll_rad` rotates the fingers around that
+axis. `approach_yaw_offsets_rad`, `approach_distance_m`,
+`grasp_center_offset_m`, and the configured gripper open/closed values are the
+main calibration parameters.
+
+Grounding DINO currently provides a class, bounding box, and one depth-derived
+3D point rather than an object mesh or grasp pose. Consequently, the node does
+not infer cup handles, object width, support surfaces, or neighboring-object
+geometry. It also has gripper position feedback but no contact-force sensor.
+Physical testing therefore requires a clear workspace and conservative
+objects until segmented geometry and grasp-pose estimation are added.
 
 ### Plan-only command
 
@@ -465,15 +465,14 @@ ros2 topic pub --once /d1_grasp/command \
   "{request_id: 'cup_request_002', object_class: 'cup', object_id: ''}"
 ```
 
-The generated pose is published as
-`geometry_msgs/msg/PoseStamped` on `/d1_grasp/pregrasp_pose` for inspection in
-RViz. A successful plan-only request terminates with
-`STAGE_PLAN_READY` on `/d1_grasp/status`.
+The proposed pre-grasp is published as `geometry_msgs/msg/PoseStamped` on
+`/d1_grasp/pregrasp_pose`. A successful plan-only request terminates with
+`STAGE_PLAN_READY`; it does not open the gripper or approach the object.
 
-### Guarded pre-grasp execution
+### Guarded grasp-and-release execution
 
-After the generated pose and complete animated path have been inspected, the
-pre-grasp movement can be enabled independently of general arm commands:
+After inspecting the generated pre-grasp and planned path, enable both hardware
+commands and the semantic grasp sequence:
 
 ```bash
 ros2 launch go2_launcher dog.launch.py \
@@ -482,7 +481,13 @@ ros2 launch go2_launcher dog.launch.py \
   grasp_execution_enabled:=true
 ```
 
-Publishing a new request ID then allows MoveIt to execute only the pre-grasp
-motion. Successful completion is reported as `STAGE_PREGRASP_REACHED`, with a
-message stating that the contact safeguard stopped the sequence before the
-object was touched.
+Publishing a new request ID runs the complete sequence described above. A
+successful request terminates with `STAGE_RELEASED`. The arm closes around the
+object, holds it for `hold_duration_sec`, releases it, and retreats; it never
+lifts the object.
+
+MoveIt trajectories use D1 firmware trajectory mode (`mode: 1`) by default,
+which produces substantially smoother physical motion than the legacy 10 Hz
+smoothing mode. For comparison only, launch with
+`arm_trajectory_command_mode:=0`.
+

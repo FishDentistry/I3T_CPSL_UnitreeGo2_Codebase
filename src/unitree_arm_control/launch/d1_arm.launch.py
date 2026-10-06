@@ -30,6 +30,9 @@ def generate_launch_description():
     trajectory_command_rate_hz = LaunchConfiguration(
         'trajectory_command_rate_hz'
     )
+    trajectory_command_mode = LaunchConfiguration(
+        'trajectory_command_mode'
+    )
     trajectory_goal_tolerance_radians = LaunchConfiguration(
         'trajectory_goal_tolerance_radians'
     )
@@ -106,6 +109,14 @@ def generate_launch_description():
             description='Rate used to stream interpolated trajectory points.',
         ),
         DeclareLaunchArgument(
+            'trajectory_command_mode',
+            default_value='1',
+            description=(
+                'D1 all-joint mode for trajectory samples: 0 is 10 Hz '
+                'smoothing and 1 is firmware trajectory smoothing.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'trajectory_goal_tolerance_radians',
             default_value='0.035',
             description='Default final tolerance for arm joints.',
@@ -144,6 +155,7 @@ def generate_launch_description():
                 'trajectory_command_rate_hz': (
                     trajectory_command_rate_hz
                 ),
+                'trajectory_command_mode': trajectory_command_mode,
                 'trajectory_goal_tolerance_radians': (
                     trajectory_goal_tolerance_radians
                 ),

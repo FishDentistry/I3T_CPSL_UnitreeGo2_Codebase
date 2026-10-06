@@ -128,8 +128,9 @@ build, feedback verification, launch, and command examples.
 ## Using this repo
 
 This section is a command quick start for bringing up the robot, creating a
-semantic map, and requesting an arm pre-grasp. The detailed installation and
-configuration instructions above must be completed first.
+semantic map, and requesting either a plan-only pre-grasp or a guarded
+grasp-and-release. The detailed installation and configuration instructions
+above must be completed first.
 
 ### 1. Build and source the workspace
 
@@ -189,7 +190,16 @@ ros2 launch cpsl_nav slam.launch.py scan_topic:=/livox/scan_best_effort
 These processes provide the sensor data and `map` transform needed to place
 camera detections in map coordinates.
 
-### 4. Start semantic mapping
+### 4. Nav2 bringup
+
+After SLAM is running, start Nav2 in another sourced terminal when navigation
+commands are required:
+
+```bash
+ros2 launch cpsl_nav nav2_archived.py scan_topic:=/livox/scan_best_effort
+```
+
+### 5. Start semantic mapping
 
 In a fourth terminal:
 
@@ -201,7 +211,7 @@ This launch starts Grounding DINO and the semantic-mapping node. It does not
 start the RealSense camera, so `collect_realsense:=true` must be used in the
 main launch (or the camera node must be started separately).
 
-### 5. Tell the mapper what to find
+### 6. Tell the mapper what to find
 
 Publish one or more class names to `/detection_targets`. For a single target:
 
@@ -223,7 +233,7 @@ frames arrive. Publish an empty value to stop detection:
 ros2 topic pub --once /detection_targets std_msgs/msg/String "{data: ''}"
 ```
 
-### 6. Inspect the semantic map
+### 7. Inspect the semantic map
 
 The mapper associates repeated detections, filters unstable observations, and
 publishes stable objects on `/semantic_map`:
@@ -244,7 +254,7 @@ grasp-coordinator instance:
 ros2 launch unitree_arm_control d1_moveit.launch.py start_move_group:=false
 ```
 
-### 7. Request an arm pre-grasp
+### 8. Request a plan-only arm pre-grasp
 
 The grasp coordinator accepts commands on `/d1_grasp/command`. To select the
 closest eligible active object of a class, leave `object_id` empty:
@@ -268,10 +278,13 @@ Monitor the result in another terminal:
 ros2 topic echo /d1_grasp/status
 ```
 
-The proposed pose can be inspected from one more terminal:
+The proposed pre-grasp and corrected contact pose can be inspected from other
+terminals. The grasp pose is published only after fresh target reacquisition
+during an executing request:
 
 ```bash
 ros2 topic echo /d1_grasp/pregrasp_pose
+ros2 topic echo /d1_grasp/grasp_pose
 ```
 
 With the default `grasp_execution_enabled:=false`, the coordinator validates
@@ -279,11 +292,11 @@ the semantic-map object and plans to a pre-grasp pose, but does not move the
 arm. Eligible objects must be `ACTIVE`, sufficiently confident, observed often
 enough, recently seen, and within the configured reach and height limits.
 
-### 8. Enable guarded pre-grasp execution
+### 9. Enable guarded grasp-and-release execution
 
-Physical pre-grasp motion requires both arm command publishing and grasp
-execution to be explicitly enabled. Stop the first `dog.launch.py` process and
-restart it with:
+Physical grasp motion requires both arm command publishing and grasp execution
+to be explicitly enabled. Stop the first `dog.launch.py` process and restart it
+with:
 
 ```bash
 ros2 launch go2_launcher dog.launch.py \
@@ -294,19 +307,10 @@ ros2 launch go2_launcher dog.launch.py \
   grasp_execution_enabled:=true
 ```
 
-Then publish the same `/d1_grasp/command` shown above. This currently executes
-only the guarded motion to the pre-grasp pose: it does not approach the object,
-close the gripper, lift, or verify a grasp. Before enabling execution, verify
-the selected object and proposed pose, ensure the arm path is clear, and keep
-an emergency stop available. Nearby tables and objects are not automatically
-added to the MoveIt planning scene.
+Then publish the same `/d1_grasp/command` shown above with a new `request_id`.
+The coordinator opens the gripper, tries collision-checked side-approach
+candidates, reaches pre-grasp, requires a new matching camera detection, makes
+a short slow Cartesian approach, closes the gripper, holds for three seconds,
+opens it, and retreats. It does not lift the object.
 
-### 9. Nav2 bringup
-
-After SLAM is running, start Nav2 in another sourced terminal when navigation
-commands are required:
-
-```bash
-ros2 launch cpsl_nav nav2_archived.py scan_topic:=/livox/scan_best_effort
-```
 

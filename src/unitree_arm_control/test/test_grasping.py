@@ -117,6 +117,47 @@ class GraspingTest(unittest.TestCase):
         self.assertAlmostEqual(direction[1], 0.0)
         self.assertAlmostEqual(direction[2], -1.0)
 
+    def test_approach_orientation_points_tool_z_at_object(self):
+        quaternion = grasping.quaternion_from_approach((1.0, 0.0, 0.0))
+        direction = grasping.rotate_vector((0.0, 0.0, 1.0), quaternion)
+        self.assertAlmostEqual(direction[0], 1.0)
+        self.assertAlmostEqual(direction[1], 0.0)
+        self.assertAlmostEqual(direction[2], 0.0)
+
+    def test_candidate_offsets_pregrasp_toward_arm(self):
+        candidate = grasping.generate_approach_candidates(
+            (1.0, 0.0, 0.2),
+            (0.0, 0.0, 0.0),
+            [0.0],
+            0.10,
+            0.02,
+        )[0]
+        self.assertEqual(candidate['grasp_point'], (0.98, 0.0, 0.2))
+        self.assertEqual(candidate['pregrasp_point'], (0.88, 0.0, 0.2))
+
+    def test_candidates_try_smallest_yaw_offset_first(self):
+        candidates = grasping.generate_approach_candidates(
+            (0.5, 0.1, 0.2),
+            (0.0, 0.0, 0.0),
+            [0.8, -0.2, 0.0, 0.4],
+            0.07,
+            0.0,
+        )
+        self.assertEqual(
+            [candidate['yaw_offset'] for candidate in candidates],
+            [0.0, -0.2, 0.4, 0.8],
+        )
+
+    def test_candidate_rejects_nonpositive_approach_distance(self):
+        with self.assertRaises(ValueError):
+            grasping.generate_approach_candidates(
+                (0.5, 0.0, 0.2),
+                (0.0, 0.0, 0.0),
+                [0.0],
+                0.0,
+                0.0,
+            )
+
     def test_reach_safeguard_accepts_point_inside_arm_envelope(self):
         problem = grasping.reach_safeguard_problem(
             (0.50, 0.10, 0.20), 0.10, 0.65, 'd1_base_link'

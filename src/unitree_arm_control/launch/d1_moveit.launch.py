@@ -188,8 +188,8 @@ def generate_launch_description():
             'grasp_execution_enabled',
             default_value='false',
             description=(
-                'Allow semantic grasp commands to execute only the guarded '
-                'pre-grasp motion.'
+                'Allow semantic grasp commands to execute pre-grasp, close, '
+                'hold, release, and retreat without lifting.'
             ),
         ),
         move_group,

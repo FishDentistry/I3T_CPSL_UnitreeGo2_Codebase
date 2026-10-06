@@ -152,6 +152,162 @@ def distance_from_origin(point):
     return math.sqrt(sum(float(value) ** 2 for value in point))
 
 
+def distance_between(first, second):
+    """Return the Euclidean distance between two three-vectors."""
+    return math.sqrt(sum(
+        (float(left) - float(right)) ** 2
+        for left, right in zip(first, second)
+    ))
+
+
+def _normalized(vector):
+    values = tuple(float(value) for value in vector)
+    length = distance_from_origin(values)
+    if length <= 1.0e-9:
+        raise ValueError('vector must have non-zero length')
+    return tuple(value / length for value in values)
+
+
+def _cross(first, second):
+    return (
+        first[1] * second[2] - first[2] * second[1],
+        first[2] * second[0] - first[0] * second[2],
+        first[0] * second[1] - first[1] * second[0],
+    )
+
+
+def _dot(first, second):
+    return sum(left * right for left, right in zip(first, second))
+
+
+def _quaternion_from_matrix(columns):
+    """Convert a three-by-three rotation matrix, supplied by columns."""
+    matrix = tuple(zip(*columns))
+    m00, m01, m02 = matrix[0]
+    m10, m11, m12 = matrix[1]
+    m20, m21, m22 = matrix[2]
+    trace = m00 + m11 + m22
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        quaternion = (
+            (m21 - m12) / scale,
+            (m02 - m20) / scale,
+            (m10 - m01) / scale,
+            0.25 * scale,
+        )
+    elif m00 > m11 and m00 > m22:
+        scale = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+        quaternion = (
+            0.25 * scale,
+            (m01 + m10) / scale,
+            (m02 + m20) / scale,
+            (m21 - m12) / scale,
+        )
+    elif m11 > m22:
+        scale = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+        quaternion = (
+            (m01 + m10) / scale,
+            0.25 * scale,
+            (m12 + m21) / scale,
+            (m02 - m20) / scale,
+        )
+    else:
+        scale = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+        quaternion = (
+            (m02 + m20) / scale,
+            (m12 + m21) / scale,
+            0.25 * scale,
+            (m10 - m01) / scale,
+        )
+    norm = math.sqrt(sum(value * value for value in quaternion))
+    return tuple(value / norm for value in quaternion)
+
+
+def quaternion_from_approach(approach_direction, tool_roll=0.0):
+    """Orient local +Z along an approach direction with local +X upward.
+
+    ``tool_roll`` rotates the finger arrangement around the approach axis.
+    """
+    local_z = _normalized(approach_direction)
+    up = (0.0, 0.0, 1.0)
+    projection = _dot(up, local_z)
+    projected_up = tuple(
+        up_value - projection * z_value
+        for up_value, z_value in zip(up, local_z)
+    )
+    if distance_from_origin(projected_up) <= 1.0e-6:
+        projected_up = (1.0, 0.0, 0.0)
+    local_x = _normalized(projected_up)
+    local_y = _normalized(_cross(local_z, local_x))
+
+    cosine = math.cos(float(tool_roll))
+    sine = math.sin(float(tool_roll))
+    rolled_x = tuple(
+        cosine * x_value + sine * y_value
+        for x_value, y_value in zip(local_x, local_y)
+    )
+    rolled_y = tuple(
+        -sine * x_value + cosine * y_value
+        for x_value, y_value in zip(local_x, local_y)
+    )
+    return _quaternion_from_matrix((rolled_x, rolled_y, local_z))
+
+
+def generate_approach_candidates(
+        object_point,
+        arm_origin,
+        yaw_offsets,
+        approach_distance,
+        grasp_center_offset,
+        tool_roll=0.0):
+    """Generate horizontal, object-directed pre-grasp candidates.
+
+    The approach direction points from the pre-grasp toward the object. The
+    pre-grasp offset is therefore applied toward the arm, rather than upward
+    in a global frame.
+    """
+    if approach_distance <= 0.0:
+        raise ValueError('approach_distance must be positive')
+    if grasp_center_offset < 0.0:
+        raise ValueError('grasp_center_offset must not be negative')
+
+    radial = (
+        float(object_point[0]) - float(arm_origin[0]),
+        float(object_point[1]) - float(arm_origin[1]),
+        0.0,
+    )
+    radial = _normalized(radial)
+    candidates = []
+    for yaw_offset in yaw_offsets:
+        cosine = math.cos(float(yaw_offset))
+        sine = math.sin(float(yaw_offset))
+        direction = (
+            cosine * radial[0] - sine * radial[1],
+            sine * radial[0] + cosine * radial[1],
+            0.0,
+        )
+        grasp_point = tuple(
+            float(value) - float(grasp_center_offset) * axis
+            for value, axis in zip(object_point, direction)
+        )
+        pregrasp_point = tuple(
+            value - float(approach_distance) * axis
+            for value, axis in zip(grasp_point, direction)
+        )
+        candidates.append({
+            'yaw_offset': float(yaw_offset),
+            'approach_direction': direction,
+            'pregrasp_point': pregrasp_point,
+            'grasp_point': grasp_point,
+            'orientation': quaternion_from_approach(
+                direction, tool_roll
+            ),
+        })
+    return tuple(sorted(
+        candidates, key=lambda item: abs(item['yaw_offset'])
+    ))
+
+
 def reach_safeguard_problem(
         point,
         minimum_reach,

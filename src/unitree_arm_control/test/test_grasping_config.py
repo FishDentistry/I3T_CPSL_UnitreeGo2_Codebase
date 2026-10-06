@@ -41,15 +41,9 @@ class GraspingConfigTest(unittest.TestCase):
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
         self.assertIn('reach_reference_frame: d1_base_link', config)
-        self.assertIn(
-            "declare_parameter('reach_reference_frame', 'd1_base_link')",
-            coordinator,
-        )
+        self.assertIn("'reach_reference_frame': 'd1_base_link'", coordinator)
         self.assertIn('maximum_reach_m: 0.67', config)
-        self.assertIn(
-            "declare_parameter('maximum_reach_m', 0.67)",
-            coordinator,
-        )
+        self.assertIn("self.declare_parameter('maximum_reach_m', 0.67)", coordinator)
 
     def test_grasp_candidate_age_default_is_twenty_seconds(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
@@ -62,34 +56,39 @@ class GraspingConfigTest(unittest.TestCase):
             coordinator,
         )
 
-    def test_current_orientation_is_available_when_constraint_enabled(self):
+    def test_side_approach_candidates_replace_fixed_orientation(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
-        self.assertIn('preserve_current_orientation: true', config)
-        self.assertIn(
-            "declare_parameter('preserve_current_orientation', True)",
-            coordinator,
-        )
-        self.assertIn(
-            'self._planning_frame, self._tip_link, Time()',
-            coordinator,
-        )
+        self.assertIn('approach_yaw_offsets_rad:', config)
+        self.assertIn('approach_distance_m: 0.07', config)
+        self.assertIn('generate_approach_candidates(', coordinator)
+        self.assertNotIn('preserve_current_orientation:', config)
 
-    def test_pregrasp_preserves_current_orientation_by_default(self):
+    def test_contact_sequence_has_fresh_detection_and_cartesian_gates(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
-        self.assertIn('constrain_pregrasp_orientation: true', config)
-        self.assertIn(
-            "declare_parameter('constrain_pregrasp_orientation', True)",
-            coordinator,
-        )
-        self.assertIn(
-            'if self._constrain_pregrasp_orientation:', coordinator
-        )
+        self.assertIn('detections_topic: /grounding_dino/detection_array', config)
+        self.assertIn('minimum_cartesian_fraction: 0.95', config)
+        self.assertIn('GetCartesianPath', coordinator)
+        self.assertIn('ExecuteTrajectory', coordinator)
+        self.assertIn("'reacquiring'", coordinator)
+
+    def test_gripper_sequence_holds_releases_and_does_not_lift(self):
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        status = (INTERFACE_ROOT / 'msg' / 'GraspStatus.msg').read_text()
+        self.assertIn('hold_duration_sec: 3.0', config)
+        self.assertIn('gripper_service: /d1_arm_controller/set_joint', config)
+        self.assertIn('STAGE_CLOSING=10', status)
+        self.assertIn('STAGE_RELEASING=12', status)
+        self.assertIn('STAGE_RELEASED=14', status)
+        self.assertIn('without lifting', coordinator)
 
     def test_kdl_solver_uses_full_pose_ik(self):
         kinematics = (
@@ -106,6 +105,20 @@ class GraspingConfigTest(unittest.TestCase):
             "'grasp_execution_enabled': grasp_execution_enabled",
             launch,
         )
+
+    def test_trajectory_mode_defaults_to_firmware_smoothing(self):
+        arm_launch = (
+            CONTROL_ROOT / 'launch' / 'd1_arm.launch.py'
+        ).read_text()
+        dog_launch = (
+            LAUNCHER_ROOT / 'launch' / 'dog.launch.py'
+        ).read_text()
+        controller = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'controller.py'
+        ).read_text()
+        self.assertIn("'trajectory_command_mode',\n            default_value='1'", arm_launch)
+        self.assertIn("'arm_trajectory_command_mode',\n            default_value='1'", dog_launch)
+        self.assertIn("'trajectory_command_mode', protocol.TRAJECTORY", controller)
 
 
 if __name__ == '__main__':

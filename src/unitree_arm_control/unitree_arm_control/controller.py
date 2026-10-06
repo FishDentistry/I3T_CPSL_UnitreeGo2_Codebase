@@ -80,6 +80,9 @@ class D1ArmController(Node):
         self.declare_parameter('lay_down_timeout_sec', 15.0)
         self.declare_parameter('lay_down_required_samples', 3)
         self.declare_parameter('trajectory_command_rate_hz', 10.0)
+        self.declare_parameter(
+            'trajectory_command_mode', protocol.TRAJECTORY
+        )
         self.declare_parameter('trajectory_goal_tolerance_radians', 0.035)
         self.declare_parameter('trajectory_gripper_tolerance_m', 0.005)
         self.declare_parameter('trajectory_goal_timeout_sec', 3.0)
@@ -511,6 +514,10 @@ class D1ArmController(Node):
                 ),
             )
 
+            command_mode = self._integer_parameter(
+                'trajectory_command_mode'
+            )
+
             # Validate every expanded waypoint against the configured D1
             # conversion and mechanical limits before publishing any motion.
             for positions in waypoints:
@@ -518,7 +525,7 @@ class D1ArmController(Node):
                     positions, held_gripper_degrees
                 )
                 protocol.set_joint_angles_command(
-                    1, angles, protocol.SMOOTH_10_HZ,
+                    1, angles, command_mode,
                     False
                 )
 
@@ -560,7 +567,7 @@ class D1ArmController(Node):
                     start_positions,
                 )
                 self._send_trajectory_sample(
-                    desired, held_gripper_degrees
+                    desired, held_gripper_degrees, command_mode
                 )
                 self._publish_trajectory_feedback(
                     goal_handle, names, desired
@@ -606,7 +613,10 @@ class D1ArmController(Node):
         return tuple(angles)
 
     def _send_trajectory_sample(
-            self, joint_positions, held_gripper_degrees=None):
+            self,
+            joint_positions,
+            held_gripper_degrees=None,
+            command_mode=protocol.TRAJECTORY):
         angles = self._trajectory_angles_degrees(
             joint_positions, held_gripper_degrees
         )
@@ -614,7 +624,7 @@ class D1ArmController(Node):
         payload = protocol.set_joint_angles_command(
             sequence,
             angles,
-            protocol.TRAJECTORY,
+            command_mode,
             False,
         )
         self._send_command(
