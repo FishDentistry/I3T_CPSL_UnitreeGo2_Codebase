@@ -393,14 +393,14 @@ The coordinator performs the following sequence when execution is enabled:
 
 1. Open the gripper and confirm its feedback position.
 2. Generate three-dimensional approach poses from the current gripper toward
-   the object, including the configured yaw and tool-roll alternatives. The
-   configured grasp-center offset places the object between the fingers rather
-   than at the finger mounting plane.
-3. Plan every pre-grasp without moving the arm and validate its complete final
-   Cartesian segment from the planned endpoint. Among complete candidates, the
-   lowest-cost trajectory is selected using joint motion with small yaw and
-   tool-roll penalties.
-4. Execute only the selected full-pose MoveIt trajectory to a pre-grasp point
+   the object, including configured yaw and tool-roll fallbacks. Candidates are
+   ordered by smallest yaw change, with tool-roll alternatives tried before
+   moving to the next approach direction.
+3. Plan the preferred pre-grasp without moving the arm and validate its complete
+   final Cartesian segment from the planned endpoint. If either operation
+   fails, repeat with the next candidate. Stop as soon as one candidate passes
+   both checks.
+4. Execute only that validated full-pose MoveIt trajectory to a pre-grasp point
    0.07 metres from the object.
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
@@ -427,7 +427,9 @@ The defaults are in `config/grasping.yaml`. `d1_gripper_center` local +Z is
 treated as the approach axis; `tool_roll_rad` rotates the fingers around that
 axis. `approach_yaw_offsets_rad`, `tool_roll_offsets_rad`,
 `approach_distance_m`, `grasp_center_offset_m`, and the configured gripper
-open/closed values are the main calibration parameters.
+open/closed values are the main calibration parameters. The grasp-center
+offset defaults to zero and should only be changed from measured tool geometry
+and physical error.
 
 Grounding DINO currently provides a class, bounding box, and one depth-derived
 3D point rather than an object mesh or grasp pose. Consequently, the node does

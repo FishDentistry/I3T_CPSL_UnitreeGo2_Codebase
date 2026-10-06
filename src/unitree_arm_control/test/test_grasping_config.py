@@ -86,10 +86,17 @@ class GraspingConfigTest(unittest.TestCase):
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
         self.assertIn('goal.planning_options.plan_only = True', coordinator)
-        self.assertIn("'validated_candidates': []", coordinator)
         self.assertIn('result.planned_trajectory', coordinator)
         self.assertIn("'pregrasp',", coordinator)
-        self.assertIn("min(validated, key=lambda item: item['score'])", coordinator)
+        self.assertIn(
+            'executing the first fully validated approach candidate',
+            coordinator,
+        )
+        self.assertLess(
+            coordinator.index('for yaw_offset in self._approach_yaw_offsets'),
+            coordinator.index('for roll_offset in self._tool_roll_offsets'),
+        )
+        self.assertNotIn("'validated_candidates': []", coordinator)
 
     def test_primary_approach_uses_current_gripper_position(self):
         coordinator = (

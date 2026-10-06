@@ -31,15 +31,14 @@ d1_grasp_coordinator:
     # points along the approach.
     approach_yaw_offsets_rad: [0.0, 0.5235987756, -0.5235987756, 1.0471975512, -1.0471975512]
     approach_distance_m: 0.07
-    # d1_gripper_center is at the finger mounting plane. Keep that frame
-    # behind the detected object so the object lies between the fingers.
-    grasp_center_offset_m: 0.04
+    # Apply only after measuring the desired tool-frame-to-object offset.
+    grasp_center_offset_m: 0.0
     tool_roll_rad: 0.0
     tool_roll_offsets_rad: [0.0, 1.5707963268, -1.5707963268]
     position_tolerance_m: 0.02
     orientation_tolerance_rad: 0.20
 
-    planning_time_sec: 5.0
+    planning_time_sec: 1.5
     planning_attempts: 5
     velocity_scaling: 0.15
     acceleration_scaling: 0.10

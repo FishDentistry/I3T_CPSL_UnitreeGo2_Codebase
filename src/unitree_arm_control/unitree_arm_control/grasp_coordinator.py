@@ -196,7 +196,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('position_tolerance_m', 0.02)
         self.declare_parameter('orientation_tolerance_rad', 0.20)
 
-        self.declare_parameter('planning_time_sec', 5.0)
+        self.declare_parameter('planning_time_sec', 1.5)
         self.declare_parameter('planning_attempts', 5)
         self.declare_parameter('velocity_scaling', 0.15)
         self.declare_parameter('acceleration_scaling', 0.10)
@@ -509,9 +509,7 @@ class D1GraspCoordinator(Node):
             'approach_origin': approach_origin,
             'candidates': candidates,
             'candidate_index': 0,
-            'validated_candidates': [],
             'candidate': None,
-            'pregrasp_trajectory': None,
             'pregrasp_pose': first_pose,
             'grasp_pose': None,
             'retreat_pose': None,
@@ -607,20 +605,21 @@ class D1GraspCoordinator(Node):
                 continue
             generated = []
             try:
-                for roll_offset in self._tool_roll_offsets:
-                    roll_candidates = (
-                        grasping.generate_approach_candidates(
-                            object_point,
-                            approach_origin,
-                            self._approach_yaw_offsets,
-                            self._approach_distance,
-                            self._grasp_center_offset,
-                            self._tool_roll_rad + roll_offset,
+                for yaw_offset in self._approach_yaw_offsets:
+                    for roll_offset in self._tool_roll_offsets:
+                        roll_candidates = (
+                            grasping.generate_approach_candidates(
+                                object_point,
+                                approach_origin,
+                                (yaw_offset,),
+                                self._approach_distance,
+                                self._grasp_center_offset,
+                                self._tool_roll_rad + roll_offset,
+                            )
                         )
-                    )
-                    for candidate in roll_candidates:
-                        candidate['tool_roll_offset'] = roll_offset
-                        generated.append(candidate)
+                        for candidate in roll_candidates:
+                            candidate['tool_roll_offset'] = roll_offset
+                            generated.append(candidate)
             except ValueError as error:
                 failures.append(str(error))
                 continue
@@ -700,7 +699,10 @@ class D1GraspCoordinator(Node):
         index = self._active['candidate_index']
         candidates = self._active['candidates']
         if index >= len(candidates):
-            self._finish_candidate_screening()
+            self._finish_failure(
+                'no approach candidate produced both a valid pre-grasp plan '
+                'and a complete Cartesian approach'
+            )
             return
         candidate = candidates[index]
         pose = self._candidate_pose(candidate, 'pregrasp_point')
@@ -896,48 +898,6 @@ class D1GraspCoordinator(Node):
         state.is_diff = False
         return state
 
-    @staticmethod
-    def _trajectory_cost(trajectory):
-        points = trajectory.joint_trajectory.points
-        if len(points) < 2:
-            return 0.0
-        cost = 0.0
-        for previous, current in zip(points, points[1:]):
-            cost += math.sqrt(sum(
-                (float(right) - float(left)) ** 2
-                for left, right in zip(
-                    previous.positions, current.positions
-                )
-            ))
-        return cost
-
-    def _finish_candidate_screening(self):
-        if self._active is None:
-            return
-        validated = self._active['validated_candidates']
-        if not validated:
-            self._finish_failure(
-                'no side-approach candidate produced both a valid pre-grasp '
-                'plan and a complete Cartesian approach'
-            )
-            return
-        selected = min(validated, key=lambda item: item['score'])
-        self._active['candidate'] = selected['candidate']
-        self._active['candidate_index'] = selected['candidate_index']
-        self._active['pregrasp_pose'] = selected['pregrasp_pose']
-        self._active['pregrasp_trajectory'] = selected['trajectory']
-        self._pregrasp_publisher.publish(selected['pregrasp_pose'])
-        self._execute_robot_trajectory(
-            selected['trajectory'],
-            'pregrasp',
-            GraspStatus.STAGE_EXECUTING,
-            'executing candidate {} after plan-only screening selected it '
-            'with motion cost {:.3f}'.format(
-                selected['candidate_index'] + 1, selected['score']
-            ),
-            selected['pregrasp_pose'],
-        )
-
     def _begin_reacquisition(self):
         self._active['phase'] = 'reacquiring'
         self._active['required_detection_receipt'] = self._now_seconds()
@@ -1124,28 +1084,22 @@ class D1GraspCoordinator(Node):
                 self._finish_failure(description)
             return
         if purpose == 'validation':
-            candidate = self._active['candidate']
             trajectory = self._active['pending_pregrasp_trajectory']
-            score = self._trajectory_cost(trajectory)
-            score += 0.05 * abs(float(candidate['yaw_offset']))
-            score += 0.02 * abs(float(
-                candidate.get('tool_roll_offset', 0.0)
-            ))
-            self._active['validated_candidates'].append({
-                'candidate': candidate,
-                'candidate_index': self._active['candidate_index'],
-                'pregrasp_pose': self._active['pregrasp_pose'],
-                'trajectory': trajectory,
-                'score': score,
-            })
             self.get_logger().info(
-                'Approach candidate {} passed plan-only screening with '
-                'motion cost {:.3f}'.format(
-                    self._active['candidate_index'] + 1, score
+                'Approach candidate {} passed plan-only pre-grasp and '
+                'Cartesian validation'.format(
+                    self._active['candidate_index'] + 1
                 )
             )
-            self._active['candidate_index'] += 1
-            self._start_next_pregrasp_candidate()
+            self._execute_robot_trajectory(
+                trajectory,
+                'pregrasp',
+                GraspStatus.STAGE_EXECUTING,
+                'executing the first fully validated approach candidate {}'.format(
+                    self._active['candidate_index'] + 1
+                ),
+                self._active['pregrasp_pose'],
+            )
             return
         self._execute_robot_trajectory(
             response.solution,
@@ -1193,7 +1147,6 @@ class D1GraspCoordinator(Node):
             ))
         self._active['candidates'] = tuple(remaining)
         self._active['candidate_index'] = 0
-        self._active['validated_candidates'] = []
         self._active['candidate'] = None
         self._active['pending_pregrasp_trajectory'] = None
         self._start_next_pregrasp_candidate()
