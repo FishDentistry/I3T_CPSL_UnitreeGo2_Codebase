@@ -186,7 +186,7 @@ class D1GraspCoordinator(Node):
             [0.0, math.pi / 6.0, -math.pi / 6.0,
              math.pi / 3.0, -math.pi / 3.0],
         )
-        self.declare_parameter('approach_distance_m', 0.07)
+        self.declare_parameter('approach_distance_m', 0.11)
         self.declare_parameter('grasp_center_offset_m', 0.0)
         self.declare_parameter('tool_roll_rad', 0.0)
         self.declare_parameter(
@@ -196,7 +196,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('position_tolerance_m', 0.02)
         self.declare_parameter('orientation_tolerance_rad', 0.20)
 
-        self.declare_parameter('planning_time_sec', 1.5)
+        self.declare_parameter('planning_time_sec', 5.0)
         self.declare_parameter('planning_attempts', 5)
         self.declare_parameter('velocity_scaling', 0.15)
         self.declare_parameter('acceleration_scaling', 0.10)

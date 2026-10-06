@@ -30,7 +30,7 @@ d1_grasp_coordinator:
     # yaw alternatives around that direction. The gripper's +Z tool axis
     # points along the approach.
     approach_yaw_offsets_rad: [0.0, 0.5235987756, -0.5235987756, 1.0471975512, -1.0471975512]
-    approach_distance_m: 0.07
+    approach_distance_m: 0.11
     # Apply only after measuring the desired tool-frame-to-object offset.
     grasp_center_offset_m: 0.0
     tool_roll_rad: 0.0
@@ -38,7 +38,7 @@ d1_grasp_coordinator:
     position_tolerance_m: 0.02
     orientation_tolerance_rad: 0.20
 
-    planning_time_sec: 1.5
+    planning_time_sec: 5.0
     planning_attempts: 5
     velocity_scaling: 0.15
     acceleration_scaling: 0.10

@@ -62,7 +62,7 @@ class GraspingConfigTest(unittest.TestCase):
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
         self.assertIn('approach_yaw_offsets_rad:', config)
-        self.assertIn('approach_distance_m: 0.07', config)
+        self.assertIn('approach_distance_m: 0.11', config)
         self.assertIn('generate_approach_candidates(', coordinator)
         self.assertNotIn('preserve_current_orientation:', config)
 

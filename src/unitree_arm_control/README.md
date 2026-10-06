@@ -401,7 +401,7 @@ The coordinator performs the following sequence when execution is enabled:
    fails, repeat with the next candidate. Stop as soon as one candidate passes
    both checks.
 4. Execute only that validated full-pose MoveIt trajectory to a pre-grasp point
-   0.07 metres from the object.
+   0.11 metres from the object.
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
    limited to 0.08 metres by default. Reacquisition preserves the selected
