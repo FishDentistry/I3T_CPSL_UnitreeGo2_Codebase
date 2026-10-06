@@ -614,7 +614,7 @@ class D1ArmController(Node):
         payload = protocol.set_joint_angles_command(
             sequence,
             angles,
-            protocol.SMOOTH_10_HZ,
+            protocol.TRAJECTORY,
             False,
         )
         self._send_command(
