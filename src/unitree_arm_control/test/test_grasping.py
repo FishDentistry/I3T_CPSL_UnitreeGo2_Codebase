@@ -132,8 +132,50 @@ class GraspingTest(unittest.TestCase):
             0.10,
             0.02,
         )[0]
-        self.assertEqual(candidate['grasp_point'], (0.98, 0.0, 0.2))
-        self.assertEqual(candidate['pregrasp_point'], (0.88, 0.0, 0.2))
+        expected_direction = (
+            1.0 / math.sqrt(1.04), 0.0, 0.2 / math.sqrt(1.04)
+        )
+        for actual, expected in zip(
+                candidate['approach_direction'], expected_direction):
+            self.assertAlmostEqual(actual, expected)
+        for axis in range(3):
+            expected_grasp = (
+                (1.0, 0.0, 0.2)[axis]
+                - 0.02 * expected_direction[axis]
+            )
+            expected_pregrasp = (
+                expected_grasp - 0.10 * expected_direction[axis]
+            )
+            self.assertAlmostEqual(
+                candidate['grasp_point'][axis], expected_grasp
+            )
+            self.assertAlmostEqual(
+                candidate['pregrasp_point'][axis], expected_pregrasp
+            )
+
+    def test_low_object_pregrasp_remains_above_object(self):
+        candidate = grasping.generate_approach_candidates(
+            (0.50, 0.10, 0.20),
+            (0.20, -0.10, 0.50),
+            [0.0],
+            0.10,
+            0.0,
+        )[0]
+        self.assertLess(candidate['approach_direction'][2], 0.0)
+        self.assertGreater(candidate['pregrasp_point'][2], 0.20)
+
+    def test_yaw_candidate_preserves_direct_approach_slope(self):
+        candidates = grasping.generate_approach_candidates(
+            (0.50, 0.10, 0.20),
+            (0.20, -0.10, 0.50),
+            [0.0, math.pi / 2.0],
+            0.10,
+            0.0,
+        )
+        self.assertAlmostEqual(
+            candidates[0]['approach_direction'][2],
+            candidates[1]['approach_direction'][2],
+        )
 
     def test_candidates_try_smallest_yaw_offset_first(self):
         candidates = grasping.generate_approach_candidates(

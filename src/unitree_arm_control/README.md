@@ -392,8 +392,10 @@ last 20 seconds, and satisfy the height and 0.67-metre D1 reach safeguards.
 The coordinator performs the following sequence when execution is enabled:
 
 1. Open the gripper and confirm its feedback position.
-2. Generate horizontal side-approach poses around the object from the current
-   gripper position, including the configured yaw and tool-roll alternatives.
+2. Generate three-dimensional approach poses from the current gripper toward
+   the object, including the configured yaw and tool-roll alternatives. The
+   configured grasp-center offset places the object between the fingers rather
+   than at the finger mounting plane.
 3. Plan every pre-grasp without moving the arm and validate its complete final
    Cartesian segment from the planned endpoint. Among complete candidates, the
    lowest-cost trajectory is selected using joint motion with small yaw and

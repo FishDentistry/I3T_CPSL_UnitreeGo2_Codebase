@@ -710,8 +710,12 @@ class D1GraspCoordinator(Node):
         self._pregrasp_publisher.publish(pose)
         self._publish_active_stage(
             GraspStatus.STAGE_PLANNING,
-            'MoveIt is planning pre-grasp candidate {} of {}'.format(
-                index + 1, len(candidates)
+            'MoveIt is planning pre-grasp candidate {} of {} at '
+            '[{:.3f}, {:.3f}, {:.3f}] m'.format(
+                index + 1, len(candidates),
+                candidate['pregrasp_point'][0],
+                candidate['pregrasp_point'][1],
+                candidate['pregrasp_point'][2],
             ),
             pose,
         )

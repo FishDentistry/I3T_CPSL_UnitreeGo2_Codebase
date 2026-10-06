@@ -260,11 +260,12 @@ def generate_approach_candidates(
         approach_distance,
         grasp_center_offset,
         tool_roll=0.0):
-    """Generate horizontal, object-directed pre-grasp candidates.
+    """Generate three-dimensional, object-directed pre-grasp candidates.
 
     The primary approach direction points from the current gripper position
-    toward the object. The pre-grasp offset is applied along that direction,
-    rather than upward in a global frame.
+    toward the object. Yaw alternatives rotate that direction about the
+    planning frame's vertical axis while retaining its vertical component.
+    The pre-grasp offset is applied along the resulting direction.
     """
     if approach_distance <= 0.0:
         raise ValueError('approach_distance must be positive')
@@ -274,7 +275,7 @@ def generate_approach_candidates(
     radial = (
         float(object_point[0]) - float(approach_origin[0]),
         float(object_point[1]) - float(approach_origin[1]),
-        0.0,
+        float(object_point[2]) - float(approach_origin[2]),
     )
     radial = _normalized(radial)
     candidates = []
@@ -284,7 +285,7 @@ def generate_approach_candidates(
         direction = (
             cosine * radial[0] - sine * radial[1],
             sine * radial[0] + cosine * radial[1],
-            0.0,
+            radial[2],
         )
         grasp_point = tuple(
             float(value) - float(grasp_center_offset) * axis
