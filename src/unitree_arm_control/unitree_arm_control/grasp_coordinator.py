@@ -158,6 +158,7 @@ class D1GraspCoordinator(Node):
             'joint_angles_topic': '/d1_arm_controller/joint_angles',
             'planning_group': 'd1_arm',
             'planning_frame': 'base_link',
+            'camera_frame': 'camera_link',
             'reach_reference_frame': 'd1_base_link',
             'tip_link': 'd1_gripper_center',
             'planner_id': '',
@@ -218,6 +219,7 @@ class D1GraspCoordinator(Node):
             'move_group_action', 'execute_trajectory_action',
             'gripper_service',
             'joint_angles_topic', 'planning_group', 'planning_frame',
+            'camera_frame',
             'reach_reference_frame', 'tip_link', 'planner_id',
         )
         for name in string_names:
@@ -281,6 +283,7 @@ class D1GraspCoordinator(Node):
             'move_group_action', 'execute_trajectory_action',
             'gripper_service',
             'joint_angles_topic', 'planning_group', 'planning_frame',
+            'camera_frame',
             'reach_reference_frame', 'tip_link',
         )
         for name in required_strings:
@@ -595,6 +598,14 @@ class D1GraspCoordinator(Node):
         approach_origin = self._point_tuple(
             tip_transform.transform.translation
         )
+        camera_transform = self._lookup_transform(
+            self._planning_frame, self._camera_frame
+        )
+        camera_origin = (
+            (0.0, 0.0, 0.0)
+            if camera_transform is None
+            else self._point_tuple(camera_transform.transform.translation)
+        )
         forward_grasp_depth = grasping.forward_grasp_depth_for_class(
             object_class,
             self._default_forward_grasp_depth_offset,
@@ -608,6 +619,10 @@ class D1GraspCoordinator(Node):
             )
             if not all(math.isfinite(value) for value in object_point):
                 continue
+            depth_direction = tuple(
+                value - origin
+                for value, origin in zip(object_point, camera_origin)
+            )
             generated = []
             try:
                 generated = list(grasping.generate_approach_candidates(
@@ -618,6 +633,7 @@ class D1GraspCoordinator(Node):
                     self._grasp_center_offset,
                     0.0,
                     forward_grasp_depth,
+                    depth_direction,
                 ))
             except ValueError as error:
                 failures.append(str(error))
@@ -948,10 +964,31 @@ class D1GraspCoordinator(Node):
             )
             return
         selected = self._active['candidate']
+        camera_frame = message.camera_frame.strip() or self._camera_frame
+        try:
+            camera_transform = self._lookup_transform(
+                self._planning_frame, camera_frame
+            )
+        except Exception as error:
+            self._finish_failure(
+                'could not transform camera frame {} for depth correction: '
+                '{}'.format(camera_frame, error)
+            )
+            return
+        camera_origin = (
+            (0.0, 0.0, 0.0)
+            if camera_transform is None
+            else self._point_tuple(camera_transform.transform.translation)
+        )
+        depth_direction = tuple(
+            value - origin
+            for value, origin in zip(object_point, camera_origin)
+        )
         candidate = grasping.retarget_approach_candidate(
             selected, object_point, self._approach_distance,
             self._grasp_center_offset,
             self._active['forward_grasp_depth_offset'],
+            depth_direction,
         )
         problem = self._candidate_problem(candidate)
         if problem is not None:

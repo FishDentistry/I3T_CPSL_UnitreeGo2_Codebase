@@ -413,8 +413,8 @@ The coordinator performs the following sequence when execution is enabled:
    observation must remain close to the mapped point, and the correction is
    limited to 0.08 metres by default. The final plan remains free to choose a
    feasible orientation for the corrected position.
-6. Shift the detected surface point forward along the selected approach by the
-   configured class depth, then compute and execute a collision-checked
+6. Shift the detected surface point farther along the camera viewing ray by
+   the configured class depth, then compute and execute a collision-checked
    position-only MoveIt trajectory. The final target uses a 0.005-metre
    position region and does not impose an orientation that perception cannot
    support.
@@ -440,7 +440,9 @@ gripper open/closed values are the main calibration parameters. The
 grasp-center offset defaults to zero and represents measured tool geometry.
 
 `default_forward_grasp_depth_offset_m` moves the final target beyond the
-depth-derived visible surface along the selected approach direction. Classes
+depth-derived visible surface along the viewing ray from `camera_frame`.
+This correction is independent of the arm's selected approach direction, so
+the full configured distance represents additional camera depth. Classes
 listed in `class_forward_grasp_depth_offsets_m` override that value. Entries
 use `class=metres` strings so the mapping remains compatible with ROS 2 Foxy:
 

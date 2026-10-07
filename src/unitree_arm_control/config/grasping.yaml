@@ -12,6 +12,7 @@ d1_grasp_coordinator:
     joint_angles_topic: /d1_arm_controller/joint_angles
     planning_group: d1_arm
     planning_frame: base_link
+    camera_frame: camera_link
     reach_reference_frame: d1_base_link
     tip_link: d1_gripper_center
     planner_id: ""
@@ -33,7 +34,7 @@ d1_grasp_coordinator:
     # Apply only after measuring the desired tool-frame-to-object offset.
     grasp_center_offset_m: 0.0
     # Move the grasp point beyond the detected visible surface along the
-    # selected approach direction. Entries use normalized class=metres syntax.
+    # camera viewing ray. Entries use normalized class=metres syntax.
     default_forward_grasp_depth_offset_m: 0.05
     class_forward_grasp_depth_offsets_m: ["mug=0.04"]
     # Pre-grasp permits a wider region; the refreshed object target is tighter.

@@ -77,6 +77,9 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn(
             'class_forward_grasp_depth_offsets_m: ["mug=0.04"]', config
         )
+        self.assertIn('camera_frame: camera_link', config)
+        self.assertIn("'camera_frame': 'camera_link'", coordinator)
+        self.assertIn("'camera_frame',", coordinator)
         self.assertIn('forward_grasp_depth_for_class(', coordinator)
 
     def test_contact_sequence_replans_position_only_after_reacquisition(self):

@@ -186,23 +186,32 @@ class GraspingTest(unittest.TestCase):
         self.assertLess(candidate['approach_direction'][2], 0.0)
         self.assertGreater(candidate['pregrasp_point'][2], 0.20)
 
-    def test_candidate_applies_forward_grasp_depth_along_approach(self):
+    def test_candidate_applies_forward_grasp_depth_along_camera_ray(self):
         candidate = grasping.generate_approach_candidates(
             (0.50, 0.0, 0.20),
-            (0.0, 0.0, 0.20),
+            (0.30, -0.20, 0.40),
             [0.0],
             0.10,
             0.0,
             0.0,
             0.04,
+            (1.0, 0.0, 0.0),
         )[0]
         for actual, expected in zip(
                 candidate['grasp_point'], (0.54, 0.0, 0.20)):
             self.assertAlmostEqual(actual, expected)
         for actual, expected in zip(
-                candidate['pregrasp_point'], (0.44, 0.0, 0.20)):
+                candidate['pregrasp_point'],
+                tuple(
+                    value - 0.10 * direction
+                    for value, direction in zip(
+                        (0.54, 0.0, 0.20),
+                        candidate['approach_direction'],
+                    )
+                )):
             self.assertAlmostEqual(actual, expected)
         self.assertEqual(candidate['forward_grasp_depth'], 0.04)
+        self.assertEqual(candidate['depth_direction'], (1.0, 0.0, 0.0))
 
     def test_yaw_candidate_preserves_direct_approach_slope(self):
         candidates = grasping.generate_approach_candidates(
@@ -254,6 +263,7 @@ class GraspingTest(unittest.TestCase):
             0.07,
             0.0,
             0.04,
+            (1.0, 0.0, 0.0),
         )
         self.assertEqual(updated['orientation'], candidate['orientation'])
         for updated_axis, original_axis in zip(
@@ -262,15 +272,10 @@ class GraspingTest(unittest.TestCase):
             self.assertAlmostEqual(updated_axis, original_axis)
         for actual, expected in zip(
                 updated['grasp_point'],
-                tuple(
-                    value + 0.04 * direction
-                    for value, direction in zip(
-                        (0.52, 0.09, 0.21),
-                        candidate['approach_direction'],
-                    )
-                )):
+                (0.56, 0.09, 0.21)):
             self.assertAlmostEqual(actual, expected)
         self.assertEqual(updated['forward_grasp_depth'], 0.04)
+        self.assertEqual(updated['depth_direction'], (1.0, 0.0, 0.0))
 
     def test_reach_safeguard_accepts_point_inside_arm_envelope(self):
         problem = grasping.reach_safeguard_problem(
