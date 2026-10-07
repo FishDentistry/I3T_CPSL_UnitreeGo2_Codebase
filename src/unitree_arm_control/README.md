@@ -396,7 +396,7 @@ A command contains a required semantic class and an optional stable object ID.
 When the ID is empty, the closest eligible active object of that class is
 selected. Before planning, the object must be active, have at least three
 observations, meet the confidence threshold, have been observed within the
-last 20 seconds, and satisfy the height and 0.67-metre D1 reach safeguards.
+last 20 seconds, and satisfy the configured height and reach safeguards.
 
 The coordinator performs the following sequence when execution is enabled:
 
@@ -412,9 +412,13 @@ The coordinator performs the following sequence when execution is enabled:
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
    limited to 0.08 metres by default.
-6. Shift the detected surface point farther along the camera viewing ray by
-   the configured class depth. The final collision-checked Cartesian segment
-   preserves the orientation actually reached at pre-grasp, so the tool moves
+6. Shift the detected surface point along the camera viewing direction by
+   the configured class depth, then apply any class-specific height correction.
+   The mug's forward correction is projected into the planning-frame XY plane
+   so it does not lower the target. Both the pre-grasp and final target use
+   these offsets.
+   The final collision-checked Cartesian segment preserves the orientation
+   actually reached at pre-grasp, so the tool moves
    toward the refreshed grasp point without an additional rotation. If the
    refreshed point requires a lateral pre-grasp correction, that correction is
    executed before the achieved orientation is sampled again. If the exact
@@ -447,9 +451,8 @@ gripper open/closed values are the main calibration parameters. The
 grasp-center offset defaults to zero and represents measured tool geometry.
 
 `default_forward_grasp_depth_offset_m` moves the final target beyond the
-depth-derived visible surface along the viewing ray from `camera_frame`.
-This correction is independent of the arm's selected approach direction, so
-the full configured distance represents additional camera depth. Classes
+depth-derived visible surface along the viewing ray from `camera_frame`. The
+correction is independent of the arm's selected approach direction. Classes
 listed in `class_forward_grasp_depth_offsets_m` override that value. Entries
 use `class=metres` strings so the mapping remains compatible with ROS 2 Foxy:
 
@@ -458,11 +461,25 @@ default_forward_grasp_depth_offset_m: 0.05
 class_forward_grasp_depth_offsets_m:
   - "mug=0.04"
   - "bottle=0.03"
+horizontal_forward_depth_classes:
+  - "mug"
 ```
 
 Class matching is case-insensitive and ignores repeated whitespace. Unlisted
 classes use the default value. These offsets are a temporary approximation of
-object depth until segmented three-dimensional geometry is available.
+object depth until segmented three-dimensional geometry is available. Classes
+in `horizontal_forward_depth_classes` use the horizontal projection of the
+camera ray, preserving the detected target height; other classes retain the
+three-dimensional camera-ray correction.
+
+`class_grasp_height_offsets_m` applies signed vertical corrections in the
+planning frame after the horizontal depth correction. Unlisted classes use
+zero. The configured mug correction is 0.02 m:
+
+```yaml
+class_grasp_height_offsets_m:
+  - "mug=0.02"
+```
 
 `grasp_orientation_tolerance_rad` controls pre-grasp planning, corrected
 pre-grasp repositioning, and the maximum wrist adjustment tested for the

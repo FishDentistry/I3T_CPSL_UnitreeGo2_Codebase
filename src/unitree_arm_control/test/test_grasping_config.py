@@ -42,7 +42,7 @@ class GraspingConfigTest(unittest.TestCase):
         ).read_text()
         self.assertIn('reach_reference_frame: d1_base_link', config)
         self.assertIn("'reach_reference_frame': 'd1_base_link'", coordinator)
-        self.assertIn('maximum_reach_m: 0.67', config)
+        self.assertIn('maximum_reach_m: 0.7', config)
         self.assertIn("self.declare_parameter('maximum_reach_m', 0.67)", coordinator)
 
     def test_grasp_candidate_age_default_is_twenty_seconds(self):
@@ -77,6 +77,10 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn(
             'class_forward_grasp_depth_offsets_m: ["mug=0.04"]', config
         )
+        self.assertIn('class_grasp_height_offsets_m: ["mug=0.02"]', config)
+        self.assertIn('horizontal_forward_depth_classes: ["mug"]', config)
+        self.assertIn('parse_grasp_height_offsets(', coordinator)
+        self.assertIn('grasp_height_for_class(', coordinator)
         self.assertIn('camera_frame: camera_link', config)
         self.assertIn("'camera_frame': 'camera_link'", coordinator)
         self.assertIn("'camera_frame',", coordinator)

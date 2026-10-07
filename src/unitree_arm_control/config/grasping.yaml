@@ -33,10 +33,13 @@ d1_grasp_coordinator:
     approach_distance_m: 0.11
     # Apply only after measuring the desired tool-frame-to-object offset.
     grasp_center_offset_m: 0.0
-    # Move the grasp point beyond the detected visible surface along the
-    # camera viewing ray. Entries use normalized class=metres syntax.
+    # Move the grasp point beyond the detected visible surface. Mug depth is
+    # projected into the base_link XY plane to avoid lowering its target.
     default_forward_grasp_depth_offset_m: 0.05
-    class_forward_grasp_depth_offsets_m: ["mug=0.04"]
+    class_forward_grasp_depth_offsets_m: ["mug=0.04", "cup=0.04", "soda_can=0.04"]
+    horizontal_forward_depth_classes: ["mug","cup","soda_can"]
+    # Class-specific vertical correction in base_link; unlisted classes use 0.
+    class_grasp_height_offsets_m: ["mug=0.02", "cup=0.02", "soda_can=0.02"]
     # Pre-grasp permits a wider region; the refreshed object target is tighter.
     position_tolerance_m: 0.02
     grasp_position_tolerance_m: 0.005

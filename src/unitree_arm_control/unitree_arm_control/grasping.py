@@ -45,6 +45,33 @@ def forward_grasp_depth_for_class(label, default_offset, class_offsets):
     return float(class_offsets.get(normalize_label(label), default_offset))
 
 
+def parse_grasp_height_offsets(entries):
+    """Parse signed ``class=metres`` grasp-height corrections."""
+    offsets = {}
+    for entry in entries:
+        if not isinstance(entry, str) or '=' not in entry:
+            raise ValueError('grasp height entries must use class=metres')
+        label_text, value_text = entry.rsplit('=', 1)
+        label = normalize_label(label_text)
+        if not label:
+            raise ValueError('grasp height class must not be empty')
+        if label in offsets:
+            raise ValueError('duplicate grasp height class: {}'.format(label))
+        try:
+            value = float(value_text.strip())
+        except ValueError:
+            raise ValueError('grasp height for {} must be numeric'.format(label))
+        if not math.isfinite(value):
+            raise ValueError('grasp height for {} must be finite'.format(label))
+        offsets[label] = value
+    return offsets
+
+
+def grasp_height_for_class(label, class_offsets):
+    """Return the class-specific vertical correction, or zero."""
+    return float(class_offsets.get(normalize_label(label), 0.0))
+
+
 def stamp_seconds(stamp):
     """Convert a ROS Time-like object to floating-point seconds."""
     return float(stamp.sec) + float(stamp.nanosec) * 1e-9
@@ -231,6 +258,20 @@ def _normalized(vector):
     return tuple(value / length for value in values)
 
 
+def _horizontal_depth_axis(depth_direction, fallback_direction):
+    """Keep the camera-derived forward correction level in the frame XY plane."""
+    horizontal = (depth_direction[0], depth_direction[1], 0.0)
+    if distance_from_origin(horizontal) <= 1.0e-9:
+        horizontal = (fallback_direction[0], fallback_direction[1], 0.0)
+    return _normalized(horizontal)
+
+
+def _depth_axis(depth_direction, fallback_direction, horizontal_depth):
+    if horizontal_depth:
+        return _horizontal_depth_axis(depth_direction, fallback_direction)
+    return _normalized(depth_direction)
+
+
 def _cross(first, second):
     return (
         first[1] * second[2] - first[2] * second[1],
@@ -343,6 +384,23 @@ def approach_corridor_geometry(start_point, end_point, radius):
     }
 
 
+def _corrected_grasp_point(
+        object_point, depth_axis, approach_axis, forward_grasp_depth,
+        grasp_center_offset, grasp_height_offset):
+    corrected = tuple(
+        float(value)
+        + float(forward_grasp_depth) * depth_value
+        - float(grasp_center_offset) * approach_value
+        for value, depth_value, approach_value in zip(
+            object_point, depth_axis, approach_axis
+        )
+    )
+    return (
+        corrected[0], corrected[1],
+        corrected[2] + float(grasp_height_offset),
+    )
+
+
 def generate_approach_candidates(
         object_point,
         approach_origin,
@@ -351,7 +409,9 @@ def generate_approach_candidates(
         grasp_center_offset,
         tool_roll=0.0,
         forward_grasp_depth=0.0,
-        depth_direction=None):
+        depth_direction=None,
+        grasp_height_offset=0.0,
+        horizontal_depth=False):
     """Generate three-dimensional, object-directed pre-grasp candidates.
 
     The primary approach direction points from the current gripper position
@@ -365,6 +425,8 @@ def generate_approach_candidates(
         raise ValueError('grasp_center_offset must not be negative')
     if forward_grasp_depth < 0.0:
         raise ValueError('forward_grasp_depth must not be negative')
+    if not math.isfinite(grasp_height_offset):
+        raise ValueError('grasp_height_offset must be finite')
 
     radial = (
         float(object_point[0]) - float(approach_origin[0]),
@@ -372,8 +434,9 @@ def generate_approach_candidates(
         float(object_point[2]) - float(approach_origin[2]),
     )
     radial = _normalized(radial)
-    depth_axis = _normalized(
-        radial if depth_direction is None else depth_direction
+    depth_axis = _depth_axis(
+        radial if depth_direction is None else depth_direction,
+        radial, horizontal_depth,
     )
     candidates = []
     for yaw_offset in yaw_offsets:
@@ -384,13 +447,9 @@ def generate_approach_candidates(
             sine * radial[0] + cosine * radial[1],
             radial[2],
         )
-        grasp_point = tuple(
-            float(value)
-            + float(forward_grasp_depth) * depth_axis_value
-            - float(grasp_center_offset) * approach_axis
-            for value, depth_axis_value, approach_axis in zip(
-                object_point, depth_axis, direction
-            )
+        grasp_point = _corrected_grasp_point(
+            object_point, depth_axis, direction, forward_grasp_depth,
+            grasp_center_offset, grasp_height_offset,
         )
         pregrasp_point = tuple(
             value - float(approach_distance) * axis
@@ -401,6 +460,8 @@ def generate_approach_candidates(
             'approach_direction': direction,
             'depth_direction': depth_axis,
             'forward_grasp_depth': float(forward_grasp_depth),
+            'grasp_height_offset': float(grasp_height_offset),
+            'horizontal_depth': bool(horizontal_depth),
             'pregrasp_point': pregrasp_point,
             'grasp_point': grasp_point,
             'orientation': quaternion_from_approach(
@@ -418,7 +479,9 @@ def retarget_approach_candidate(
         approach_distance,
         grasp_center_offset,
         forward_grasp_depth=0.0,
-        depth_direction=None):
+        depth_direction=None,
+        grasp_height_offset=0.0,
+        horizontal_depth=None):
     """Move a candidate to a refreshed object point without rotating it."""
     if approach_distance <= 0.0:
         raise ValueError('approach_distance must be positive')
@@ -426,18 +489,20 @@ def retarget_approach_candidate(
         raise ValueError('grasp_center_offset must not be negative')
     if forward_grasp_depth < 0.0:
         raise ValueError('forward_grasp_depth must not be negative')
+    if not math.isfinite(grasp_height_offset):
+        raise ValueError('grasp_height_offset must be finite')
     direction = _normalized(candidate['approach_direction'])
-    depth_axis = _normalized(
+    if horizontal_depth is None:
+        horizontal_depth = candidate.get('horizontal_depth', False)
+    depth_axis = _depth_axis(
         candidate.get('depth_direction', direction)
-        if depth_direction is None else depth_direction
+        if depth_direction is None else depth_direction,
+        direction,
+        horizontal_depth,
     )
-    grasp_point = tuple(
-        float(value)
-        + float(forward_grasp_depth) * depth_axis_value
-        - float(grasp_center_offset) * approach_axis
-        for value, depth_axis_value, approach_axis in zip(
-            object_point, depth_axis, direction
-        )
+    grasp_point = _corrected_grasp_point(
+        object_point, depth_axis, direction, forward_grasp_depth,
+        grasp_center_offset, grasp_height_offset,
     )
     pregrasp_point = tuple(
         value - float(approach_distance) * axis
@@ -447,6 +512,8 @@ def retarget_approach_candidate(
     updated['approach_direction'] = direction
     updated['depth_direction'] = depth_axis
     updated['forward_grasp_depth'] = float(forward_grasp_depth)
+    updated['grasp_height_offset'] = float(grasp_height_offset)
+    updated['horizontal_depth'] = bool(horizontal_depth)
     updated['grasp_point'] = grasp_point
     updated['pregrasp_point'] = pregrasp_point
     return updated

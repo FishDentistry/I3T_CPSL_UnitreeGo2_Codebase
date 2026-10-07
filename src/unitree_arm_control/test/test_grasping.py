@@ -59,6 +59,22 @@ class GraspingTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     grasping.parse_forward_grasp_depth_offsets(entries)
 
+    def test_class_grasp_height_offsets_are_normalized_and_signed(self):
+        offsets = grasping.parse_grasp_height_offsets([
+            ' Mug = 0.02', 'shelf item=-0.01'
+        ])
+        self.assertEqual(offsets, {'mug': 0.02, 'shelf item': -0.01})
+        self.assertEqual(grasping.grasp_height_for_class(' MUG ', offsets), 0.02)
+        self.assertEqual(grasping.grasp_height_for_class('box', offsets), 0.0)
+
+    def test_invalid_class_grasp_height_offsets_are_rejected(self):
+        for entries in (
+                ['mug'], ['=0.02'], ['mug=invalid'], ['mug=nan'],
+                ['mug=0.02', ' MUG =0.03']):
+            with self.subTest(entries=entries):
+                with self.assertRaises(ValueError):
+                    grasping.parse_grasp_height_offsets(entries)
+
     def test_eligible_objects_honors_class_and_specific_id(self):
         objects = [
             semantic_object('object_000001'),
@@ -240,7 +256,7 @@ class GraspingTest(unittest.TestCase):
         self.assertLess(candidate['approach_direction'][2], 0.0)
         self.assertGreater(candidate['pregrasp_point'][2], 0.20)
 
-    def test_candidate_applies_forward_grasp_depth_along_camera_ray(self):
+    def test_candidate_applies_forward_depth_without_lowering_target(self):
         candidate = grasping.generate_approach_candidates(
             (0.50, 0.0, 0.20),
             (0.30, -0.20, 0.40),
@@ -249,23 +265,36 @@ class GraspingTest(unittest.TestCase):
             0.0,
             0.0,
             0.04,
-            (1.0, 0.0, 0.0),
+            (1.0, 0.0, -1.0),
+            0.02,
+            True,
         )[0]
         for actual, expected in zip(
-                candidate['grasp_point'], (0.54, 0.0, 0.20)):
+                candidate['grasp_point'], (0.54, 0.0, 0.22)):
             self.assertAlmostEqual(actual, expected)
         for actual, expected in zip(
                 candidate['pregrasp_point'],
                 tuple(
                     value - 0.10 * direction
                     for value, direction in zip(
-                        (0.54, 0.0, 0.20),
+                        (0.54, 0.0, 0.22),
                         candidate['approach_direction'],
                     )
                 )):
             self.assertAlmostEqual(actual, expected)
         self.assertEqual(candidate['forward_grasp_depth'], 0.04)
         self.assertEqual(candidate['depth_direction'], (1.0, 0.0, 0.0))
+        self.assertEqual(candidate['grasp_height_offset'], 0.02)
+        self.assertTrue(candidate['horizontal_depth'])
+
+    def test_other_classes_retain_three_dimensional_depth_correction(self):
+        candidate = grasping.generate_approach_candidates(
+            (0.50, 0.0, 0.20), (0.30, 0.0, 0.40), [0.0],
+            0.10, 0.0, 0.0, 0.04, (1.0, 0.0, -1.0),
+        )[0]
+        self.assertAlmostEqual(
+            candidate['grasp_point'][2], 0.20 - 0.04 / math.sqrt(2.0)
+        )
 
     def test_yaw_candidate_preserves_direct_approach_slope(self):
         candidates = grasping.generate_approach_candidates(
@@ -317,7 +346,9 @@ class GraspingTest(unittest.TestCase):
             0.07,
             0.0,
             0.04,
-            (1.0, 0.0, 0.0),
+            (1.0, 0.0, -1.0),
+            0.02,
+            True,
         )
         self.assertEqual(updated['orientation'], candidate['orientation'])
         for updated_axis, original_axis in zip(
@@ -326,10 +357,12 @@ class GraspingTest(unittest.TestCase):
             self.assertAlmostEqual(updated_axis, original_axis)
         for actual, expected in zip(
                 updated['grasp_point'],
-                (0.56, 0.09, 0.21)):
+                (0.56, 0.09, 0.23)):
             self.assertAlmostEqual(actual, expected)
         self.assertEqual(updated['forward_grasp_depth'], 0.04)
         self.assertEqual(updated['depth_direction'], (1.0, 0.0, 0.0))
+        self.assertEqual(updated['grasp_height_offset'], 0.02)
+        self.assertTrue(updated['horizontal_depth'])
 
     def test_reach_safeguard_accepts_point_inside_arm_envelope(self):
         problem = grasping.reach_safeguard_problem(

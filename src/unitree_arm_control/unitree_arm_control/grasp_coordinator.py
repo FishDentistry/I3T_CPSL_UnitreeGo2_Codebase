@@ -192,6 +192,8 @@ class D1GraspCoordinator(Node):
         self.declare_parameter(
             'class_forward_grasp_depth_offsets_m', ['mug=0.04']
         )
+        self.declare_parameter('class_grasp_height_offsets_m', ['mug=0.02'])
+        self.declare_parameter('horizontal_forward_depth_classes', ['mug'])
         self.declare_parameter('position_tolerance_m', 0.02)
         self.declare_parameter('grasp_position_tolerance_m', 0.005)
         self.declare_parameter('grasp_orientation_tolerance_rad', 0.35)
@@ -285,6 +287,15 @@ class D1GraspCoordinator(Node):
                 self._parameter('class_forward_grasp_depth_offsets_m')
             )
         )
+        self._class_grasp_height_offsets = (
+            grasping.parse_grasp_height_offsets(
+                self._parameter('class_grasp_height_offsets_m')
+            )
+        )
+        self._horizontal_forward_depth_classes = {
+            grasping.normalize_label(label)
+            for label in self._parameter('horizontal_forward_depth_classes')
+        }
         # Short aliases keep the motion code readable.
         self._maximum_object_age = self._maximum_object_age_sec
         self._minimum_reach = self._minimum_reach_m
@@ -550,6 +561,12 @@ class D1GraspCoordinator(Node):
                     self._class_forward_grasp_depth_offsets,
                 )
             ),
+            'grasp_height_offset': grasping.grasp_height_for_class(
+                object_class, self._class_grasp_height_offsets
+            ),
+            'horizontal_depth': (
+                object_class in self._horizontal_forward_depth_classes
+            ),
             'object_point': object_point,
             'approach_origin': approach_origin,
             'candidates': candidates,
@@ -661,6 +678,12 @@ class D1GraspCoordinator(Node):
             self._default_forward_grasp_depth_offset,
             self._class_forward_grasp_depth_offsets,
         )
+        grasp_height_offset = grasping.grasp_height_for_class(
+            object_class, self._class_grasp_height_offsets
+        )
+        horizontal_depth = (
+            object_class in self._horizontal_forward_depth_classes
+        )
         viable = []
         failures = []
         for item in objects:
@@ -684,6 +707,8 @@ class D1GraspCoordinator(Node):
                     0.0,
                     forward_grasp_depth,
                     depth_direction,
+                    grasp_height_offset,
+                    horizontal_depth,
                 ))
             except ValueError as error:
                 failures.append(str(error))
@@ -1126,6 +1151,8 @@ class D1GraspCoordinator(Node):
             self._grasp_center_offset,
             self._active['forward_grasp_depth_offset'],
             depth_direction,
+            self._active['grasp_height_offset'],
+            self._active['horizontal_depth'],
         )
         problem = self._candidate_problem(candidate)
         if problem is not None:
