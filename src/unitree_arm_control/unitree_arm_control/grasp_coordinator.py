@@ -749,7 +749,7 @@ class D1GraspCoordinator(Node):
             pose,
         )
         future = self._move_group.send_goal_async(
-            self._move_group_goal(pose,orientation_tolerance=self._orientation_tolerance_rad),
+            self._move_group_goal(pose,orientation_tolerance=self._grasp_orientation_tolerance_rad),
             feedback_callback=lambda message, token=self._active['token']:
                 self._move_group_feedback(message, token),
         )
