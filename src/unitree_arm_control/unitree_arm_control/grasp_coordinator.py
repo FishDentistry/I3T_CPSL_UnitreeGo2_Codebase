@@ -209,7 +209,7 @@ class D1GraspCoordinator(Node):
         # The final contact motion is a single short Cartesian segment.
         self.declare_parameter('cartesian_step_m', 0.005)
         self.declare_parameter('minimum_cartesian_fraction', 0.95)
-        self.declare_parameter('cartesian_jump_threshold', 0.0)
+        self.declare_parameter('cartesian_jump_threshold', 2.0)
         self.declare_parameter('cartesian_velocity_scaling', 0.05)
         self.declare_parameter('cartesian_acceleration_scaling', 0.05)
 
@@ -1136,7 +1136,7 @@ class D1GraspCoordinator(Node):
         request.max_step = self._cartesian_step_m
         if hasattr(request, 'jump_threshold'):
             request.jump_threshold = self._cartesian_jump_threshold
-        request.avoid_collisions = False
+        request.avoid_collisions = True
 
         # Newer MoveIt service definitions expose speed scaling directly.
         # Keep the hasattr guards so this remains compatible with older ROS 2
