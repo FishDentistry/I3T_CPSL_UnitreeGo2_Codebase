@@ -15,7 +15,7 @@ d1_grasp_coordinator:
     planning_group: d1_arm
     planning_frame: base_link
     reach_reference_frame: d1_base_link
-    tip_link: d1_gripper_tcp
+    tip_link: d1_gripper_center
     planner_id: ""
 
     # Reject uncertain, tentative, stale, or unreachable map entries.

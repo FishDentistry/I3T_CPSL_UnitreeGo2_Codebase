@@ -87,7 +87,7 @@ class GraspingConfigTest(unittest.TestCase):
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
         self.assertIn('compute_ik_service: /compute_ik', config)
-        self.assertIn('tip_link: d1_gripper_tcp', config)
+        self.assertIn('tip_link: d1_gripper_center', config)
         self.assertIn('GetPositionIK', coordinator)
         self.assertIn('ik_request.avoid_collisions = True', coordinator)
         self.assertIn('self._joint_goal_constraints(', coordinator)

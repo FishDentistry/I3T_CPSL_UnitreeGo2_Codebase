@@ -173,7 +173,7 @@ class D1GraspCoordinator(Node):
             'planning_group': 'd1_arm',
             'planning_frame': 'base_link',
             'reach_reference_frame': 'd1_base_link',
-            'tip_link': 'd1_gripper_tcp',
+            'tip_link': 'd1_gripper_center',
             'planner_id': '',
         }
         for name, default in string_parameters.items():

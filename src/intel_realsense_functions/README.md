@@ -31,8 +31,7 @@ ros2 run intel_realsense_functions getCameraFrames
 `groundingDinoNode` listens for text detection targets, applies Grounding DINO
 to the most recent RGB frame, estimates a robust depth from the center of each
 detection, and deprojects the result into the camera optical coordinate system.
-When the TF tree contains a transform from `camera_color_optical_frame` to
-`map`, the point is
+When the TF tree contains a transform from `front_camera` to `map`, the point is
 also transformed into map coordinates.
 
 The node runs inference only while at least one detection target is configured.
@@ -92,7 +91,7 @@ compatibility with current consumers:
 {
   "stamp": {"sec": 0, "nanosec": 0},
   "requested_targets": ["cup"],
-  "camera_frame": "camera_color_optical_frame",
+  "camera_frame": "front_camera",
   "map_frame": "map",
   "map_transform_available": true,
   "detections": [
@@ -259,8 +258,8 @@ head -n 1 \
 ## Running the detector
 
 Start the camera publisher and ensure that the robot TF tree includes the
-`camera_color_optical_frame` and `map` frames. Start the detector with the
-Grounding DINO configuration and checkpoint paths:
+`front_camera` and `map` frames. Start the detector with the Grounding DINO
+configuration and checkpoint paths:
 
 ```bash
 source /opt/ros/foxy/setup.bash
@@ -295,7 +294,7 @@ ros2 run rqt_image_view rqt_image_view \
 | `box_threshold` | `0.35` | Minimum object-box score. |
 | `text_threshold` | `0.25` | Minimum token score used to form a label. |
 | `detection_rate_hz` | `5.0` | Maximum inference frequency. |
-| `camera_frame` | `camera_color_optical_frame` | Optical TF frame for the RealSense RGB coordinates. |
+| `camera_frame` | `front_camera` | Optical TF frame for camera coordinates. |
 | `map_frame` | `map` | TF frame for global coordinates. |
 | `structured_detections_topic` | `/grounding_dino/detection_array` | Structured detection output topic. |
 | `maximum_frame_age_sec` | `1.0` | Maximum accepted local receipt age. |
@@ -317,12 +316,6 @@ the map transform at that same time. For compatibility with other camera
 publishers, zero-stamped images fall back to local receipt-time pairing and the
 latest available transform. `maximum_frame_age_sec` still uses local receipt
 age so delayed processing cannot make old images appear fresh.
-
-The robot URDF defines `camera_color_optical_frame` as an optical-axis child of
-the mounted RealSense `camera_link`. This selects the RealSense mount instead
-of the Go2 `front_camera` frame and applies the standard optical-axis rotation.
-Its translation is nominal; precision manipulation requires measured mount and
-camera extrinsic calibration.
 
 The timestamp addition does not change the image topics, types, encodings,
 dimensions, publication rate, or empty frame IDs. Existing consumers using
