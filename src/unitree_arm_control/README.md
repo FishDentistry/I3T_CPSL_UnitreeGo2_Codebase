@@ -408,14 +408,16 @@ The coordinator performs the following sequence when execution is enabled:
    that it can choose a collision-free tool orientation. If planning fails,
    repeat with the next candidate.
 4. Execute the first successful MoveIt trajectory to a pre-grasp point 0.11
-   metres from the object.
+   metres from the configured final grasp point.
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
    limited to 0.08 metres by default. The final plan remains free to choose a
    feasible orientation for the corrected position.
-6. Compute and execute a collision-checked position-only MoveIt trajectory to
-   the corrected grasp point. The final target uses a 0.005-metre position
-   region and does not impose an orientation that perception cannot support.
+6. Shift the detected surface point forward along the selected approach by the
+   configured class depth, then compute and execute a collision-checked
+   position-only MoveIt trajectory. The final target uses a 0.005-metre
+   position region and does not impose an orientation that perception cannot
+   support.
 7. Close the gripper. Position feedback is accepted when it reaches the closed
    target or stalls after meaningful closure, then the object is held for
    three seconds.
@@ -434,9 +436,24 @@ holding, releasing, retreating, and released stages.
 The defaults are in `config/grasping.yaml`. `approach_yaw_offsets_rad`,
 `approach_distance_m`, `position_tolerance_m`,
 `grasp_position_tolerance_m`, `grasp_center_offset_m`, and the configured
-gripper open/closed values are the main calibration parameters.
-The grasp-center offset defaults to zero and should only be changed from
-measured tool geometry and physical error.
+gripper open/closed values are the main calibration parameters. The
+grasp-center offset defaults to zero and represents measured tool geometry.
+
+`default_forward_grasp_depth_offset_m` moves the final target beyond the
+depth-derived visible surface along the selected approach direction. Classes
+listed in `class_forward_grasp_depth_offsets_m` override that value. Entries
+use `class=metres` strings so the mapping remains compatible with ROS 2 Foxy:
+
+```yaml
+default_forward_grasp_depth_offset_m: 0.05
+class_forward_grasp_depth_offsets_m:
+  - "mug=0.04"
+  - "bottle=0.03"
+```
+
+Class matching is case-insensitive and ignores repeated whitespace. Unlisted
+classes use the default value. These offsets are a temporary approximation of
+object depth until segmented three-dimensional geometry is available.
 
 Grounding DINO currently provides a class, bounding box, and one depth-derived
 3D point rather than an object mesh or grasp pose. Consequently, the node does

@@ -8,6 +8,43 @@ def normalize_label(value):
     return ' '.join(str(value).strip().lower().split())
 
 
+def parse_forward_grasp_depth_offsets(entries):
+    """Parse ``class=metres`` entries into normalized class offsets."""
+    offsets = {}
+    for entry in entries:
+        if not isinstance(entry, str) or '=' not in entry:
+            raise ValueError(
+                'forward grasp depth entries must use class=metres'
+            )
+        label_text, value_text = entry.rsplit('=', 1)
+        label = normalize_label(label_text)
+        if not label:
+            raise ValueError('forward grasp depth class must not be empty')
+        if label in offsets:
+            raise ValueError(
+                'duplicate forward grasp depth class: {}'.format(label)
+            )
+        try:
+            value = float(value_text.strip())
+        except ValueError:
+            raise ValueError(
+                'forward grasp depth for {} must be numeric'.format(label)
+            )
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(
+                'forward grasp depth for {} must be finite and nonnegative'.format(
+                    label
+                )
+            )
+        offsets[label] = value
+    return offsets
+
+
+def forward_grasp_depth_for_class(label, default_offset, class_offsets):
+    """Return the class-specific forward depth or the configured default."""
+    return float(class_offsets.get(normalize_label(label), default_offset))
+
+
 def stamp_seconds(stamp):
     """Convert a ROS Time-like object to floating-point seconds."""
     return float(stamp.sec) + float(stamp.nanosec) * 1e-9
@@ -259,7 +296,8 @@ def generate_approach_candidates(
         yaw_offsets,
         approach_distance,
         grasp_center_offset,
-        tool_roll=0.0):
+        tool_roll=0.0,
+        forward_grasp_depth=0.0):
     """Generate three-dimensional, object-directed pre-grasp candidates.
 
     The primary approach direction points from the current gripper position
@@ -271,6 +309,8 @@ def generate_approach_candidates(
         raise ValueError('approach_distance must be positive')
     if grasp_center_offset < 0.0:
         raise ValueError('grasp_center_offset must not be negative')
+    if forward_grasp_depth < 0.0:
+        raise ValueError('forward_grasp_depth must not be negative')
 
     radial = (
         float(object_point[0]) - float(approach_origin[0]),
@@ -288,7 +328,10 @@ def generate_approach_candidates(
             radial[2],
         )
         grasp_point = tuple(
-            float(value) - float(grasp_center_offset) * axis
+            float(value)
+            + (
+                float(forward_grasp_depth) - float(grasp_center_offset)
+            ) * axis
             for value, axis in zip(object_point, direction)
         )
         pregrasp_point = tuple(
@@ -298,6 +341,7 @@ def generate_approach_candidates(
         candidates.append({
             'yaw_offset': float(yaw_offset),
             'approach_direction': direction,
+            'forward_grasp_depth': float(forward_grasp_depth),
             'pregrasp_point': pregrasp_point,
             'grasp_point': grasp_point,
             'orientation': quaternion_from_approach(
@@ -313,15 +357,21 @@ def retarget_approach_candidate(
         candidate,
         object_point,
         approach_distance,
-        grasp_center_offset):
+        grasp_center_offset,
+        forward_grasp_depth=0.0):
     """Move a candidate to a refreshed object point without rotating it."""
     if approach_distance <= 0.0:
         raise ValueError('approach_distance must be positive')
     if grasp_center_offset < 0.0:
         raise ValueError('grasp_center_offset must not be negative')
+    if forward_grasp_depth < 0.0:
+        raise ValueError('forward_grasp_depth must not be negative')
     direction = _normalized(candidate['approach_direction'])
     grasp_point = tuple(
-        float(value) - float(grasp_center_offset) * axis
+        float(value)
+        + (
+            float(forward_grasp_depth) - float(grasp_center_offset)
+        ) * axis
         for value, axis in zip(object_point, direction)
     )
     pregrasp_point = tuple(
@@ -330,6 +380,7 @@ def retarget_approach_candidate(
     )
     updated = dict(candidate)
     updated['approach_direction'] = direction
+    updated['forward_grasp_depth'] = float(forward_grasp_depth)
     updated['grasp_point'] = grasp_point
     updated['pregrasp_point'] = pregrasp_point
     return updated

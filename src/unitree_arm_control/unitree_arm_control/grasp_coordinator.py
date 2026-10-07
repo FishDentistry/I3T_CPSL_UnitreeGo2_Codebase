@@ -181,6 +181,10 @@ class D1GraspCoordinator(Node):
         )
         self.declare_parameter('approach_distance_m', 0.11)
         self.declare_parameter('grasp_center_offset_m', 0.0)
+        self.declare_parameter('default_forward_grasp_depth_offset_m', 0.05)
+        self.declare_parameter(
+            'class_forward_grasp_depth_offsets_m', ['mug=0.04']
+        )
         self.declare_parameter('position_tolerance_m', 0.02)
         self.declare_parameter('grasp_position_tolerance_m', 0.005)
 
@@ -227,7 +231,9 @@ class D1GraspCoordinator(Node):
             'minimum_confidence', 'maximum_object_age_sec',
             'minimum_reach_m', 'maximum_reach_m', 'minimum_target_z_m',
             'maximum_target_z_m', 'approach_distance_m',
-            'grasp_center_offset_m', 'position_tolerance_m',
+            'grasp_center_offset_m',
+            'default_forward_grasp_depth_offset_m',
+            'position_tolerance_m',
             'grasp_position_tolerance_m',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
@@ -250,6 +256,11 @@ class D1GraspCoordinator(Node):
             float(value)
             for value in self._parameter('approach_yaw_offsets_rad')
         )
+        self._class_forward_grasp_depth_offsets = (
+            grasping.parse_forward_grasp_depth_offsets(
+                self._parameter('class_forward_grasp_depth_offsets_m')
+            )
+        )
         # Short aliases keep the motion code readable.
         self._maximum_object_age = self._maximum_object_age_sec
         self._minimum_reach = self._minimum_reach_m
@@ -258,6 +269,9 @@ class D1GraspCoordinator(Node):
         self._maximum_target_z = self._maximum_target_z_m
         self._approach_distance = self._approach_distance_m
         self._grasp_center_offset = self._grasp_center_offset_m
+        self._default_forward_grasp_depth_offset = (
+            self._default_forward_grasp_depth_offset_m
+        )
         self._planning_time = self._planning_time_sec
 
     def _validate_parameters(self):
@@ -288,6 +302,13 @@ class D1GraspCoordinator(Node):
             raise RuntimeError('approach_distance_m must be positive')
         if self._grasp_center_offset < 0.0:
             raise RuntimeError('grasp_center_offset_m must not be negative')
+        if (
+                not math.isfinite(self._default_forward_grasp_depth_offset)
+                or self._default_forward_grasp_depth_offset < 0.0):
+            raise RuntimeError(
+                'default_forward_grasp_depth_offset_m must be finite and '
+                'nonnegative'
+            )
         if self._position_tolerance_m <= 0.0:
             raise RuntimeError('position_tolerance_m must be positive')
         if self._grasp_position_tolerance_m <= 0.0:
@@ -456,7 +477,7 @@ class D1GraspCoordinator(Node):
 
         try:
             selected, object_point, approach_origin, candidates = (
-                self._select_object_and_candidates(objects)
+                self._select_object_and_candidates(objects, object_class)
             )
         except Exception as error:
             self._reject(command, str(error))
@@ -469,6 +490,13 @@ class D1GraspCoordinator(Node):
             'command': command,
             'object_id': selected.object_id,
             'object_class': object_class,
+            'forward_grasp_depth_offset': (
+                grasping.forward_grasp_depth_for_class(
+                    object_class,
+                    self._default_forward_grasp_depth_offset,
+                    self._class_forward_grasp_depth_offsets,
+                )
+            ),
             'object_point': object_point,
             'approach_origin': approach_origin,
             'candidates': candidates,
@@ -490,8 +518,15 @@ class D1GraspCoordinator(Node):
         self._pregrasp_publisher.publish(first_pose)
         self._publish_active_stage(
             GraspStatus.STAGE_ACCEPTED,
-            'selected {} with {} safeguard-compatible approach candidate(s)'.format(
-                selected.object_id, len(candidates)
+            'selected {} with {} safeguard-compatible approach candidate(s); '
+            'forward grasp depth is {:.3f} m'.format(
+                selected.object_id,
+                len(candidates),
+                grasping.forward_grasp_depth_for_class(
+                    object_class,
+                    self._default_forward_grasp_depth_offset,
+                    self._class_forward_grasp_depth_offsets,
+                ),
             ),
             first_pose,
         )
@@ -543,7 +578,7 @@ class D1GraspCoordinator(Node):
             requested_class, ' | '.join(details)
         )
 
-    def _select_object_and_candidates(self, objects):
+    def _select_object_and_candidates(self, objects, object_class):
         source_frame = self._latest_map.header.frame_id.strip()
         if not source_frame:
             raise RuntimeError('semantic map frame_id is empty')
@@ -559,6 +594,11 @@ class D1GraspCoordinator(Node):
         )
         approach_origin = self._point_tuple(
             tip_transform.transform.translation
+        )
+        forward_grasp_depth = grasping.forward_grasp_depth_for_class(
+            object_class,
+            self._default_forward_grasp_depth_offset,
+            self._class_forward_grasp_depth_offsets,
         )
         viable = []
         failures = []
@@ -577,6 +617,7 @@ class D1GraspCoordinator(Node):
                     self._approach_distance,
                     self._grasp_center_offset,
                     0.0,
+                    forward_grasp_depth,
                 ))
             except ValueError as error:
                 failures.append(str(error))
@@ -910,6 +951,7 @@ class D1GraspCoordinator(Node):
         candidate = grasping.retarget_approach_candidate(
             selected, object_point, self._approach_distance,
             self._grasp_center_offset,
+            self._active['forward_grasp_depth_offset'],
         )
         problem = self._candidate_problem(candidate)
         if problem is not None:
@@ -1053,6 +1095,7 @@ class D1GraspCoordinator(Node):
                 self._active['object_point'],
                 self._approach_distance,
                 self._grasp_center_offset,
+                self._active['forward_grasp_depth_offset'],
             ))
         self._active['candidates'] = tuple(remaining)
         self._active['candidate_index'] = 0

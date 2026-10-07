@@ -66,6 +66,19 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn('generate_approach_candidates(', coordinator)
         self.assertNotIn('preserve_current_orientation:', config)
 
+    def test_per_class_forward_grasp_depth_configuration(self):
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        self.assertIn(
+            'default_forward_grasp_depth_offset_m: 0.05', config
+        )
+        self.assertIn(
+            'class_forward_grasp_depth_offsets_m: ["mug=0.04"]', config
+        )
+        self.assertIn('forward_grasp_depth_for_class(', coordinator)
+
     def test_contact_sequence_replans_position_only_after_reacquisition(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
         coordinator = (
