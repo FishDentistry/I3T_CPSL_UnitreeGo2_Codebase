@@ -13,6 +13,7 @@ from moveit_msgs.action import ExecuteTrajectory
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import Constraints
 from moveit_msgs.msg import MoveItErrorCodes
+from moveit_msgs.msg import OrientationConstraint
 from moveit_msgs.msg import PositionConstraint
 import rclpy
 from rclpy.action import ActionClient
@@ -188,6 +189,7 @@ class D1GraspCoordinator(Node):
         )
         self.declare_parameter('position_tolerance_m', 0.02)
         self.declare_parameter('grasp_position_tolerance_m', 0.005)
+        self.declare_parameter('grasp_orientation_tolerance_rad', 0.35)
 
         self.declare_parameter('planning_time_sec', 5.0)
         self.declare_parameter('planning_attempts', 5)
@@ -199,7 +201,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('maximum_reacquire_correction_m', 0.08)
 
         self.declare_parameter('gripper_joint_id', 6)
-        self.declare_parameter('gripper_open_degrees', 30.0)
+        self.declare_parameter('gripper_open_degrees', 45.0)
         self.declare_parameter('gripper_closed_degrees', 0.0)
         self.declare_parameter('gripper_tolerance_degrees', 2.0)
         self.declare_parameter('minimum_gripper_closure_degrees', 3.0)
@@ -237,6 +239,7 @@ class D1GraspCoordinator(Node):
             'default_forward_grasp_depth_offset_m',
             'position_tolerance_m',
             'grasp_position_tolerance_m',
+            'grasp_orientation_tolerance_rad',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
             'reacquire_timeout_sec', 'reacquire_match_distance_m',
@@ -317,6 +320,10 @@ class D1GraspCoordinator(Node):
         if self._grasp_position_tolerance_m <= 0.0:
             raise RuntimeError(
                 'grasp_position_tolerance_m must be positive'
+            )
+        if not 0.0 < self._grasp_orientation_tolerance_rad <= math.pi:
+            raise RuntimeError(
+                'grasp_orientation_tolerance_rad must be in (0, pi]'
             )
         if self._planning_time <= 0.0 or self._planning_attempts < 1:
             raise RuntimeError('planning limits are invalid')
@@ -704,9 +711,9 @@ class D1GraspCoordinator(Node):
         )
 
     def _candidate_pose(self, candidate, point_name):
-        # Orientation is intentionally unspecified by every MoveIt goal. The
-        # identity quaternion is only a valid Pose message placeholder.
-        return self._target_pose(candidate[point_name], (0.0, 0.0, 0.0, 1.0))
+        return self._target_pose(
+            candidate[point_name], candidate['orientation']
+        )
 
     def _start_next_pregrasp_candidate(self):
         if self._active is None:
@@ -752,7 +759,9 @@ class D1GraspCoordinator(Node):
                 self._move_group_goal_response(done, token)
         )
 
-    def _move_group_goal(self, target_pose, position_tolerance=None):
+    def _move_group_goal(
+            self, target_pose, position_tolerance=None,
+            orientation_tolerance=None):
         if position_tolerance is None:
             position_tolerance = self._position_tolerance_m
         primitive = SolidPrimitive()
@@ -770,8 +779,24 @@ class D1GraspCoordinator(Node):
         position.weight = 1.0
 
         constraints = Constraints()
-        constraints.name = 'semantic_position_target'
+        constraints.name = (
+            'semantic_pose_target'
+            if orientation_tolerance is not None
+            else 'semantic_position_target'
+        )
         constraints.position_constraints = [position]
+        if orientation_tolerance is not None:
+            orientation = OrientationConstraint()
+            orientation.header = copy.deepcopy(target_pose.header)
+            orientation.link_name = self._tip_link
+            orientation.orientation = copy.deepcopy(
+                target_pose.pose.orientation
+            )
+            orientation.absolute_x_axis_tolerance = orientation_tolerance
+            orientation.absolute_y_axis_tolerance = orientation_tolerance
+            orientation.absolute_z_axis_tolerance = orientation_tolerance
+            orientation.weight = 1.0
+            constraints.orientation_constraints = [orientation]
 
         goal = MoveGroup.Goal()
         goal.request.start_state.is_diff = True
@@ -1003,7 +1028,7 @@ class D1GraspCoordinator(Node):
         self._grasp_publisher.publish(grasp_pose)
         self._request_position_plan(
             grasp_pose, 'approach', GraspStatus.STAGE_APPROACHING,
-            'fresh target acquired; planning a position-only final approach',
+            'fresh target acquired; planning a pose-constrained final approach',
         )
 
     def _request_position_plan(self, pose, purpose, stage, message):
@@ -1018,7 +1043,12 @@ class D1GraspCoordinator(Node):
             else self._position_tolerance_m
         )
         future = self._move_group.send_goal_async(
-            self._move_group_goal(pose, tolerance),
+            self._move_group_goal(
+                pose,
+                tolerance,
+                self._grasp_orientation_tolerance_rad
+                if purpose == 'approach' else None,
+            ),
             feedback_callback=lambda feedback, token=self._active['token']:
                 self._move_group_feedback(feedback, token),
         )

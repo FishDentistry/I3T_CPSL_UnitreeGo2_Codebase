@@ -20,14 +20,14 @@ arm link transforms.
 
 J0 through J5 are converted from degrees to radians. The D1 documentation
 specifies the gripper stroke but not the J6 angle-to-stroke calibration, so
-J6 uses an adjustable linear mapping. The defaults map 0 to 30 degrees onto
+J6 uses an adjustable linear mapping. The defaults map 0 to 45 degrees onto
 0 to 0.03 metres of per-finger travel and clamp values outside that range.
 To use measured endpoints instead:
 
 ```bash
 ros2 launch unitree_arm_control d1_arm.launch.py \
   gripper_closed_degrees:=0.0 \
-  gripper_open_degrees:=30.0 \
+  gripper_open_degrees:=45.0 \
   gripper_max_travel_m:=0.03
 ```
 
@@ -411,13 +411,14 @@ The coordinator performs the following sequence when execution is enabled:
    metres from the configured final grasp point.
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
-   limited to 0.08 metres by default. The final plan remains free to choose a
-   feasible orientation for the corrected position.
+   limited to 0.08 metres by default. The generated orientation points the
+   tool toward the object while keeping the jaw-opening axis approximately
+   horizontal.
 6. Shift the detected surface point farther along the camera viewing ray by
    the configured class depth, then compute and execute a collision-checked
-   position-only MoveIt trajectory. The final target uses a 0.005-metre
-   position region and does not impose an orientation that perception cannot
-   support.
+   MoveIt trajectory. The final target uses a 0.005-metre position region and
+   a configurable orientation tolerance. The pre-grasp remains position-only
+   so the long motion retains planning flexibility.
 7. Close the gripper. Position feedback is accepted when it reaches the closed
    target or stalls after meaningful closure, then the object is held for
    three seconds.
@@ -456,6 +457,12 @@ class_forward_grasp_depth_offsets_m:
 Class matching is case-insensitive and ignores repeated whitespace. Unlisted
 classes use the default value. These offsets are a temporary approximation of
 object depth until segmented three-dimensional geometry is available.
+
+`grasp_orientation_tolerance_rad` controls the final MoveIt orientation
+constraint. Its default is `0.35` radians. The generated tool Z axis follows
+the selected approach direction and the gripper jaw-opening axis remains
+approximately horizontal. The gripper opens to 45 degrees by default; the
+controller and grasp coordinator use the same endpoint calibration.
 
 Grounding DINO currently provides a class, bounding box, and one depth-derived
 3D point rather than an object mesh or grasp pose. Consequently, the node does

@@ -146,6 +146,11 @@ class GraspingTest(unittest.TestCase):
         self.assertAlmostEqual(direction[1], 0.0)
         self.assertAlmostEqual(direction[2], 0.0)
 
+        tool_up = grasping.rotate_vector((1.0, 0.0, 0.0), quaternion)
+        self.assertAlmostEqual(tool_up[0], 0.0)
+        self.assertAlmostEqual(tool_up[1], 0.0)
+        self.assertAlmostEqual(tool_up[2], 1.0)
+
     def test_candidate_offsets_pregrasp_toward_arm(self):
         candidate = grasping.generate_approach_candidates(
             (1.0, 0.0, 0.2),

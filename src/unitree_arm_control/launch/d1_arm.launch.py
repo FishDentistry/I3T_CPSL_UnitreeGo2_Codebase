@@ -60,7 +60,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'gripper_open_degrees',
-            default_value='30.0',
+            default_value='45.0',
             description='J6 feedback value representing open fingers.',
         ),
         DeclareLaunchArgument(
