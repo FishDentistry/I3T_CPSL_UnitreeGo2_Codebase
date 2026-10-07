@@ -82,19 +82,27 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn("'camera_frame',", coordinator)
         self.assertIn('forward_grasp_depth_for_class(', coordinator)
 
-    def test_contact_sequence_replans_position_only_after_reacquisition(self):
+    def test_contact_sequence_uses_constant_orientation_cartesian_approach(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
         self.assertIn('detections_topic: /grounding_dino/detection_array', config)
         self.assertIn('grasp_position_tolerance_m: 0.005', config)
-        self.assertNotIn('GetCartesianPath', coordinator)
+        self.assertIn('GetCartesianPath', coordinator)
         self.assertNotIn('GetPositionFK', coordinator)
         self.assertIn('ExecuteTrajectory', coordinator)
         self.assertIn("'reacquiring'", coordinator)
         self.assertIn('retarget_approach_candidate(', coordinator)
-        self.assertIn('self._request_position_plan(', coordinator)
+        self.assertIn('self._current_tip_orientation()', coordinator)
+        self.assertIn(
+            "candidate['orientation'] = achieved_orientation", coordinator
+        )
+        self.assertIn(
+            'request.waypoints = [copy.deepcopy(pose.pose)]', coordinator
+        )
+        self.assertIn('request.avoid_collisions = True', coordinator)
+        self.assertIn('self._minimum_cartesian_fraction', coordinator)
         self.assertIn("if purpose == 'approach':", coordinator)
         self.assertIn('self._restart_candidate_screening(description)', coordinator)
 
@@ -115,7 +123,7 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn('result.planned_trajectory', coordinator)
         self.assertIn("'pregrasp',", coordinator)
         self.assertIn(
-            'executing position-only pre-grasp candidate',
+            'executing orientation-tolerant pre-grasp candidate',
             coordinator,
         )
         self.assertNotIn('GetPositionIK', coordinator)
@@ -141,7 +149,7 @@ class GraspingConfigTest(unittest.TestCase):
         status = (INTERFACE_ROOT / 'msg' / 'GraspStatus.msg').read_text()
         self.assertIn('hold_duration_sec: 3.0', config)
         self.assertIn('gripper_service: /d1_arm_controller/set_joint', config)
-        self.assertIn('gripper_open_degrees: 45.0', config)
+        self.assertIn('gripper_open_degrees: 50.0', config)
         self.assertIn('STAGE_CLOSING=10', status)
         self.assertIn('STAGE_RELEASING=12', status)
         self.assertIn('STAGE_RELEASED=14', status)

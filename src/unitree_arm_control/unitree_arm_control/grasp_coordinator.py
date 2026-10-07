@@ -720,6 +720,23 @@ class D1GraspCoordinator(Node):
         quaternion = (rotation.x, rotation.y, rotation.z, rotation.w)
         return grasping.transform_point(point, translation, quaternion)
 
+    def _current_tip_orientation(self):
+        """Return the live tip orientation in the MoveIt planning frame."""
+        transform = self._lookup_transform(
+            self._planning_frame, self._tip_link
+        )
+        if transform is None:
+            return (0.0, 0.0, 0.0, 1.0)
+        rotation = transform.transform.rotation
+        values = (
+            float(rotation.x), float(rotation.y),
+            float(rotation.z), float(rotation.w),
+        )
+        norm = math.sqrt(sum(value * value for value in values))
+        if not all(math.isfinite(value) for value in values) or norm <= 1e-9:
+            raise ValueError('tip transform contains an invalid orientation')
+        return tuple(value / norm for value in values)
+
     def _point_in_reach_frame(self, point):
         transform = self._lookup_transform(
             self._reach_reference_frame, self._planning_frame
@@ -765,7 +782,7 @@ class D1GraspCoordinator(Node):
             if failures:
                 detail = '; recent failures: ' + ' | '.join(failures[-3:])
             self._finish_failure(
-                'no approach candidate produced a valid position-only '
+                'no approach candidate produced a valid orientation-tolerant '
                 'pre-grasp plan' + detail
             )
             return
@@ -777,8 +794,9 @@ class D1GraspCoordinator(Node):
         self._pregrasp_publisher.publish(pose)
         self._publish_active_stage(
             GraspStatus.STAGE_PLANNING,
-            'MoveIt is planning a position-only pre-grasp candidate {} of {} '
-            'at [{:.3f}, {:.3f}, {:.3f}] m (yaw offset {:.3f} rad)'.format(
+            'MoveIt is planning pre-grasp candidate {} of {} with orientation '
+            'tolerance at [{:.3f}, {:.3f}, {:.3f}] m '
+            '(yaw offset {:.3f} rad)'.format(
                 index + 1, len(candidates),
                 candidate['pregrasp_point'][0],
                 candidate['pregrasp_point'][1],
@@ -933,7 +951,7 @@ class D1GraspCoordinator(Node):
             trajectory,
             'pregrasp',
             GraspStatus.STAGE_EXECUTING,
-            'executing position-only pre-grasp candidate {}'.format(
+            'executing orientation-tolerant pre-grasp candidate {}'.format(
                 self._active['candidate_index'] + 1
             ),
             self._active['pregrasp_pose'],
@@ -1091,6 +1109,24 @@ class D1GraspCoordinator(Node):
         lateral_correction = math.sqrt(
             sum(value * value for value in lateral)
         )
+
+        # The pre-grasp MoveGroup goal permits an orientation tolerance. Its
+        # achieved orientation can therefore differ from the generated ideal
+        # quaternion. GetCartesianPath accepts exact poses rather than an
+        # orientation tolerance, so retaining the generated quaternion here
+        # would turn the final approach into a translation plus a rotation and
+        # can make an otherwise valid straight approach return a low fraction.
+        try:
+            achieved_orientation = self._current_tip_orientation()
+        except Exception as error:
+            self.get_logger().warning(
+                'Could not read the achieved pre-grasp orientation: {}'.format(
+                    error
+                )
+            )
+            return
+        candidate = dict(candidate)
+        candidate['orientation'] = achieved_orientation
 
         grasp_pose = self._candidate_pose(candidate, 'grasp_point')
         retreat_pose = self._candidate_pose(candidate, 'pregrasp_point')
@@ -1415,12 +1451,32 @@ class D1GraspCoordinator(Node):
         if purpose == 'pregrasp':
             self._begin_reacquisition()
         elif purpose == 'reposition_pregrasp':
+            try:
+                achieved_orientation = self._current_tip_orientation()
+            except Exception as error:
+                self._finish_failure(
+                    'could not read corrected pre-grasp orientation: {}'.format(
+                        error
+                    )
+                )
+                return
+            candidate = dict(self._active['candidate'])
+            candidate['orientation'] = achieved_orientation
+            self._active['candidate'] = candidate
+            self._active['grasp_pose'] = self._candidate_pose(
+                candidate, 'grasp_point'
+            )
+            self._active['retreat_pose'] = self._candidate_pose(
+                candidate, 'pregrasp_point'
+            )
+            self._active['pregrasp_pose'] = self._active['retreat_pose']
+            self._grasp_publisher.publish(self._active['grasp_pose'])
             self._request_cartesian_path(
                 self._active['grasp_pose'],
                 'approach',
                 GraspStatus.STAGE_APPROACHING,
                 'corrected pre-grasp reached; computing the short Cartesian '
-                'final approach',
+                'final approach while preserving achieved orientation',
             )
         elif purpose == 'approach':
             self._command_gripper(

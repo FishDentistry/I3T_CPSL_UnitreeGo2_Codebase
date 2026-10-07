@@ -404,26 +404,25 @@ The coordinator performs the following sequence when execution is enabled:
 2. Generate three-dimensional pre-grasp points from the current gripper toward
    the object, including configured yaw fallbacks ordered by smallest yaw
    change.
-3. Give OMPL a position-only constraint for the preferred pre-grasp point so
-   that it can choose a collision-free tool orientation. If planning fails,
-   repeat with the next candidate.
+3. Give OMPL a position constraint and a tolerant orientation constraint for
+   the preferred pre-grasp point. If planning fails, repeat with the next
+   candidate.
 4. Execute the first successful MoveIt trajectory to a pre-grasp point 0.11
    metres from the configured final grasp point.
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
-   limited to 0.08 metres by default. The generated orientation points the
-   tool toward the object while keeping the jaw-opening axis approximately
-   horizontal.
+   limited to 0.08 metres by default.
 6. Shift the detected surface point farther along the camera viewing ray by
-   the configured class depth, then compute and execute a collision-checked
-   MoveIt trajectory. The final target uses a 0.005-metre position region and
-   a configurable orientation tolerance. The pre-grasp remains position-only
-   so the long motion retains planning flexibility.
+   the configured class depth. The final collision-checked Cartesian segment
+   preserves the orientation actually reached at pre-grasp, so the tool moves
+   toward the refreshed grasp point without an additional rotation. If the
+   refreshed point requires a lateral pre-grasp correction, that correction is
+   executed before the achieved orientation is sampled again.
 7. Close the gripper. Position feedback is accepted when it reaches the closed
    target or stalls after meaningful closure, then the object is held for
    three seconds.
-8. Open the gripper and confirm release, then plan and execute a position-only
-   retreat to the corrected pre-grasp point.
+8. Open the gripper and confirm release, then plan and execute a retreat to the
+   corrected pre-grasp point.
 
 No lift is performed. Failures after contact cause a best-effort gripper-open
 command. Only one request is processed at a time, and recent request IDs cannot
@@ -458,11 +457,11 @@ Class matching is case-insensitive and ignores repeated whitespace. Unlisted
 classes use the default value. These offsets are a temporary approximation of
 object depth until segmented three-dimensional geometry is available.
 
-`grasp_orientation_tolerance_rad` controls the final MoveIt orientation
-constraint. Its default is `0.35` radians. The generated tool Z axis follows
-the selected approach direction and the gripper jaw-opening axis remains
-approximately horizontal. The gripper opens to 45 degrees by default; the
-controller and grasp coordinator use the same endpoint calibration.
+`grasp_orientation_tolerance_rad` controls pre-grasp planning and corrected
+pre-grasp repositioning. Its default is `0.35` radians. The Cartesian contact
+segment uses the live achieved orientation as an exact constant orientation.
+The gripper opens to 50 degrees by default; the controller and grasp
+coordinator use the same endpoint calibration.
 
 Grounding DINO currently provides a class, bounding box, and one depth-derived
 3D point rather than an object mesh or grasp pose. Consequently, the node does

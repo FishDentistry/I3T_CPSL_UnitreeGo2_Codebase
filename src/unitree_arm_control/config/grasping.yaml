@@ -27,8 +27,8 @@ d1_grasp_coordinator:
     maximum_target_z_m: 0.80
 
     # Aim from the live gripper position toward the object in 3-D, then try
-    # yaw alternatives around that direction. MoveIt chooses a feasible tool
-    # orientation for each position-only pre-grasp goal.
+    # yaw alternatives around that direction. MoveIt may vary each generated
+    # pre-grasp orientation within the configured tolerance.
     approach_yaw_offsets_rad: [0.0, 0.5235987756, -0.5235987756, 1.0471975512, -1.0471975512]
     approach_distance_m: 0.11
     # Apply only after measuring the desired tool-frame-to-object offset.
@@ -40,7 +40,8 @@ d1_grasp_coordinator:
     # Pre-grasp permits a wider region; the refreshed object target is tighter.
     position_tolerance_m: 0.02
     grasp_position_tolerance_m: 0.005
-    # Applied only at the final grasp target; pre-grasp remains position-only.
+    # Applied to pre-grasp planning and corrected pre-grasp repositioning. The
+    # Cartesian final approach preserves the orientation actually achieved.
     grasp_orientation_tolerance_rad: 0.35
 
     planning_time_sec: 5.0
