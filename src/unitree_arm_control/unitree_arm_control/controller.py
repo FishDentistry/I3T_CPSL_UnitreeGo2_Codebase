@@ -83,7 +83,7 @@ class D1ArmController(Node):
         self.declare_parameter(
             'trajectory_command_mode', protocol.TRAJECTORY
         )
-        self.declare_parameter('trajectory_goal_tolerance_radians', 0.035)
+        self.declare_parameter('trajectory_goal_tolerance_radians', 0.01)
         self.declare_parameter('trajectory_gripper_tolerance_m', 0.005)
         self.declare_parameter('trajectory_goal_timeout_sec', 3.0)
 

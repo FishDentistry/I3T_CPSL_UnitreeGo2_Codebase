@@ -178,10 +178,13 @@ The command rate and final feedback checks are configurable at launch:
 ros2 launch unitree_arm_control d1_arm.launch.py \
   commanding_enabled:=true \
   trajectory_command_rate_hz:=10.0 \
-  trajectory_goal_tolerance_radians:=0.035 \
+  trajectory_goal_tolerance_radians:=0.01 \
   trajectory_gripper_tolerance_m:=0.005 \
   trajectory_goal_timeout_sec:=3.0
 ```
+
+When starting the complete stack through `dog.launch.py`, the corresponding
+launch argument is `arm_trajectory_goal_tolerance_radians`.
 
 This action is the controller boundary intended for later MoveIt integration.
 It is currently a position-only trajectory executor; supplied waypoint
@@ -396,23 +399,22 @@ The coordinator performs the following sequence when execution is enabled:
    the object, including configured yaw fallbacks ordered by smallest yaw
    change.
 3. Give OMPL a position-only constraint for the preferred pre-grasp point so
-   that it can choose a collision-free tool orientation. Read the actual tool
-   orientation at the planned endpoint with forward kinematics, then validate
-   the complete final Cartesian segment while preserving that orientation. If
-   any stage fails, repeat with the next candidate.
-4. Execute only the first fully validated MoveIt trajectory to a pre-grasp
-   point 0.11 metres from the object.
+   that it can choose a collision-free tool orientation. If planning fails,
+   repeat with the next candidate.
+4. Execute the first successful MoveIt trajectory to a pre-grasp point 0.11
+   metres from the object.
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
-   limited to 0.08 metres by default. Reacquisition preserves the feasible
-   orientation selected by MoveIt.
-6. Compute and execute a short, slow, collision-checked Cartesian path to the
-   corrected grasp point.
+   limited to 0.08 metres by default. The final plan remains free to choose a
+   feasible orientation for the corrected position.
+6. Compute and execute a collision-checked position-only MoveIt trajectory to
+   the corrected grasp point. The final target uses a 0.005-metre position
+   region and does not impose an orientation that perception cannot support.
 7. Close the gripper. Position feedback is accepted when it reaches the closed
    target or stalls after meaningful closure, then the object is held for
    three seconds.
-8. Open the gripper and confirm release, then follow a Cartesian retreat to
-   the corrected pre-grasp point.
+8. Open the gripper and confirm release, then plan and execute a position-only
+   retreat to the corrected pre-grasp point.
 
 No lift is performed. Failures after contact cause a best-effort gripper-open
 command. Only one request is processed at a time, and recent request IDs cannot
@@ -424,8 +426,9 @@ The generated poses are published on `/d1_grasp/pregrasp_pose` and
 holding, releasing, retreating, and released stages.
 
 The defaults are in `config/grasping.yaml`. `approach_yaw_offsets_rad`,
-`approach_distance_m`, `position_tolerance_m`, `grasp_center_offset_m`, and the
-configured gripper open/closed values are the main calibration parameters.
+`approach_distance_m`, `position_tolerance_m`,
+`grasp_position_tolerance_m`, `grasp_center_offset_m`, and the configured
+gripper open/closed values are the main calibration parameters.
 The grasp-center offset defaults to zero and should only be changed from
 measured tool geometry and physical error.
 

@@ -118,7 +118,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'trajectory_goal_tolerance_radians',
-            default_value='0.035',
+            default_value='0.01',
             description='Default final tolerance for arm joints.',
         ),
         DeclareLaunchArgument(

@@ -26,6 +26,9 @@ def generate_launch_description():
     arm_trajectory_command_mode = LaunchConfiguration(
         'arm_trajectory_command_mode'
     )
+    arm_trajectory_goal_tolerance_radians = LaunchConfiguration(
+        'arm_trajectory_goal_tolerance_radians'
+    )
     grasp_execution_enabled = LaunchConfiguration(
         'grasp_execution_enabled'
     )
@@ -64,6 +67,14 @@ def generate_launch_description():
             default_value='1',
             description=(
                 'D1 command mode used for MoveIt trajectory samples.'
+            )
+        ),
+
+        DeclareLaunchArgument(
+            'arm_trajectory_goal_tolerance_radians',
+            default_value='0.01',
+            description=(
+                'Final per-joint tolerance for D1 MoveIt trajectories.'
             )
         ),
 
@@ -132,6 +143,9 @@ def generate_launch_description():
             launch_arguments={
                 'commanding_enabled': arm_command_enabled,
                 'trajectory_command_mode': arm_trajectory_command_mode,
+                'trajectory_goal_tolerance_radians': (
+                    arm_trajectory_goal_tolerance_radians
+                ),
             }.items()
         ),
         IncludeLaunchDescription(

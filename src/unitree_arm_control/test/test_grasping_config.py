@@ -66,18 +66,19 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn('generate_approach_candidates(', coordinator)
         self.assertNotIn('preserve_current_orientation:', config)
 
-    def test_contact_sequence_has_fresh_detection_and_cartesian_gates(self):
+    def test_contact_sequence_replans_position_only_after_reacquisition(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
         self.assertIn('detections_topic: /grounding_dino/detection_array', config)
-        self.assertIn('minimum_cartesian_fraction: 0.95', config)
-        self.assertIn('GetCartesianPath', coordinator)
-        self.assertIn('GetPositionFK', coordinator)
+        self.assertIn('grasp_position_tolerance_m: 0.005', config)
+        self.assertNotIn('GetCartesianPath', coordinator)
+        self.assertNotIn('GetPositionFK', coordinator)
         self.assertIn('ExecuteTrajectory', coordinator)
         self.assertIn("'reacquiring'", coordinator)
         self.assertIn('retarget_approach_candidate(', coordinator)
+        self.assertIn('self._request_position_plan(', coordinator)
         self.assertIn("if purpose == 'approach':", coordinator)
         self.assertIn('self._restart_candidate_screening(description)', coordinator)
 
@@ -86,18 +87,16 @@ class GraspingConfigTest(unittest.TestCase):
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
-        self.assertIn('compute_fk_service: /compute_fk', config)
         self.assertIn('tip_link: d1_gripper_center', config)
         self.assertIn('PositionConstraint', coordinator)
         self.assertIn('constraints.position_constraints', coordinator)
         self.assertNotIn('OrientationConstraint', coordinator)
-        self.assertIn('request.fk_link_names = [self._tip_link]', coordinator)
-        self.assertIn("self._active['approach_orientation']", coordinator)
+        self.assertIn('semantic_position_target', coordinator)
         self.assertIn('goal.planning_options.plan_only = True', coordinator)
         self.assertIn('result.planned_trajectory', coordinator)
         self.assertIn("'pregrasp',", coordinator)
         self.assertIn(
-            'executing the first fully validated approach candidate',
+            'executing position-only pre-grasp candidate',
             coordinator,
         )
         self.assertNotIn('GetPositionIK', coordinator)
@@ -157,6 +156,13 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn("'trajectory_command_mode',\n            default_value='1'", arm_launch)
         self.assertIn("'arm_trajectory_command_mode',\n            default_value='1'", dog_launch)
         self.assertIn("'trajectory_command_mode', protocol.TRAJECTORY", controller)
+        self.assertIn(
+            "declare_parameter('trajectory_goal_tolerance_radians', 0.01)",
+            controller,
+        )
+        self.assertIn(
+            "'arm_trajectory_goal_tolerance_radians'", dog_launch
+        )
 
 
 if __name__ == '__main__':
