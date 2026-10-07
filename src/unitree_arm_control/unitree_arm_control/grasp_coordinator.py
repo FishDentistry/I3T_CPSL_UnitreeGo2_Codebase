@@ -199,6 +199,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('reacquire_timeout_sec', 10.0)
         self.declare_parameter('reacquire_match_distance_m', 0.25)
         self.declare_parameter('maximum_reacquire_correction_m', 0.08)
+        self.declare_parameter('maximum_final_lateral_correction_m', 0.015)
 
         self.declare_parameter('gripper_joint_id', 6)
         self.declare_parameter('gripper_open_degrees', 45.0)
@@ -243,7 +244,8 @@ class D1GraspCoordinator(Node):
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
             'reacquire_timeout_sec', 'reacquire_match_distance_m',
-            'maximum_reacquire_correction_m', 'gripper_open_degrees',
+            'maximum_reacquire_correction_m',
+            'maximum_final_lateral_correction_m', 'gripper_open_degrees',
             'gripper_closed_degrees', 'gripper_tolerance_degrees',
             'minimum_gripper_closure_degrees',
             'gripper_stall_delta_degrees', 'gripper_stall_confirm_sec',
@@ -340,6 +342,10 @@ class D1GraspCoordinator(Node):
         if self._maximum_reacquire_correction_m <= 0.0:
             raise RuntimeError(
                 'maximum_reacquire_correction_m must be positive'
+            )
+        if self._maximum_final_lateral_correction_m <= 0.0:
+            raise RuntimeError(
+                'maximum_final_lateral_correction_m must be positive'
             )
         if not 0 <= self._gripper_joint_id <= 6:
             raise RuntimeError('gripper_joint_id must be in [0, 6]')
@@ -749,7 +755,10 @@ class D1GraspCoordinator(Node):
             pose,
         )
         future = self._move_group.send_goal_async(
-            self._move_group_goal(pose,orientation_tolerance=self._grasp_orientation_tolerance_rad),
+            self._move_group_goal(
+                pose,
+                orientation_tolerance=self._grasp_orientation_tolerance_rad,
+            ),
             feedback_callback=lambda message, token=self._active['token']:
                 self._move_group_feedback(message, token),
         )
@@ -1019,13 +1028,59 @@ class D1GraspCoordinator(Node):
         if problem is not None:
             self._finish_failure('reacquired target is unsafe: ' + problem)
             return
+        old_pregrasp = tuple(
+            float(value) for value in selected['pregrasp_point']
+        )
+        new_pregrasp = tuple(
+            float(value) for value in candidate['pregrasp_point']
+        )
+        correction = tuple(
+            new_value - old_value
+            for new_value, old_value in zip(new_pregrasp, old_pregrasp)
+        )
+        approach = tuple(
+            float(value) for value in candidate['approach_direction']
+        )
+        approach_norm = math.sqrt(sum(value * value for value in approach))
+        if approach_norm <= 1e-9:
+            self._finish_failure(
+                'reacquired approach direction has near-zero magnitude'
+            )
+            return
+        approach_axis = tuple(value / approach_norm for value in approach)
+        parallel_amount = sum(
+            delta * axis for delta, axis in zip(correction, approach_axis)
+        )
+        lateral = tuple(
+            delta - parallel_amount * axis
+            for delta, axis in zip(correction, approach_axis)
+        )
+        lateral_correction = math.sqrt(
+            sum(value * value for value in lateral)
+        )
+
         grasp_pose = self._candidate_pose(candidate, 'grasp_point')
         retreat_pose = self._candidate_pose(candidate, 'pregrasp_point')
         self._active['object_point'] = object_point
         self._active['candidate'] = candidate
+        self._active['pregrasp_pose'] = retreat_pose
         self._active['grasp_pose'] = grasp_pose
         self._active['retreat_pose'] = retreat_pose
         self._grasp_publisher.publish(grasp_pose)
+
+        if lateral_correction > self._maximum_final_lateral_correction_m:
+            self._pregrasp_publisher.publish(retreat_pose)
+            self._request_position_plan(
+                retreat_pose,
+                'reposition_pregrasp',
+                GraspStatus.STAGE_APPROACHING,
+                'fresh target shifted laterally by {:.3f} m; repositioning to '
+                'the corrected pre-grasp before final approach'.format(
+                    lateral_correction
+                ),
+            )
+            return
+
         self._request_position_plan(
             grasp_pose, 'approach', GraspStatus.STAGE_APPROACHING,
             'fresh target acquired; planning a pose-constrained final approach',
@@ -1042,12 +1097,15 @@ class D1GraspCoordinator(Node):
             if purpose == 'approach'
             else self._position_tolerance_m
         )
+        preserve_grasp_orientation = purpose in (
+            'approach', 'reposition_pregrasp'
+        )
         future = self._move_group.send_goal_async(
             self._move_group_goal(
                 pose,
                 tolerance,
                 self._grasp_orientation_tolerance_rad
-                if purpose == 'approach' else None,
+                if preserve_grasp_orientation else None,
             ),
             feedback_callback=lambda feedback, token=self._active['token']:
                 self._move_group_feedback(feedback, token),
@@ -1113,13 +1171,14 @@ class D1GraspCoordinator(Node):
                 )
             )
             return
+        is_approach_motion = purpose in ('approach', 'reposition_pregrasp')
         self._execute_robot_trajectory(
             trajectory,
             purpose,
-            GraspStatus.STAGE_APPROACHING if purpose == 'approach' else (
+            GraspStatus.STAGE_APPROACHING if is_approach_motion else (
                 GraspStatus.STAGE_RETREATING
             ),
-            'executing position-only {}'.format(purpose),
+            'executing {}'.format(purpose.replace('_', ' ')),
             self._active['target_pose'],
         )
 
@@ -1220,6 +1279,13 @@ class D1GraspCoordinator(Node):
             return
         if purpose == 'pregrasp':
             self._begin_reacquisition()
+        elif purpose == 'reposition_pregrasp':
+            self._request_position_plan(
+                self._active['grasp_pose'],
+                'approach',
+                GraspStatus.STAGE_APPROACHING,
+                'corrected pre-grasp reached; planning the final approach',
+            )
         elif purpose == 'approach':
             self._command_gripper(
                 self._gripper_closed_degrees,
