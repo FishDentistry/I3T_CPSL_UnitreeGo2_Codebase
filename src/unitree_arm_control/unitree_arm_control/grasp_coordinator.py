@@ -209,7 +209,7 @@ class D1GraspCoordinator(Node):
         # The final contact motion is a single short Cartesian segment.
         self.declare_parameter('cartesian_step_m', 0.005)
         self.declare_parameter('minimum_cartesian_fraction', 0.95)
-        self.declare_parameter('cartesian_jump_threshold', 2.0)
+        self.declare_parameter('cartesian_jump_threshold', 0.0)
         self.declare_parameter('cartesian_velocity_scaling', 0.05)
         self.declare_parameter('cartesian_acceleration_scaling', 0.05)
 
