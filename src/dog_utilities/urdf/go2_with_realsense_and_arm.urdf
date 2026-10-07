@@ -1341,7 +1341,7 @@ Stephen Brawner (brawner@gmail.com)
 
 <!-- Camera to mount joint -->
 <joint name="realsense_d435i_joint" type="fixed">
-  <origin xyz="0 0.05 0.0425" rpy="0 0.05 0" />
+  <origin xyz="0 0 0.0425" rpy="0 0.05 0" />
   <parent link="camera_mount_link" />
   <child link="camera_link" />
   <axis xyz="0 0 0" />
