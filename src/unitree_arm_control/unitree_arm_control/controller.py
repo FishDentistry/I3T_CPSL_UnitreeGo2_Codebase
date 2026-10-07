@@ -580,7 +580,13 @@ class D1ArmController(Node):
                 )
 
             return self._wait_for_trajectory_goal(
-                goal_handle, result, names, waypoints[-1], goal
+                goal_handle,
+                result,
+                names,
+                waypoints[-1],
+                goal,
+                held_gripper_degrees,
+                command_mode,
             )
         except (protocol.ProtocolError, trajectory.TrajectoryError) as error:
             return self._abort_trajectory(
@@ -686,7 +692,8 @@ class D1ArmController(Node):
         goal_handle.publish_feedback(feedback)
 
     def _wait_for_trajectory_goal(
-            self, goal_handle, result, names, final_positions, goal):
+            self, goal_handle, result, names, final_positions, goal,
+            held_gripper_degrees, command_mode):
         timeout = trajectory.duration_seconds(goal.goal_time_tolerance)
         if timeout <= 0.0:
             timeout = self._double_parameter(
@@ -698,6 +705,8 @@ class D1ArmController(Node):
             name: index
             for index, name in enumerate(D1_JOINT_STATE_NAMES)
         }
+        rate_hz = self._double_parameter('trajectory_command_rate_hz')
+        period = 1.0 / rate_hz
 
         while time.monotonic() <= deadline:
             if goal_handle.is_cancel_requested:
@@ -718,6 +727,15 @@ class D1ArmController(Node):
                     block_reason,
                 )
 
+            # The nominal trajectory duration has ended, but the hardware may
+            # still be converging on the final commanded state (especially
+            # when D1 trajectory smoothing is enabled). Keep publishing the
+            # actual trajectory endpoint during the goal-tolerance window
+            # instead of passively waiting for feedback to drift into range.
+            self._send_trajectory_sample(
+                final_positions, held_gripper_degrees, command_mode
+            )
+
             actual = self._latest_joint_positions
             if actual is not None and all(
                     abs(final_positions[name_to_index[name]]
@@ -731,7 +749,17 @@ class D1ArmController(Node):
             self._publish_trajectory_feedback(
                 goal_handle, names, final_positions
             )
-            time.sleep(0.1)
+            time.sleep(period)
+
+        diagnostic = self._trajectory_goal_diagnostic(
+            names, final_positions, tolerances
+        )
+        if diagnostic:
+            self.get_logger().error(
+                'Final trajectory goal tolerance diagnostic:\n{}'.format(
+                    diagnostic
+                )
+            )
 
         self._hold_current_position()
         return self._abort_trajectory(
@@ -740,6 +768,50 @@ class D1ArmController(Node):
             FollowJointTrajectory.Result.GOAL_TOLERANCE_VIOLATED,
             'final joint positions were not reached before timeout',
         )
+
+    def _trajectory_goal_diagnostic(
+            self, names, final_positions, tolerances):
+        actual = self._latest_joint_positions
+        if actual is None:
+            return 'no joint-angle feedback was available at timeout'
+
+        name_to_index = {
+            name: index
+            for index, name in enumerate(D1_JOINT_STATE_NAMES)
+        }
+        lines = []
+        for name in names:
+            index = name_to_index[name]
+            target = final_positions[index]
+            measured = actual[index]
+            error = abs(target - measured)
+            tolerance = tolerances[name]
+            status = 'OK' if error <= tolerance else 'OUTSIDE'
+
+            if name == 'd1_gripper_joint':
+                lines.append(
+                    '  {}: target={:.5f} m actual={:.5f} m '
+                    'error={:.5f} m tolerance={:.5f} m [{}]'.format(
+                        name, target, measured, error, tolerance, status
+                    )
+                )
+            else:
+                lines.append(
+                    '  {}: target={:.5f} rad actual={:.5f} rad '
+                    'error={:.5f} rad ({:.3f} deg) '
+                    'tolerance={:.5f} rad ({:.3f} deg) [{}]'.format(
+                        name,
+                        target,
+                        measured,
+                        error,
+                        math.degrees(error),
+                        tolerance,
+                        math.degrees(tolerance)
+                        if math.isfinite(tolerance) else float('inf'),
+                        status,
+                    )
+                )
+        return '\n'.join(lines)
 
     def _trajectory_goal_tolerances(self, goal, names):
         arm_default = self._double_parameter(
