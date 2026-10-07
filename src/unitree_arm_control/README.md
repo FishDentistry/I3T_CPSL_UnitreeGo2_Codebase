@@ -392,20 +392,20 @@ last 20 seconds, and satisfy the height and 0.67-metre D1 reach safeguards.
 The coordinator performs the following sequence when execution is enabled:
 
 1. Open the gripper and confirm its feedback position.
-2. Generate three-dimensional approach poses from the current gripper toward
-   the object, including configured yaw and tool-roll fallbacks. Candidates are
-   ordered by smallest yaw change, with tool-roll alternatives tried before
-   moving to the next approach direction.
-3. Run collision-aware inverse kinematics for the preferred pre-grasp, then
-   give OMPL the resulting joint state as its goal. Validate the complete final
-   Cartesian segment from the planned endpoint. If any stage fails, repeat with
-   the next candidate and stop as soon as one candidate passes every check.
-4. Execute only that validated full-pose MoveIt trajectory to a pre-grasp point
-   0.11 metres from the object.
+2. Generate three-dimensional pre-grasp points from the current gripper toward
+   the object, including configured yaw fallbacks ordered by smallest yaw
+   change.
+3. Give OMPL a position-only constraint for the preferred pre-grasp point so
+   that it can choose a collision-free tool orientation. Read the actual tool
+   orientation at the planned endpoint with forward kinematics, then validate
+   the complete final Cartesian segment while preserving that orientation. If
+   any stage fails, repeat with the next candidate.
+4. Execute only the first fully validated MoveIt trajectory to a pre-grasp
+   point 0.11 metres from the object.
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
-   limited to 0.08 metres by default. Reacquisition preserves the selected
-   approach orientation.
+   limited to 0.08 metres by default. Reacquisition preserves the feasible
+   orientation selected by MoveIt.
 6. Compute and execute a short, slow, collision-checked Cartesian path to the
    corrected grasp point.
 7. Close the gripper. Position feedback is accepted when it reaches the closed
@@ -423,13 +423,11 @@ The generated poses are published on `/d1_grasp/pregrasp_pose` and
 `/d1_grasp/status`, including opening, reacquiring, approaching, closing,
 holding, releasing, retreating, and released stages.
 
-The defaults are in `config/grasping.yaml`. `d1_gripper_center` local +Z is
-treated as the approach axis; `tool_roll_rad` rotates the fingers around that
-axis. `approach_yaw_offsets_rad`, `tool_roll_offsets_rad`,
-`approach_distance_m`, `grasp_center_offset_m`, and the configured gripper
-open/closed values are the main calibration parameters. The grasp-center
-offset defaults to zero and should only be changed from measured tool geometry
-and physical error.
+The defaults are in `config/grasping.yaml`. `approach_yaw_offsets_rad`,
+`approach_distance_m`, `position_tolerance_m`, `grasp_center_offset_m`, and the
+configured gripper open/closed values are the main calibration parameters.
+The grasp-center offset defaults to zero and should only be changed from
+measured tool geometry and physical error.
 
 Grounding DINO currently provides a class, bounding box, and one depth-derived
 3D point rather than an object mesh or grasp pose. Consequently, the node does

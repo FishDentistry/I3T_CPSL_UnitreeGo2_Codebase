@@ -73,8 +73,8 @@ class GraspingConfigTest(unittest.TestCase):
         ).read_text()
         self.assertIn('detections_topic: /grounding_dino/detection_array', config)
         self.assertIn('minimum_cartesian_fraction: 0.95', config)
-        self.assertIn('tool_roll_offsets_rad:', config)
         self.assertIn('GetCartesianPath', coordinator)
+        self.assertIn('GetPositionFK', coordinator)
         self.assertIn('ExecuteTrajectory', coordinator)
         self.assertIn("'reacquiring'", coordinator)
         self.assertIn('retarget_approach_candidate(', coordinator)
@@ -86,12 +86,13 @@ class GraspingConfigTest(unittest.TestCase):
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
-        self.assertIn('compute_ik_service: /compute_ik', config)
+        self.assertIn('compute_fk_service: /compute_fk', config)
         self.assertIn('tip_link: d1_gripper_center', config)
-        self.assertIn('GetPositionIK', coordinator)
-        self.assertIn('ik_request.avoid_collisions = True', coordinator)
-        self.assertIn('self._joint_goal_constraints(', coordinator)
-        self.assertIn('constraints.joint_constraints', coordinator)
+        self.assertIn('PositionConstraint', coordinator)
+        self.assertIn('constraints.position_constraints', coordinator)
+        self.assertNotIn('OrientationConstraint', coordinator)
+        self.assertIn('request.fk_link_names = [self._tip_link]', coordinator)
+        self.assertIn("self._active['approach_orientation']", coordinator)
         self.assertIn('goal.planning_options.plan_only = True', coordinator)
         self.assertIn('result.planned_trajectory', coordinator)
         self.assertIn("'pregrasp',", coordinator)
@@ -99,10 +100,8 @@ class GraspingConfigTest(unittest.TestCase):
             'executing the first fully validated approach candidate',
             coordinator,
         )
-        self.assertLess(
-            coordinator.index('for yaw_offset in self._approach_yaw_offsets'),
-            coordinator.index('for roll_offset in self._tool_roll_offsets'),
-        )
+        self.assertNotIn('GetPositionIK', coordinator)
+        self.assertNotIn('tool_roll_offsets_rad:', config)
         self.assertNotIn("'validated_candidates': []", coordinator)
 
     def test_primary_approach_uses_current_gripper_position(self):
