@@ -72,7 +72,7 @@ def generate_launch_description():
 
         DeclareLaunchArgument(
             'arm_trajectory_goal_tolerance_radians',
-            default_value='0.01',
+            default_value='0.035',
             description=(
                 'Final per-joint tolerance for D1 MoveIt trajectories.'
             )

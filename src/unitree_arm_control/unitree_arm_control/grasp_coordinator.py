@@ -13,6 +13,7 @@ from moveit_msgs.action import ExecuteTrajectory
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import Constraints
 from moveit_msgs.msg import MoveItErrorCodes
+from moveit_msgs.msg import OrientationConstraint
 from moveit_msgs.msg import PositionConstraint
 import rclpy
 from rclpy.action import ActionClient
@@ -159,7 +160,7 @@ class D1GraspCoordinator(Node):
             'planning_group': 'd1_arm',
             'planning_frame': 'base_link',
             'reach_reference_frame': 'd1_base_link',
-            'tip_link': 'd1_gripper_center',
+            'tip_link': 'd1_gripper_tcp',
             'planner_id': '',
         }
         for name, default in string_parameters.items():
@@ -183,6 +184,8 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('grasp_center_offset_m', 0.0)
         self.declare_parameter('position_tolerance_m', 0.02)
         self.declare_parameter('grasp_position_tolerance_m', 0.005)
+        self.declare_parameter('approach_axis_tolerance_rad', 0.20)
+        self.declare_parameter('tool_roll_tolerance_rad', math.pi)
 
         self.declare_parameter('planning_time_sec', 5.0)
         self.declare_parameter('planning_attempts', 5)
@@ -228,7 +231,8 @@ class D1GraspCoordinator(Node):
             'minimum_reach_m', 'maximum_reach_m', 'minimum_target_z_m',
             'maximum_target_z_m', 'approach_distance_m',
             'grasp_center_offset_m', 'position_tolerance_m',
-            'grasp_position_tolerance_m',
+            'grasp_position_tolerance_m', 'approach_axis_tolerance_rad',
+            'tool_roll_tolerance_rad',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
             'reacquire_timeout_sec', 'reacquire_match_distance_m',
@@ -293,6 +297,14 @@ class D1GraspCoordinator(Node):
         if self._grasp_position_tolerance_m <= 0.0:
             raise RuntimeError(
                 'grasp_position_tolerance_m must be positive'
+            )
+        if not 0.0 < self._approach_axis_tolerance_rad <= math.pi:
+            raise RuntimeError(
+                'approach_axis_tolerance_rad must be in (0, pi]'
+            )
+        if not 0.0 < self._tool_roll_tolerance_rad <= math.pi:
+            raise RuntimeError(
+                'tool_roll_tolerance_rad must be in (0, pi]'
             )
         if self._planning_time <= 0.0 or self._planning_attempts < 1:
             raise RuntimeError('planning limits are invalid')
@@ -647,9 +659,9 @@ class D1GraspCoordinator(Node):
         )
 
     def _candidate_pose(self, candidate, point_name):
-        # Orientation is intentionally unspecified by every MoveIt goal. The
-        # identity quaternion is only a valid Pose message placeholder.
-        return self._target_pose(candidate[point_name], (0.0, 0.0, 0.0, 1.0))
+        return self._target_pose(
+            candidate[point_name], candidate['orientation']
+        )
 
     def _start_next_pregrasp_candidate(self):
         if self._active is None:
@@ -662,7 +674,7 @@ class D1GraspCoordinator(Node):
             if failures:
                 detail = '; recent failures: ' + ' | '.join(failures[-3:])
             self._finish_failure(
-                'no approach candidate produced a valid position-only '
+                'no approach candidate produced a valid axis-constrained '
                 'pre-grasp plan' + detail
             )
             return
@@ -674,7 +686,8 @@ class D1GraspCoordinator(Node):
         self._pregrasp_publisher.publish(pose)
         self._publish_active_stage(
             GraspStatus.STAGE_PLANNING,
-            'MoveIt is planning a position-only pre-grasp candidate {} of {} '
+            'MoveIt is planning an axis-constrained pre-grasp candidate {} '
+            'of {} '
             'at [{:.3f}, {:.3f}, {:.3f}] m (yaw offset {:.3f} rad)'.format(
                 index + 1, len(candidates),
                 candidate['pregrasp_point'][0],
@@ -712,9 +725,26 @@ class D1GraspCoordinator(Node):
         position.constraint_region.primitive_poses = [region_pose]
         position.weight = 1.0
 
+        orientation = OrientationConstraint()
+        orientation.header = copy.deepcopy(target_pose.header)
+        orientation.link_name = self._tip_link
+        orientation.orientation = copy.deepcopy(target_pose.pose.orientation)
+        orientation.absolute_x_axis_tolerance = (
+            self._approach_axis_tolerance_rad
+        )
+        orientation.absolute_y_axis_tolerance = (
+            self._approach_axis_tolerance_rad
+        )
+        # Local +Z is the approach axis. A full Z tolerance leaves rotation
+        # about that axis free while X/Y tolerances keep it aimed at the
+        # object.
+        orientation.absolute_z_axis_tolerance = self._tool_roll_tolerance_rad
+        orientation.weight = 1.0
+
         constraints = Constraints()
-        constraints.name = 'semantic_position_target'
+        constraints.name = 'semantic_axis_aligned_target'
         constraints.position_constraints = [position]
+        constraints.orientation_constraints = [orientation]
 
         goal = MoveGroup.Goal()
         goal.request.start_state.is_diff = True
@@ -809,7 +839,7 @@ class D1GraspCoordinator(Node):
             trajectory,
             'pregrasp',
             GraspStatus.STAGE_EXECUTING,
-            'executing position-only pre-grasp candidate {}'.format(
+            'executing axis-constrained pre-grasp candidate {}'.format(
                 self._active['candidate_index'] + 1
             ),
             self._active['pregrasp_pose'],
@@ -922,16 +952,17 @@ class D1GraspCoordinator(Node):
         self._active['grasp_pose'] = grasp_pose
         self._active['retreat_pose'] = retreat_pose
         self._grasp_publisher.publish(grasp_pose)
-        self._request_position_plan(
+        self._request_constrained_plan(
             grasp_pose, 'approach', GraspStatus.STAGE_APPROACHING,
-            'fresh target acquired; planning a position-only final approach',
+            'fresh target acquired; planning an axis-constrained final '
+            'approach',
         )
 
-    def _request_position_plan(self, pose, purpose, stage, message):
+    def _request_constrained_plan(self, pose, purpose, stage, message):
         if self._active is None:
             return
         self._active['phase'] = 'planning_' + purpose
-        self._active['position_plan_purpose'] = purpose
+        self._active['constrained_plan_purpose'] = purpose
         self._publish_active_stage(stage, message, pose)
         tolerance = (
             self._grasp_position_tolerance_m
@@ -946,49 +977,51 @@ class D1GraspCoordinator(Node):
         token = self._active['token']
         future.add_done_callback(
             lambda done, token=token:
-                self._position_goal_response(done, token)
+                self._constrained_goal_response(done, token)
         )
 
-    def _position_goal_response(self, future, token):
+    def _constrained_goal_response(self, future, token):
         if not self._active_token_valid(token) or (
                 not self._active['phase'].startswith('planning_')):
             return
-        purpose = self._active['position_plan_purpose']
+        purpose = self._active['constrained_plan_purpose']
         try:
             goal_handle = future.result()
         except Exception as error:
-            self._position_plan_failure(
+            self._constrained_plan_failure(
                 purpose, 'failed to send {} plan: {}'.format(purpose, error)
             )
             return
         if not goal_handle.accepted:
-            self._position_plan_failure(
-                purpose, 'MoveIt rejected the {} position goal'.format(purpose)
+            self._constrained_plan_failure(
+                purpose, 'MoveIt rejected the {} constrained goal'.format(
+                    purpose
+                )
             )
             return
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(
             lambda done, token=token:
-                self._position_plan_result(done, token)
+                self._constrained_plan_result(done, token)
         )
 
-    def _position_plan_result(self, future, token):
+    def _constrained_plan_result(self, future, token):
         if not self._active_token_valid(token) or (
                 not self._active['phase'].startswith('planning_')):
             return
-        purpose = self._active['position_plan_purpose']
+        purpose = self._active['constrained_plan_purpose']
         try:
             result = future.result().result
             error_code = result.error_code.val
         except Exception as error:
-            self._position_plan_failure(
+            self._constrained_plan_failure(
                 purpose, 'failed while waiting for the {} plan: {}'.format(
                     purpose, error
                 )
             )
             return
         if error_code != MoveItErrorCodes.SUCCESS:
-            self._position_plan_failure(
+            self._constrained_plan_failure(
                 purpose, '{} planning failed: {}'.format(
                     purpose, MOVEIT_ERROR_NAMES.get(
                         error_code, 'MoveIt error {}'.format(error_code)
@@ -998,7 +1031,7 @@ class D1GraspCoordinator(Node):
             return
         trajectory = result.planned_trajectory
         if not trajectory.joint_trajectory.points:
-            self._position_plan_failure(
+            self._constrained_plan_failure(
                 purpose, 'MoveIt returned an empty {} trajectory'.format(
                     purpose
                 )
@@ -1010,11 +1043,11 @@ class D1GraspCoordinator(Node):
             GraspStatus.STAGE_APPROACHING if purpose == 'approach' else (
                 GraspStatus.STAGE_RETREATING
             ),
-            'executing position-only {}'.format(purpose),
+            'executing axis-constrained {}'.format(purpose),
             self._active['target_pose'],
         )
 
-    def _position_plan_failure(self, purpose, description):
+    def _constrained_plan_failure(self, purpose, description):
         if purpose == 'approach':
             self._restart_candidate_screening(description)
         else:
@@ -1257,11 +1290,12 @@ class D1GraspCoordinator(Node):
         )
 
     def _start_retreat(self):
-        self._request_position_plan(
+        self._request_constrained_plan(
             self._active['retreat_pose'],
             'retreat',
             GraspStatus.STAGE_RETREATING,
-            'object released; planning a position-only retreat to pre-grasp',
+            'object released; planning an axis-constrained retreat to '
+            'pre-grasp',
         )
 
     def _finish_success(self, stage, message):

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <robot name="go2_with_realsense_and_arm">
   <group name="d1_arm">
-    <chain base_link="d1_base_link" tip_link="d1_gripper_center"/>
+    <chain base_link="d1_base_link" tip_link="d1_gripper_tcp"/>
   </group>
 
   <group name="d1_gripper">

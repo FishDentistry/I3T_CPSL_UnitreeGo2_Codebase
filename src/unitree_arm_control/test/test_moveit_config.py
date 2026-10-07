@@ -7,6 +7,10 @@ from xml.etree import ElementTree
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_ROOT = PACKAGE_ROOT / 'config'
+ROBOT_URDF = (
+    PACKAGE_ROOT.parent / 'dog_utilities' / 'urdf'
+    / 'go2_with_realsense_and_arm.urdf'
+)
 ARM_JOINTS = tuple('d1_joint_{}'.format(index) for index in range(6))
 
 
@@ -20,7 +24,18 @@ class TestMoveItConfig(unittest.TestCase):
         self.assertIsNotNone(arm_group)
         chain = arm_group.find('chain')
         self.assertEqual(chain.attrib['base_link'], 'd1_base_link')
-        self.assertEqual(chain.attrib['tip_link'], 'd1_gripper_center')
+        self.assertEqual(chain.attrib['tip_link'], 'd1_gripper_tcp')
+
+    def test_gripper_tcp_is_at_the_closed_finger_geometry_center(self):
+        root = ElementTree.parse(ROBOT_URDF).getroot()
+        joint = root.find("./joint[@name='d1_gripper_tcp_joint']")
+        self.assertIsNotNone(joint)
+        self.assertEqual(joint.attrib['type'], 'fixed')
+        self.assertEqual(joint.find('parent').attrib['link'], 'd1_link_6')
+        self.assertEqual(joint.find('child').attrib['link'], 'd1_gripper_tcp')
+        self.assertEqual(
+            joint.find('origin').attrib['xyz'], '0.00038 0 0.0946'
+        )
 
     def test_zero_state_contains_all_arm_joints(self):
         root = ElementTree.parse(CONFIG_ROOT / 'd1.srdf').getroot()
