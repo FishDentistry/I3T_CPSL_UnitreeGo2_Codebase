@@ -103,8 +103,11 @@ class GraspingConfigTest(unittest.TestCase):
         )
         self.assertIn('request.avoid_collisions = True', coordinator)
         self.assertIn('self._minimum_cartesian_fraction', coordinator)
+        self.assertIn('straight_final_approach_corridor', coordinator)
+        self.assertIn('goal.request.path_constraints', coordinator)
+        self.assertIn('approach_corridor_radius_m: 0.015', config)
         self.assertIn("if purpose == 'approach':", coordinator)
-        self.assertIn('self._restart_candidate_screening(description)', coordinator)
+        self.assertNotIn('_restart_candidate_screening(', coordinator)
 
     def test_candidates_are_screened_before_pregrasp_execution(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()

@@ -205,6 +205,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('reacquire_match_distance_m', 0.25)
         self.declare_parameter('maximum_reacquire_correction_m', 0.08)
         self.declare_parameter('maximum_final_lateral_correction_m', 0.015)
+        self.declare_parameter('approach_corridor_radius_m', 0.015)
 
         # The final contact motion is a single short Cartesian segment.
         self.declare_parameter('cartesian_step_m', 0.005)
@@ -258,6 +259,7 @@ class D1GraspCoordinator(Node):
             'reacquire_timeout_sec', 'reacquire_match_distance_m',
             'maximum_reacquire_correction_m',
             'maximum_final_lateral_correction_m',
+            'approach_corridor_radius_m',
             'cartesian_step_m', 'minimum_cartesian_fraction',
             'cartesian_jump_threshold', 'cartesian_velocity_scaling',
             'cartesian_acceleration_scaling', 'gripper_open_degrees',
@@ -362,6 +364,8 @@ class D1GraspCoordinator(Node):
             raise RuntimeError(
                 'maximum_final_lateral_correction_m must be positive'
             )
+        if self._approach_corridor_radius_m <= 0.0:
+            raise RuntimeError('approach_corridor_radius_m must be positive')
         if self._cartesian_step_m <= 0.0:
             raise RuntimeError('cartesian_step_m must be positive')
         if not 0.0 < self._minimum_cartesian_fraction <= 1.0:
@@ -821,7 +825,7 @@ class D1GraspCoordinator(Node):
 
     def _move_group_goal(
             self, target_pose, position_tolerance=None,
-            orientation_tolerance=None):
+            orientation_tolerance=None, path_constraints=None):
         if position_tolerance is None:
             position_tolerance = self._position_tolerance_m
         primitive = SolidPrimitive()
@@ -870,6 +874,8 @@ class D1GraspCoordinator(Node):
         goal.request.max_acceleration_scaling_factor = (
             self._acceleration_scaling
         )
+        if path_constraints is not None:
+            goal.request.path_constraints = copy.deepcopy(path_constraints)
         goal.planning_options.planning_scene_diff.is_diff = True
         goal.planning_options.planning_scene_diff.robot_state.is_diff = True
         # Planning and execution are kept separate so every trajectory can be
@@ -878,6 +884,52 @@ class D1GraspCoordinator(Node):
         goal.planning_options.look_around = False
         goal.planning_options.replan = False
         return goal
+
+    def _approach_path_constraints(self, start_point, target_pose):
+        target_point = self._point_tuple(target_pose.pose.position)
+        geometry = grasping.approach_corridor_geometry(
+            start_point, target_point, self._approach_corridor_radius_m
+        )
+
+        corridor = SolidPrimitive()
+        corridor.type = SolidPrimitive.BOX
+        corridor.dimensions = list(geometry['dimensions'])
+        corridor_pose = Pose()
+        corridor_pose.position.x = geometry['center'][0]
+        corridor_pose.position.y = geometry['center'][1]
+        corridor_pose.position.z = geometry['center'][2]
+        corridor_pose.orientation.x = geometry['orientation'][0]
+        corridor_pose.orientation.y = geometry['orientation'][1]
+        corridor_pose.orientation.z = geometry['orientation'][2]
+        corridor_pose.orientation.w = geometry['orientation'][3]
+
+        position = PositionConstraint()
+        position.header = copy.deepcopy(target_pose.header)
+        position.link_name = self._tip_link
+        position.constraint_region.primitives = [corridor]
+        position.constraint_region.primitive_poses = [corridor_pose]
+        position.weight = 1.0
+
+        orientation = OrientationConstraint()
+        orientation.header = copy.deepcopy(target_pose.header)
+        orientation.link_name = self._tip_link
+        orientation.orientation = copy.deepcopy(target_pose.pose.orientation)
+        orientation.absolute_x_axis_tolerance = (
+            self._grasp_orientation_tolerance_rad
+        )
+        orientation.absolute_y_axis_tolerance = (
+            self._grasp_orientation_tolerance_rad
+        )
+        orientation.absolute_z_axis_tolerance = (
+            self._grasp_orientation_tolerance_rad
+        )
+        orientation.weight = 1.0
+
+        constraints = Constraints()
+        constraints.name = 'straight_final_approach_corridor'
+        constraints.position_constraints = [position]
+        constraints.orientation_constraints = [orientation]
+        return constraints
 
     def _active_token_valid(self, token):
         return self._active is not None and self._active['token'] is token
@@ -1251,13 +1303,62 @@ class D1GraspCoordinator(Node):
 
     def _cartesian_path_failure(self, purpose, description):
         if purpose == 'approach':
-            # Preserve the existing failure behavior: try another candidate
-            # rather than falling back to an unconstrained OMPL contact motion.
-            self._restart_candidate_screening(description)
+            try:
+                transform = self._lookup_transform(
+                    self._planning_frame, self._tip_link
+                )
+                if transform is None:
+                    start_point = (0.0, 0.0, 0.0)
+                else:
+                    start_point = self._point_tuple(
+                        transform.transform.translation
+                    )
+                achieved_orientation = self._current_tip_orientation()
+            except Exception as error:
+                self._finish_failure(
+                    '{}; could not construct constrained fallback: {}'.format(
+                        description, error
+                    )
+                )
+                return
+
+            candidate = dict(self._active['candidate'])
+            candidate['orientation'] = achieved_orientation
+            self._active['candidate'] = candidate
+            self._active['grasp_pose'] = self._candidate_pose(
+                candidate, 'grasp_point'
+            )
+            self._active['retreat_pose'] = self._candidate_pose(
+                candidate, 'pregrasp_point'
+            )
+            self._active['pregrasp_pose'] = self._active['retreat_pose']
+            self._grasp_publisher.publish(self._active['grasp_pose'])
+            try:
+                path_constraints = self._approach_path_constraints(
+                    start_point, self._active['grasp_pose']
+                )
+            except ValueError as error:
+                self._finish_failure(
+                    '{}; could not construct constrained fallback: {}'.format(
+                        description, error
+                    )
+                )
+                return
+            self._request_position_plan(
+                self._active['grasp_pose'],
+                'approach',
+                GraspStatus.STAGE_APPROACHING,
+                '{}; planning the final motion inside a {:.3f} m corridor '
+                'from the current pre-grasp instead of changing candidates'.format(
+                    description, self._approach_corridor_radius_m
+                ),
+                path_constraints,
+            )
         else:
             self._finish_failure(description)
 
-    def _request_position_plan(self, pose, purpose, stage, message):
+    def _request_position_plan(
+            self, pose, purpose, stage, message, path_constraints=None):
         if self._active is None:
             return
         self._active['phase'] = 'planning_' + purpose
@@ -1277,6 +1378,7 @@ class D1GraspCoordinator(Node):
                 tolerance,
                 self._grasp_orientation_tolerance_rad
                 if preserve_grasp_orientation else None,
+                path_constraints,
             ),
             feedback_callback=lambda feedback, token=self._active['token']:
                 self._move_group_feedback(feedback, token),
@@ -1355,7 +1457,10 @@ class D1GraspCoordinator(Node):
 
     def _position_plan_failure(self, purpose, description):
         if purpose == 'approach':
-            self._restart_candidate_screening(description)
+            self._finish_failure(
+                'final approach from the reached pre-grasp failed: ' +
+                description
+            )
         else:
             self._finish_failure(description)
 
@@ -1374,33 +1479,6 @@ class D1GraspCoordinator(Node):
             lambda done, token=token:
                 self._execute_goal_response(done, token)
         )
-
-    def _restart_candidate_screening(self, reason):
-        if self._active is None:
-            return
-        failed_index = self._active['candidate_index']
-        self.get_logger().warning(
-            'Selected approach candidate {} became invalid after fresh '
-            'reacquisition: {}'.format(failed_index + 1, reason)
-        )
-        remaining = []
-        for index, candidate in enumerate(self._active['candidates']):
-            if index == failed_index:
-                continue
-            remaining.append(grasping.retarget_approach_candidate(
-                candidate,
-                self._active['object_point'],
-                self._approach_distance,
-                self._grasp_center_offset,
-                self._active['forward_grasp_depth_offset'],
-            ))
-        self._active['candidates'] = tuple(remaining)
-        self._active['candidate_index'] = 0
-        self._active['candidate_failures'] = [
-            'selected candidate after reacquisition: ' + reason
-        ]
-        self._active['candidate'] = None
-        self._start_next_pregrasp_candidate()
 
     def _execute_goal_response(self, future, token):
         if (

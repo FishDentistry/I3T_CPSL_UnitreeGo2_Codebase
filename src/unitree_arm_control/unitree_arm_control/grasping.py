@@ -290,6 +290,33 @@ def quaternion_from_approach(approach_direction, tool_roll=0.0):
     return _quaternion_from_matrix((rolled_x, rolled_y, local_z))
 
 
+def approach_corridor_geometry(start_point, end_point, radius):
+    """Return a box corridor whose local Z axis joins two tool positions."""
+    if radius <= 0.0:
+        raise ValueError('corridor radius must be positive')
+    start = tuple(float(value) for value in start_point)
+    end = tuple(float(value) for value in end_point)
+    direction = tuple(
+        end_value - start_value
+        for start_value, end_value in zip(start, end)
+    )
+    length = distance_from_origin(direction)
+    if length <= 1.0e-9:
+        raise ValueError('corridor endpoints must be different')
+    return {
+        'center': tuple(
+            0.5 * (start_value + end_value)
+            for start_value, end_value in zip(start, end)
+        ),
+        'orientation': quaternion_from_approach(direction),
+        'dimensions': (
+            2.0 * float(radius),
+            2.0 * float(radius),
+            length + 2.0 * float(radius),
+        ),
+    }
+
+
 def generate_approach_candidates(
         object_point,
         approach_origin,

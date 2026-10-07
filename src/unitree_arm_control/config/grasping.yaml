@@ -54,6 +54,9 @@ d1_grasp_coordinator:
     reacquire_timeout_sec: 10.0
     reacquire_match_distance_m: 0.25
     maximum_reacquire_correction_m: 0.08
+    # OMPL fallback corridor used when exact Cartesian orientation becomes
+    # kinematically infeasible near the object.
+    approach_corridor_radius_m: 0.015
 
     # The D1 reports gripper position but not contact force. A grasp is
     # accepted when the command reaches closed, or when feedback stalls after

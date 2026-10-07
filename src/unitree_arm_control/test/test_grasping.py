@@ -151,6 +151,33 @@ class GraspingTest(unittest.TestCase):
         self.assertAlmostEqual(tool_up[1], 0.0)
         self.assertAlmostEqual(tool_up[2], 1.0)
 
+    def test_approach_corridor_aligns_local_z_between_endpoints(self):
+        geometry = grasping.approach_corridor_geometry(
+            (0.10, 0.20, 0.30), (0.20, 0.20, 0.30), 0.015
+        )
+        axis = grasping.rotate_vector(
+            (0.0, 0.0, 1.0), geometry['orientation']
+        )
+        self.assertAlmostEqual(axis[0], 1.0)
+        self.assertAlmostEqual(axis[1], 0.0)
+        self.assertAlmostEqual(axis[2], 0.0)
+        for actual, expected in zip(
+                geometry['center'], (0.15, 0.20, 0.30)):
+            self.assertAlmostEqual(actual, expected)
+        self.assertAlmostEqual(geometry['dimensions'][0], 0.03)
+        self.assertAlmostEqual(geometry['dimensions'][1], 0.03)
+        self.assertAlmostEqual(geometry['dimensions'][2], 0.13)
+
+    def test_approach_corridor_rejects_invalid_geometry(self):
+        with self.assertRaises(ValueError):
+            grasping.approach_corridor_geometry(
+                (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.015
+            )
+        with self.assertRaises(ValueError):
+            grasping.approach_corridor_geometry(
+                (0.0, 0.0, 0.0), (0.1, 0.0, 0.0), 0.0
+            )
+
     def test_candidate_offsets_pregrasp_toward_arm(self):
         candidate = grasping.generate_approach_candidates(
             (1.0, 0.0, 0.2),

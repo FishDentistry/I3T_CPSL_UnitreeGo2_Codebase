@@ -417,7 +417,11 @@ The coordinator performs the following sequence when execution is enabled:
    preserves the orientation actually reached at pre-grasp, so the tool moves
    toward the refreshed grasp point without an additional rotation. If the
    refreshed point requires a lateral pre-grasp correction, that correction is
-   executed before the achieved orientation is sampled again.
+   executed before the achieved orientation is sampled again. If the exact
+   Cartesian orientation becomes kinematically infeasible, MoveIt plans from
+   the reached pre-grasp through a narrow position corridor while permitting
+   the configured orientation tolerance. This fallback does not select and
+   execute a different pre-grasp candidate.
 7. Close the gripper. Position feedback is accepted when it reaches the closed
    target or stalls after meaningful closure, then the object is held for
    three seconds.
@@ -460,6 +464,9 @@ object depth until segmented three-dimensional geometry is available.
 `grasp_orientation_tolerance_rad` controls pre-grasp planning and corrected
 pre-grasp repositioning. Its default is `0.35` radians. The Cartesian contact
 segment uses the live achieved orientation as an exact constant orientation.
+`approach_corridor_radius_m` defines the half-width of the constrained MoveIt
+fallback used when that exact Cartesian segment is incomplete. Its default is
+`0.015` metres.
 The gripper opens to 50 degrees by default; the controller and grasp
 coordinator use the same endpoint calibration.
 
