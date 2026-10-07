@@ -15,6 +15,7 @@ from moveit_msgs.msg import Constraints
 from moveit_msgs.msg import MoveItErrorCodes
 from moveit_msgs.msg import OrientationConstraint
 from moveit_msgs.msg import PositionConstraint
+from moveit_msgs.srv import GetCartesianPath
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -120,6 +121,9 @@ class D1GraspCoordinator(Node):
         self._execute_trajectory = ActionClient(
             self, ExecuteTrajectory, self._execute_trajectory_action
         )
+        self._cartesian_path = self.create_client(
+            GetCartesianPath, self._cartesian_path_service
+        )
         self._set_joint = self.create_client(
             SetJoint, self._gripper_service
         )
@@ -155,6 +159,7 @@ class D1GraspCoordinator(Node):
             'grasp_pose_topic': '/d1_grasp/grasp_pose',
             'move_group_action': '/move_action',
             'execute_trajectory_action': '/execute_trajectory',
+            'cartesian_path_service': '/compute_cartesian_path',
             'gripper_service': '/d1_arm_controller/set_joint',
             'joint_angles_topic': '/d1_arm_controller/joint_angles',
             'planning_group': 'd1_arm',
@@ -201,6 +206,13 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('maximum_reacquire_correction_m', 0.08)
         self.declare_parameter('maximum_final_lateral_correction_m', 0.015)
 
+        # The final contact motion is a single short Cartesian segment.
+        self.declare_parameter('cartesian_step_m', 0.005)
+        self.declare_parameter('minimum_cartesian_fraction', 0.95)
+        self.declare_parameter('cartesian_jump_threshold', 2.0)
+        self.declare_parameter('cartesian_velocity_scaling', 0.05)
+        self.declare_parameter('cartesian_acceleration_scaling', 0.05)
+
         self.declare_parameter('gripper_joint_id', 6)
         self.declare_parameter('gripper_open_degrees', 45.0)
         self.declare_parameter('gripper_closed_degrees', 0.0)
@@ -220,7 +232,7 @@ class D1GraspCoordinator(Node):
             'semantic_map_topic', 'detections_topic', 'command_topic',
             'status_topic', 'pregrasp_pose_topic', 'grasp_pose_topic',
             'move_group_action', 'execute_trajectory_action',
-            'gripper_service',
+            'cartesian_path_service', 'gripper_service',
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'camera_frame',
             'reach_reference_frame', 'tip_link', 'planner_id',
@@ -245,7 +257,10 @@ class D1GraspCoordinator(Node):
             'acceleration_scaling', 'fresh_detection_age_sec',
             'reacquire_timeout_sec', 'reacquire_match_distance_m',
             'maximum_reacquire_correction_m',
-            'maximum_final_lateral_correction_m', 'gripper_open_degrees',
+            'maximum_final_lateral_correction_m',
+            'cartesian_step_m', 'minimum_cartesian_fraction',
+            'cartesian_jump_threshold', 'cartesian_velocity_scaling',
+            'cartesian_acceleration_scaling', 'gripper_open_degrees',
             'gripper_closed_degrees', 'gripper_tolerance_degrees',
             'minimum_gripper_closure_degrees',
             'gripper_stall_delta_degrees', 'gripper_stall_confirm_sec',
@@ -286,7 +301,7 @@ class D1GraspCoordinator(Node):
             'semantic_map_topic', 'detections_topic', 'command_topic',
             'status_topic', 'pregrasp_pose_topic', 'grasp_pose_topic',
             'move_group_action', 'execute_trajectory_action',
-            'gripper_service',
+            'cartesian_path_service', 'gripper_service',
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'camera_frame',
             'reach_reference_frame', 'tip_link',
@@ -347,6 +362,22 @@ class D1GraspCoordinator(Node):
             raise RuntimeError(
                 'maximum_final_lateral_correction_m must be positive'
             )
+        if self._cartesian_step_m <= 0.0:
+            raise RuntimeError('cartesian_step_m must be positive')
+        if not 0.0 < self._minimum_cartesian_fraction <= 1.0:
+            raise RuntimeError(
+                'minimum_cartesian_fraction must be in (0, 1]'
+            )
+        if self._cartesian_jump_threshold < 0.0:
+            raise RuntimeError(
+                'cartesian_jump_threshold must not be negative'
+            )
+        for name in (
+                'cartesian_velocity_scaling',
+                'cartesian_acceleration_scaling'):
+            value = getattr(self, '_' + name)
+            if not 0.0 < value <= 1.0:
+                raise RuntimeError('{} must be in (0, 1]'.format(name))
         if not 0 <= self._gripper_joint_id <= 6:
             raise RuntimeError('gripper_joint_id must be in [0, 6]')
         if self._gripper_open_degrees == self._gripper_closed_degrees:
@@ -470,6 +501,8 @@ class D1GraspCoordinator(Node):
             missing = []
             if not self._execute_trajectory.wait_for_server(timeout_sec=0.0):
                 missing.append(self._execute_trajectory_action)
+            if not self._cartesian_path.wait_for_service(timeout_sec=0.0):
+                missing.append(self._cartesian_path_service)
             if not self._set_joint.wait_for_service(timeout_sec=0.0):
                 missing.append(self._gripper_service)
             if missing:
@@ -1081,10 +1114,112 @@ class D1GraspCoordinator(Node):
             )
             return
 
-        self._request_position_plan(
+        self._request_cartesian_path(
             grasp_pose, 'approach', GraspStatus.STAGE_APPROACHING,
-            'fresh target acquired; planning a pose-constrained final approach',
+            'fresh target acquired; computing the short Cartesian final approach',
         )
+
+    def _request_cartesian_path(self, pose, purpose, stage, message):
+        if self._active is None:
+            return
+        self._active['phase'] = 'computing_' + purpose
+        self._active['cartesian_purpose'] = purpose
+        self._publish_active_stage(stage, message, pose)
+
+        request = GetCartesianPath.Request()
+        request.header.stamp = self.get_clock().now().to_msg()
+        request.header.frame_id = self._planning_frame
+        request.start_state.is_diff = True
+        request.group_name = self._planning_group
+        request.link_name = self._tip_link
+        request.waypoints = [copy.deepcopy(pose.pose)]
+        request.max_step = self._cartesian_step_m
+        if hasattr(request, 'jump_threshold'):
+            request.jump_threshold = self._cartesian_jump_threshold
+        request.avoid_collisions = True
+
+        # Newer MoveIt service definitions expose speed scaling directly.
+        # Keep the hasattr guards so this remains compatible with older ROS 2
+        # / MoveIt message definitions.
+        if hasattr(request, 'max_velocity_scaling_factor'):
+            request.max_velocity_scaling_factor = (
+                self._cartesian_velocity_scaling
+            )
+        if hasattr(request, 'max_acceleration_scaling_factor'):
+            request.max_acceleration_scaling_factor = (
+                self._cartesian_acceleration_scaling
+            )
+
+        future = self._cartesian_path.call_async(request)
+        token = self._active['token']
+        future.add_done_callback(
+            lambda done, token=token:
+                self._cartesian_path_result(done, token)
+        )
+
+    def _cartesian_path_result(self, future, token):
+        if (
+                not self._active_token_valid(token)
+                or not self._active['phase'].startswith('computing_')):
+            return
+        purpose = self._active['cartesian_purpose']
+        try:
+            response = future.result()
+        except Exception as error:
+            self._cartesian_path_failure(
+                purpose, 'Cartesian {} service failed: {}'.format(
+                    purpose, error
+                )
+            )
+            return
+
+        error_code = response.error_code.val
+        if error_code != MoveItErrorCodes.SUCCESS:
+            self._cartesian_path_failure(
+                purpose, 'Cartesian {} failed: {}'.format(
+                    purpose,
+                    MOVEIT_ERROR_NAMES.get(
+                        error_code, 'MoveIt error {}'.format(error_code)
+                    ),
+                )
+            )
+            return
+
+        fraction = float(response.fraction)
+        if fraction < self._minimum_cartesian_fraction:
+            self._cartesian_path_failure(
+                purpose,
+                'Cartesian {} covered only {:.1f}% (minimum {:.1f}%)'.format(
+                    purpose,
+                    100.0 * fraction,
+                    100.0 * self._minimum_cartesian_fraction,
+                ),
+            )
+            return
+
+        if not response.solution.joint_trajectory.points:
+            self._cartesian_path_failure(
+                purpose, 'MoveIt returned an empty Cartesian {} trajectory'.format(
+                    purpose
+                )
+            )
+            return
+
+        self._execute_robot_trajectory(
+            response.solution,
+            purpose,
+            GraspStatus.STAGE_APPROACHING,
+            'executing short Cartesian {}'.format(purpose),
+            self._active['target_pose'],
+        )
+
+    def _cartesian_path_failure(self, purpose, description):
+        if purpose == 'approach':
+            # Preserve the existing failure behavior: try another candidate
+            # rather than falling back to an unconstrained OMPL contact motion.
+            self._restart_candidate_screening(description)
+        else:
+            self._finish_failure(description)
 
     def _request_position_plan(self, pose, purpose, stage, message):
         if self._active is None:
@@ -1280,11 +1415,12 @@ class D1GraspCoordinator(Node):
         if purpose == 'pregrasp':
             self._begin_reacquisition()
         elif purpose == 'reposition_pregrasp':
-            self._request_position_plan(
+            self._request_cartesian_path(
                 self._active['grasp_pose'],
                 'approach',
                 GraspStatus.STAGE_APPROACHING,
-                'corrected pre-grasp reached; planning the final approach',
+                'corrected pre-grasp reached; computing the short Cartesian '
+                'final approach',
             )
         elif purpose == 'approach':
             self._command_gripper(
