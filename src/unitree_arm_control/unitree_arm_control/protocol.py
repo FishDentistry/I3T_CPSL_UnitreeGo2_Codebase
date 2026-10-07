@@ -155,10 +155,11 @@ def joint_state_positions_from_degrees(
         gripper_max_travel_m=0.03):
     """Convert D1 feedback to URDF joint positions.
 
-    J0 through J5 are converted from degrees to radians. J6 drives the
-    URDF's prismatic gripper joint, so it is linearly mapped between the
-    configured closed/open angles and clamped to the configured per-finger
-    travel.
+    J0 through J5 are converted from degrees to radians without sign or zero
+    remapping. Their hardware-positive directions are encoded by the URDF
+    joint axes. J6 drives the URDF's prismatic gripper joint, so it is
+    linearly mapped between the configured closed/open angles and clamped to
+    the configured per-finger travel.
     """
     if len(angles_degrees) != JOINT_COUNT:
         raise ProtocolError('exactly seven joint angles are required')
@@ -198,9 +199,10 @@ def d1_degrees_from_joint_state_positions(
         gripper_max_travel_m=0.03):
     """Convert URDF joint positions to the seven D1 command values.
 
-    The six revolute joints are converted from radians to degrees. The
-    prismatic gripper position is mapped from metres back to its configured
-    D1 command range.
+    The six revolute joints are converted from radians to degrees without
+    sign or zero remapping; the URDF axes define their physical directions.
+    The prismatic gripper position is mapped from metres back to its
+    configured D1 command range.
     """
     if len(joint_positions) != JOINT_COUNT:
         raise ProtocolError('exactly seven joint positions are required')

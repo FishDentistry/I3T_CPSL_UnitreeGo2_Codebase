@@ -284,13 +284,16 @@ ros2 topic echo /d1_arm_controller/joint_angles --once
 
 MoveIt configuration is contained in this package. It defines the
 six-joint `d1_arm` planning group from `d1_base_link` to the
-`d1_gripper_tcp` tool-center frame, KDL inverse kinematics, conservative motion
-limits, OMPL planning, self-collision exclusions for adjacent arm links, and a
-controller mapping to the existing
+`d1_gripper_center` tool frame at the midpoint of the two fingertip faces,
+KDL inverse kinematics, conservative motion limits, OMPL planning,
+self-collision exclusions for adjacent arm links, and a controller mapping to
+the existing
 `/d1_arm_controller/follow_joint_trajectory` action. 
 
-`d1_gripper_tcp` is fixed at the midpoint of the closed finger meshes.
-`d1_gripper_center` remains available as the finger mounting-plane reference.
+SDK angles J0 through J5 map directly to the ROS joint positions in radians.
+The URDF joint axes encode the hardware-positive directions, including the
+corrected negative axis for `d1_joint_3`; no additional sign conversion is
+performed by the controller.
 
 Install the ROS 2 Foxy MoveIt binary packages on the deployment system:
 
@@ -398,26 +401,26 @@ last 20 seconds, and satisfy the height and 0.67-metre D1 reach safeguards.
 The coordinator performs the following sequence when execution is enabled:
 
 1. Open the gripper and confirm its feedback position.
-2. Generate three-dimensional pre-grasp poses from the current TCP toward the
-   object, including configured yaw fallbacks ordered by smallest yaw change.
-3. Constrain the TCP position and aim its local +Z approach axis toward the
-   object. Rotation around the approach axis remains free so OMPL can choose a
-   collision-free finger roll. If planning fails, repeat with the next
-   candidate.
+2. Generate three-dimensional pre-grasp points from the current gripper toward
+   the object, including configured yaw fallbacks ordered by smallest yaw
+   change.
+3. Give OMPL a position-only constraint for the preferred pre-grasp point so
+   that it can choose a collision-free tool orientation. If planning fails,
+   repeat with the next candidate.
 4. Execute the first successful MoveIt trajectory to a pre-grasp point 0.11
    metres from the object.
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
-   limited to 0.08 metres by default. The final plan retains the selected
-   approach axis while allowing free tool roll.
-6. Compute and execute a collision-checked MoveIt trajectory to the corrected
-   grasp point. The final TCP target uses a 0.005-metre position region and the
-   same approach-axis constraint.
+   limited to 0.08 metres by default. The final plan remains free to choose a
+   feasible orientation for the corrected position.
+6. Compute and execute a collision-checked position-only MoveIt trajectory to
+   the corrected grasp point. The final target uses a 0.005-metre position
+   region and does not impose an orientation that perception cannot support.
 7. Close the gripper. Position feedback is accepted when it reaches the closed
    target or stalls after meaningful closure, then the object is held for
    three seconds.
-8. Open the gripper and confirm release, then plan and execute an
-   axis-constrained retreat to the corrected pre-grasp point.
+8. Open the gripper and confirm release, then plan and execute a position-only
+   retreat to the corrected pre-grasp point.
 
 No lift is performed. Failures after contact cause a best-effort gripper-open
 command. Only one request is processed at a time, and recent request IDs cannot
@@ -430,9 +433,8 @@ holding, releasing, retreating, and released stages.
 
 The defaults are in `config/grasping.yaml`. `approach_yaw_offsets_rad`,
 `approach_distance_m`, `position_tolerance_m`,
-`grasp_position_tolerance_m`, `approach_axis_tolerance_rad`,
-`tool_roll_tolerance_rad`, `grasp_center_offset_m`, and the configured gripper
-open/closed values are the main calibration parameters.
+`grasp_position_tolerance_m`, `grasp_center_offset_m`, and the configured
+gripper open/closed values are the main calibration parameters.
 The grasp-center offset defaults to zero and should only be changed from
 measured tool geometry and physical error.
 

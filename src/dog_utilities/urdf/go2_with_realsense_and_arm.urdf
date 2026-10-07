@@ -1415,9 +1415,10 @@ Stephen Brawner (brawner@gmail.com)
 
   <!-- Unitree D1-550 arm. The fixed transform places the D1 base on the
        Go2 top mount with the measured installation yaw. Arm joint 0 through
-       joint 5 correspond to hardware joints J0 through J5. The paired
-       gripper represents J6, but
-       J6 feedback must be converted from actuator units to finger travel. -->
+       joint 5 correspond directly to SDK angles J0 through J5; the joint
+       axes below include the hardware-validated positive directions. The
+       paired gripper represents J6, but J6 feedback must be converted from
+       actuator units to finger travel. -->
   <joint name="d1_mount_joint" type="fixed">
     <origin xyz="-0.046 0 0.083" rpy="0 0 -1.57079633" />
     <parent link="base_link" />
@@ -1559,7 +1560,7 @@ Stephen Brawner (brawner@gmail.com)
     <origin xyz="0.0577 0.042 -0.0275" rpy="-1.5708 0 -1.5708"/>
     <parent link="d1_link_3"/>
     <child link="d1_link_4"/>
-    <axis xyz="0 0 1"/>
+    <axis xyz="0 0 -1"/>
     <limit lower="-2.35619449" upper="2.35619449" effort="1.67" velocity="1.73"/>
   </joint>
   <link name="d1_link_5">
@@ -1643,7 +1644,7 @@ Stephen Brawner (brawner@gmail.com)
     </collision>
   </link>
   <joint name="d1_gripper_joint" type="prismatic">
-    <origin xyz="-0.0056012 -0.029636 0.0706" rpy="-1.5714 -1.5708 0"/>
+    <origin xyz="-0.0056012 -0.02100301 0.0706" rpy="-1.5714 -1.5708 0"/>
     <parent link="d1_link_6"/>
     <child link="d1_gripper_left"/>
     <axis xyz="0 0 -1"/>
@@ -1672,7 +1673,7 @@ Stephen Brawner (brawner@gmail.com)
     </collision>
   </link>
   <joint name="d1_gripper_mimic_joint" type="prismatic">
-    <origin xyz="-0.0056388 0.02964 0.0706" rpy="1.5702 -1.5708 0"/>
+    <origin xyz="-0.0056388 0.02101013 0.0706" rpy="1.5702 -1.5708 0"/>
     <parent link="d1_link_6"/>
     <child link="d1_gripper_right"/>
     <axis xyz="0 0 1"/>
@@ -1680,20 +1681,12 @@ Stephen Brawner (brawner@gmail.com)
     <mimic joint="d1_gripper_joint" multiplier="-1.0" offset="0.0"/>
   </joint>
 
-  <!-- Reference frame at the center of the gripper mounting plane. -->
+  <!-- Grasp TCP at the midpoint of the two STL fingertip faces. -->
   <link name="d1_gripper_center" />
   <joint name="d1_gripper_center_joint" type="fixed">
-    <origin xyz="-0.00562 0 0.0706" rpy="0 0 0" />
+    <origin xyz="0.00038 0 0.1256" rpy="0 0 0" />
     <parent link="d1_link_6" />
     <child link="d1_gripper_center" />
-  </joint>
-
-  <!-- Tool center point at the midpoint of the closed finger meshes. -->
-  <link name="d1_gripper_tcp" />
-  <joint name="d1_gripper_tcp_joint" type="fixed">
-    <origin xyz="0.00038 0 0.0946" rpy="0 0 0" />
-    <parent link="d1_link_6" />
-    <child link="d1_gripper_tcp" />
   </joint>
 
 </robot>

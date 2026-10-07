@@ -66,7 +66,7 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn('generate_approach_candidates(', coordinator)
         self.assertNotIn('preserve_current_orientation:', config)
 
-    def test_reacquisition_replans_a_constrained_pose(self):
+    def test_contact_sequence_replans_position_only_after_reacquisition(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
@@ -78,7 +78,7 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn('ExecuteTrajectory', coordinator)
         self.assertIn("'reacquiring'", coordinator)
         self.assertIn('retarget_approach_candidate(', coordinator)
-        self.assertIn('self._request_constrained_plan(', coordinator)
+        self.assertIn('self._request_position_plan(', coordinator)
         self.assertIn("if purpose == 'approach':", coordinator)
         self.assertIn('self._restart_candidate_screening(description)', coordinator)
 
@@ -87,19 +87,16 @@ class GraspingConfigTest(unittest.TestCase):
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
-        self.assertIn('tip_link: d1_gripper_tcp', config)
+        self.assertIn('tip_link: d1_gripper_center', config)
         self.assertIn('PositionConstraint', coordinator)
-        self.assertIn('OrientationConstraint', coordinator)
         self.assertIn('constraints.position_constraints', coordinator)
-        self.assertIn('constraints.orientation_constraints', coordinator)
-        self.assertIn('approach_axis_tolerance_rad: 0.20', config)
-        self.assertIn('tool_roll_tolerance_rad: 3.141592653589793', config)
-        self.assertIn('semantic_axis_aligned_target', coordinator)
+        self.assertNotIn('OrientationConstraint', coordinator)
+        self.assertIn('semantic_position_target', coordinator)
         self.assertIn('goal.planning_options.plan_only = True', coordinator)
         self.assertIn('result.planned_trajectory', coordinator)
         self.assertIn("'pregrasp',", coordinator)
         self.assertIn(
-            'executing axis-constrained pre-grasp candidate',
+            'executing position-only pre-grasp candidate',
             coordinator,
         )
         self.assertNotIn('GetPositionIK', coordinator)
