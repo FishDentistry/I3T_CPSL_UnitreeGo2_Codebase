@@ -1202,16 +1202,29 @@ class D1GraspCoordinator(Node):
             )
             return
 
-        self._request_cartesian_path(
+        self._begin_final_approach(
             grasp_pose, 'approach', GraspStatus.STAGE_APPROACHING,
             'fresh target acquired; computing the short Cartesian final approach',
         )
+
+    def _begin_final_approach(self, pose, purpose, stage, message):
+        orientation = pose.pose.orientation
+        self._active['cartesian_orientations'] = (
+            grasping.approach_orientation_candidates(
+                (orientation.x, orientation.y, orientation.z, orientation.w),
+                self._grasp_orientation_tolerance_rad,
+            )
+        )
+        self._active['cartesian_orientation_index'] = 0
+        self._active['cartesian_best_fraction'] = 0.0
+        self._request_cartesian_path(pose, purpose, stage, message)
 
     def _request_cartesian_path(self, pose, purpose, stage, message):
         if self._active is None:
             return
         self._active['phase'] = 'computing_' + purpose
         self._active['cartesian_purpose'] = purpose
+        self._active['cartesian_probe_pose'] = pose
         self._publish_active_stage(stage, message, pose)
 
         request = GetCartesianPath.Request()
@@ -1274,6 +1287,16 @@ class D1GraspCoordinator(Node):
             return
 
         fraction = float(response.fraction)
+        if not math.isfinite(fraction):
+            self._cartesian_path_failure(
+                purpose, 'Cartesian {} returned a non-finite fraction'.format(
+                    purpose
+                )
+            )
+            return
+        self._active['cartesian_best_fraction'] = max(
+            self._active['cartesian_best_fraction'], fraction
+        )
         if fraction < self._minimum_cartesian_fraction:
             self._cartesian_path_failure(
                 purpose,
@@ -1293,6 +1316,18 @@ class D1GraspCoordinator(Node):
             )
             return
 
+        accepted_pose = self._active['cartesian_probe_pose']
+        orientation = accepted_pose.pose.orientation
+        candidate = dict(self._active['candidate'])
+        candidate['orientation'] = (
+            orientation.x, orientation.y, orientation.z, orientation.w
+        )
+        self._active['candidate'] = candidate
+        self._active['grasp_pose'] = accepted_pose
+        self._active['retreat_pose'] = self._candidate_pose(
+            candidate, 'pregrasp_point'
+        )
+        self._grasp_publisher.publish(accepted_pose)
         self._execute_robot_trajectory(
             response.solution,
             purpose,
@@ -1301,8 +1336,31 @@ class D1GraspCoordinator(Node):
             self._active['target_pose'],
         )
 
+    def _try_next_cartesian_orientation(self, reason):
+        index = self._active['cartesian_orientation_index'] + 1
+        orientations = self._active['cartesian_orientations']
+        if index >= len(orientations):
+            return False
+        self._active['cartesian_orientation_index'] = index
+        pose = copy.deepcopy(self._active['grasp_pose'])
+        quaternion = orientations[index]
+        pose.pose.orientation.x = quaternion[0]
+        pose.pose.orientation.y = quaternion[1]
+        pose.pose.orientation.z = quaternion[2]
+        pose.pose.orientation.w = quaternion[3]
+        self._request_cartesian_path(
+            pose,
+            'approach',
+            GraspStatus.STAGE_APPROACHING,
+            '{}; checking nearby wrist orientation {} of {} along the same '
+            'straight approach'.format(reason, index + 1, len(orientations)),
+        )
+        return True
+
     def _cartesian_path_failure(self, purpose, description):
         if purpose == 'approach':
+            if self._try_next_cartesian_orientation(description):
+                return
             try:
                 transform = self._lookup_transform(
                     self._planning_frame, self._tip_link
@@ -1348,9 +1406,13 @@ class D1GraspCoordinator(Node):
                 self._active['grasp_pose'],
                 'approach',
                 GraspStatus.STAGE_APPROACHING,
-                '{}; planning the final motion inside a {:.3f} m corridor '
-                'from the current pre-grasp instead of changing candidates'.format(
-                    description, self._approach_corridor_radius_m
+                '{}; best of {} collision-checked Cartesian orientations '
+                'covered {:.1f}%. Planning from the reached pre-grasp inside '
+                'a {:.3f} m corridor'.format(
+                    description,
+                    len(self._active['cartesian_orientations']),
+                    100.0 * self._active['cartesian_best_fraction'],
+                    self._approach_corridor_radius_m,
                 ),
                 path_constraints,
             )
@@ -1457,9 +1519,17 @@ class D1GraspCoordinator(Node):
 
     def _position_plan_failure(self, purpose, description):
         if purpose == 'approach':
+            target = self._active['grasp_pose'].pose.position
             self._finish_failure(
-                'final approach from the reached pre-grasp failed: ' +
-                description
+                'final approach failed at target [{:.3f}, {:.3f}, {:.3f}] m '
+                'in {}: best of {} Cartesian orientations covered {:.1f}%; '
+                'constrained MoveIt plan: {}'.format(
+                    target.x, target.y, target.z,
+                    self._planning_frame,
+                    len(self._active['cartesian_orientations']),
+                    100.0 * self._active['cartesian_best_fraction'],
+                    description,
+                )
             )
         else:
             self._finish_failure(description)
@@ -1549,7 +1619,7 @@ class D1GraspCoordinator(Node):
             )
             self._active['pregrasp_pose'] = self._active['retreat_pose']
             self._grasp_publisher.publish(self._active['grasp_pose'])
-            self._request_cartesian_path(
+            self._begin_final_approach(
                 self._active['grasp_pose'],
                 'approach',
                 GraspStatus.STAGE_APPROACHING,

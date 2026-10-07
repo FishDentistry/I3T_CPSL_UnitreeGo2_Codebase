@@ -151,6 +151,28 @@ class GraspingTest(unittest.TestCase):
         self.assertAlmostEqual(tool_up[1], 0.0)
         self.assertAlmostEqual(tool_up[2], 1.0)
 
+    def test_cartesian_orientation_candidates_are_bounded(self):
+        reference = grasping.quaternion_from_rpy(0.2, -0.1, 0.3)
+        candidates = grasping.approach_orientation_candidates(
+            reference, 0.35
+        )
+        self.assertEqual(len(candidates), 13)
+        for actual, expected in zip(candidates[0], reference):
+            self.assertAlmostEqual(actual, expected)
+        for candidate in candidates:
+            self.assertAlmostEqual(sum(value * value for value in candidate), 1.0)
+            dot = abs(sum(
+                left * right for left, right in zip(reference, candidate)
+            ))
+            angle = 2.0 * math.acos(min(1.0, dot))
+            self.assertLessEqual(angle, 0.35 + 1.0e-8)
+
+    def test_cartesian_orientation_candidates_reject_invalid_input(self):
+        with self.assertRaises(ValueError):
+            grasping.approach_orientation_candidates((0, 0, 0, 0), 0.35)
+        with self.assertRaises(ValueError):
+            grasping.approach_orientation_candidates((0, 0, 0, 1), 0.0)
+
     def test_approach_corridor_aligns_local_z_between_endpoints(self):
         geometry = grasping.approach_corridor_geometry(
             (0.10, 0.20, 0.30), (0.20, 0.20, 0.30), 0.015

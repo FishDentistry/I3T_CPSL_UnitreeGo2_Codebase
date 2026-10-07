@@ -152,6 +152,32 @@ def multiply_quaternions(left, right):
     return tuple(value / norm for value in result)
 
 
+def approach_orientation_candidates(orientation, maximum_adjustment):
+    """Try small local wrist rotations while retaining one XYZ target."""
+    if (
+            not math.isfinite(maximum_adjustment)
+            or not 0.0 < maximum_adjustment <= math.pi):
+        raise ValueError('maximum orientation adjustment must be in (0, pi]')
+    values = tuple(float(value) for value in orientation)
+    if len(values) != 4 or not all(math.isfinite(value) for value in values):
+        raise ValueError('orientation must be a finite xyzw quaternion')
+    norm = math.sqrt(sum(value * value for value in values))
+    if norm <= 1.0e-9:
+        raise ValueError('orientation must have non-zero length')
+    reference = tuple(value / norm for value in values)
+    candidates = [reference]
+    for fraction in (0.5, 1.0):
+        for axis in range(3):
+            for sign in (1.0, -1.0):
+                angles = [0.0, 0.0, 0.0]
+                angles[axis] = sign * fraction * maximum_adjustment
+                local_rotation = quaternion_from_rpy(*angles)
+                candidates.append(multiply_quaternions(
+                    reference, local_rotation
+                ))
+    return tuple(candidates)
+
+
 def rotate_vector(vector, quaternion):
     """Rotate a three-vector by an xyzw unit quaternion."""
     x, y, z = (float(value) for value in vector)

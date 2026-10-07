@@ -40,8 +40,8 @@ d1_grasp_coordinator:
     # Pre-grasp permits a wider region; the refreshed object target is tighter.
     position_tolerance_m: 0.02
     grasp_position_tolerance_m: 0.005
-    # Applied to pre-grasp planning and corrected pre-grasp repositioning. The
-    # Cartesian final approach preserves the orientation actually achieved.
+    # Used for pre-grasp goals and the bounded Cartesian wrist-orientation
+    # search if a straight approach at the achieved orientation is incomplete.
     grasp_orientation_tolerance_rad: 0.35
 
     planning_time_sec: 5.0
