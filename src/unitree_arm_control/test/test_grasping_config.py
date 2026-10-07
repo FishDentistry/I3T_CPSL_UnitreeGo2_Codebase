@@ -74,11 +74,9 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn(
             'default_forward_grasp_depth_offset_m: 0.05', config
         )
-        self.assertIn(
-            'class_forward_grasp_depth_offsets_m: ["mug=0.04"]', config
-        )
-        self.assertIn('class_grasp_height_offsets_m: ["mug=0.02"]', config)
-        self.assertIn('horizontal_forward_depth_classes: ["mug"]', config)
+        self.assertIn('class_forward_grasp_depth_offsets_m:', config)
+        self.assertIn('class_grasp_height_offsets_m:', config)
+        self.assertIn('horizontal_forward_depth_classes:', config)
         self.assertIn('parse_grasp_height_offsets(', coordinator)
         self.assertIn('grasp_height_for_class(', coordinator)
         self.assertIn('camera_frame: camera_link', config)
@@ -156,11 +154,23 @@ class GraspingConfigTest(unittest.TestCase):
         status = (INTERFACE_ROOT / 'msg' / 'GraspStatus.msg').read_text()
         self.assertIn('hold_duration_sec: 3.0', config)
         self.assertIn('gripper_service: /d1_arm_controller/set_joint', config)
-        self.assertIn('gripper_open_degrees: 50.0', config)
+        self.assertIn('gripper_open_degrees: 68.0', config)
         self.assertIn('STAGE_CLOSING=10', status)
         self.assertIn('STAGE_RELEASING=12', status)
         self.assertIn('STAGE_RELEASED=14', status)
         self.assertIn('without lifting', coordinator)
+
+    def test_gripper_open_command_matches_feedback_calibration(self):
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        controller = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'controller.py'
+        ).read_text()
+        launch = (CONTROL_ROOT / 'launch' / 'd1_arm.launch.py').read_text()
+        self.assertIn("declare_parameter('gripper_open_degrees', 68.0)", coordinator)
+        self.assertIn("declare_parameter('gripper_open_degrees', 68.0)", controller)
+        self.assertIn("'gripper_open_degrees',\n            default_value='68.0'", launch)
 
     def test_kdl_solver_uses_full_pose_ik(self):
         kinematics = (

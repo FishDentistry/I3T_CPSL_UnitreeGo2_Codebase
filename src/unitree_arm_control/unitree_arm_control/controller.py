@@ -69,7 +69,7 @@ class D1ArmController(Node):
         self.declare_parameter('feedback_topic', '/arm_Feedback')
         self.declare_parameter('joint_states_topic', '/joint_states')
         self.declare_parameter('gripper_closed_degrees', 0.0)
-        self.declare_parameter('gripper_open_degrees', 50.0)
+        self.declare_parameter('gripper_open_degrees', 68.0)
         self.declare_parameter('gripper_max_travel_m', 0.03)
         self.declare_parameter('commanding_enabled', False)
         self.declare_parameter('require_fresh_feedback', True)

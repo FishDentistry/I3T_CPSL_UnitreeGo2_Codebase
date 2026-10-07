@@ -112,7 +112,7 @@ class ProtocolTest(unittest.TestCase):
             math.pi / 4.0,
             -math.pi / 4.0,
             math.pi / 6.0,
-            0.01,
+            0.03 * 15.0 / 68.0,
         )
         for actual, target in zip(positions, expected):
             self.assertAlmostEqual(actual, target)
@@ -122,7 +122,7 @@ class ProtocolTest(unittest.TestCase):
             [0, 0, 0, 0, 0, 0, -5]
         )
         opened = protocol.joint_state_positions_from_degrees(
-            [0, 0, 0, 0, 0, 0, 50]
+            [0, 0, 0, 0, 0, 0, 68]
         )
         self.assertEqual(closed[-1], 0.0)
         self.assertEqual(opened[-1], 0.03)
