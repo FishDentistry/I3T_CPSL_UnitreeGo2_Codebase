@@ -1136,7 +1136,7 @@ class D1GraspCoordinator(Node):
         request.max_step = self._cartesian_step_m
         if hasattr(request, 'jump_threshold'):
             request.jump_threshold = self._cartesian_jump_threshold
-        request.avoid_collisions = True
+        request.avoid_collisions = False
 
         # Newer MoveIt service definitions expose speed scaling directly.
         # Keep the hasattr guards so this remains compatible with older ROS 2
