@@ -4,7 +4,6 @@ from collections import deque
 import copy
 import math
 
-from geometry_msgs.msg import Pose
 from geometry_msgs.msg import PoseStamped
 from intel_realsense_interfaces.msg import GroundedDetectionArray
 from intel_realsense_interfaces.msg import SemanticMap
@@ -12,10 +11,10 @@ from intel_realsense_interfaces.msg import SemanticObject
 from moveit_msgs.action import ExecuteTrajectory
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import Constraints
+from moveit_msgs.msg import JointConstraint
 from moveit_msgs.msg import MoveItErrorCodes
-from moveit_msgs.msg import OrientationConstraint
-from moveit_msgs.msg import PositionConstraint
 from moveit_msgs.srv import GetCartesianPath
+from moveit_msgs.srv import GetPositionIK
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -23,7 +22,6 @@ from rclpy.qos import DurabilityPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from rclpy.time import Time
-from shape_msgs.msg import SolidPrimitive
 from tf2_ros import Buffer
 from tf2_ros import TransformListener
 from unitree_arm.msg import GraspCommand
@@ -64,6 +62,10 @@ MOVEIT_ERROR_NAMES = {
     MoveItErrorCodes.COMMUNICATION_FAILURE: 'communication failure',
     MoveItErrorCodes.NO_IK_SOLUTION: 'no inverse-kinematics solution',
 }
+
+ARM_JOINT_NAMES = tuple(
+    'd1_joint_{}'.format(index) for index in range(6)
+)
 
 
 class D1GraspCoordinator(Node):
@@ -125,6 +127,9 @@ class D1GraspCoordinator(Node):
         self._cartesian_path = self.create_client(
             GetCartesianPath, self._cartesian_path_service
         )
+        self._compute_ik = self.create_client(
+            GetPositionIK, self._compute_ik_service
+        )
         self._set_joint = self.create_client(
             SetJoint, self._gripper_service
         )
@@ -133,6 +138,7 @@ class D1GraspCoordinator(Node):
         self._latest_detection_receipt = 0.0
         self._latest_gripper_angle = None
         self._latest_gripper_receipt = 0.0
+        self._latest_arm_positions = None
         self._active = None
         self._recent_request_ids = deque(maxlen=100)
         self.create_timer(0.1, self._periodic_update)
@@ -161,12 +167,13 @@ class D1GraspCoordinator(Node):
             'move_group_action': '/move_action',
             'execute_trajectory_action': '/execute_trajectory',
             'cartesian_path_service': '/compute_cartesian_path',
+            'compute_ik_service': '/compute_ik',
             'gripper_service': '/d1_arm_controller/set_joint',
             'joint_angles_topic': '/d1_arm_controller/joint_angles',
             'planning_group': 'd1_arm',
             'planning_frame': 'base_link',
             'reach_reference_frame': 'd1_base_link',
-            'tip_link': 'd1_gripper_center',
+            'tip_link': 'd1_gripper_tcp',
             'planner_id': '',
         }
         for name, default in string_parameters.items():
@@ -193,8 +200,8 @@ class D1GraspCoordinator(Node):
             'tool_roll_offsets_rad',
             [0.0, math.pi / 2.0, -math.pi / 2.0],
         )
-        self.declare_parameter('position_tolerance_m', 0.02)
-        self.declare_parameter('orientation_tolerance_rad', 0.20)
+        self.declare_parameter('ik_timeout_sec', 0.5)
+        self.declare_parameter('joint_goal_tolerance_rad', 0.005)
 
         self.declare_parameter('planning_time_sec', 5.0)
         self.declare_parameter('planning_attempts', 5)
@@ -229,7 +236,8 @@ class D1GraspCoordinator(Node):
             'semantic_map_topic', 'detections_topic', 'command_topic',
             'status_topic', 'pregrasp_pose_topic', 'grasp_pose_topic',
             'move_group_action', 'execute_trajectory_action',
-            'cartesian_path_service', 'gripper_service',
+            'cartesian_path_service', 'compute_ik_service',
+            'gripper_service',
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'reach_reference_frame', 'tip_link', 'planner_id',
         )
@@ -245,7 +253,7 @@ class D1GraspCoordinator(Node):
             'minimum_reach_m', 'maximum_reach_m', 'minimum_target_z_m',
             'maximum_target_z_m', 'approach_distance_m',
             'grasp_center_offset_m', 'tool_roll_rad',
-            'position_tolerance_m', 'orientation_tolerance_rad',
+            'ik_timeout_sec', 'joint_goal_tolerance_rad',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
             'reacquire_timeout_sec', 'reacquire_match_distance_m',
@@ -283,8 +291,6 @@ class D1GraspCoordinator(Node):
         self._maximum_target_z = self._maximum_target_z_m
         self._approach_distance = self._approach_distance_m
         self._grasp_center_offset = self._grasp_center_offset_m
-        self._position_tolerance = self._position_tolerance_m
-        self._orientation_tolerance = self._orientation_tolerance_rad
         self._planning_time = self._planning_time_sec
 
     def _validate_parameters(self):
@@ -292,7 +298,8 @@ class D1GraspCoordinator(Node):
             'semantic_map_topic', 'detections_topic', 'command_topic',
             'status_topic', 'pregrasp_pose_topic', 'grasp_pose_topic',
             'move_group_action', 'execute_trajectory_action',
-            'cartesian_path_service', 'gripper_service',
+            'cartesian_path_service', 'compute_ik_service',
+            'gripper_service',
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'reach_reference_frame', 'tip_link',
         )
@@ -317,10 +324,10 @@ class D1GraspCoordinator(Node):
             raise RuntimeError('approach_distance_m must be positive')
         if self._grasp_center_offset < 0.0:
             raise RuntimeError('grasp_center_offset_m must not be negative')
-        if self._position_tolerance <= 0.0:
-            raise RuntimeError('position_tolerance_m must be positive')
-        if self._orientation_tolerance <= 0.0:
-            raise RuntimeError('orientation_tolerance_rad must be positive')
+        if self._ik_timeout_sec <= 0.0:
+            raise RuntimeError('ik_timeout_sec must be positive')
+        if self._joint_goal_tolerance_rad <= 0.0:
+            raise RuntimeError('joint_goal_tolerance_rad must be positive')
         if self._planning_time <= 0.0 or self._planning_attempts < 1:
             raise RuntimeError('planning limits are invalid')
         for name in (
@@ -372,10 +379,13 @@ class D1GraspCoordinator(Node):
     def _joint_angles_callback(self, message):
         if len(message.angle_degrees) <= self._gripper_joint_id:
             return
-        value = float(message.angle_degrees[self._gripper_joint_id])
-        if not math.isfinite(value):
+        values = tuple(float(value) for value in message.angle_degrees)
+        if not all(math.isfinite(value) for value in values):
             return
-        self._latest_gripper_angle = value
+        self._latest_arm_positions = tuple(
+            math.radians(value) for value in values[:6]
+        )
+        self._latest_gripper_angle = values[self._gripper_joint_id]
         self._latest_gripper_receipt = self._now_seconds()
 
     def _now_seconds(self):
@@ -463,6 +473,9 @@ class D1GraspCoordinator(Node):
         if not self._move_group.wait_for_server(timeout_sec=0.0):
             self._reject(command, 'MoveIt move_group action is unavailable')
             return
+        if not self._compute_ik.wait_for_service(timeout_sec=0.0):
+            self._reject(command, 'MoveIt compute_ik service is unavailable')
+            return
         if self._execution_enabled:
             missing = []
             if not self._execute_trajectory.wait_for_server(timeout_sec=0.0):
@@ -509,6 +522,7 @@ class D1GraspCoordinator(Node):
             'approach_origin': approach_origin,
             'candidates': candidates,
             'candidate_index': 0,
+            'candidate_failures': [],
             'candidate': None,
             'pregrasp_pose': first_pose,
             'grasp_pose': None,
@@ -699,67 +713,143 @@ class D1GraspCoordinator(Node):
         index = self._active['candidate_index']
         candidates = self._active['candidates']
         if index >= len(candidates):
+            failures = self._active.get('candidate_failures', [])
+            detail = ''
+            if failures:
+                detail = '; recent failures: ' + ' | '.join(failures[-3:])
             self._finish_failure(
                 'no approach candidate produced both a valid pre-grasp plan '
-                'and a complete Cartesian approach'
+                'and a complete Cartesian approach' + detail
             )
             return
         candidate = candidates[index]
         pose = self._candidate_pose(candidate, 'pregrasp_point')
         self._active['candidate'] = candidate
         self._active['pregrasp_pose'] = pose
-        self._active['phase'] = 'planning_pregrasp'
+        self._active['phase'] = 'computing_pregrasp_ik'
         self._pregrasp_publisher.publish(pose)
         self._publish_active_stage(
             GraspStatus.STAGE_PLANNING,
-            'MoveIt is planning pre-grasp candidate {} of {} at '
-            '[{:.3f}, {:.3f}, {:.3f}] m'.format(
+            'MoveIt is checking collision-aware IK for candidate {} of {} at '
+            '[{:.3f}, {:.3f}, {:.3f}] m (yaw offset {:.3f} rad, tool roll '
+            '{:.3f} rad)'.format(
                 index + 1, len(candidates),
                 candidate['pregrasp_point'][0],
                 candidate['pregrasp_point'][1],
                 candidate['pregrasp_point'][2],
+                candidate['yaw_offset'],
+                candidate.get('tool_roll_offset', 0.0),
             ),
             pose,
         )
+        future = self._compute_ik.call_async(self._ik_request(pose))
+        token = self._active['token']
+        future.add_done_callback(
+            lambda done, token=token: self._ik_result(done, token)
+        )
+
+    def _ik_request(self, target_pose):
+        request = GetPositionIK.Request()
+        ik_request = request.ik_request
+        ik_request.group_name = self._planning_group
+        ik_request.avoid_collisions = True
+        ik_request.ik_link_name = self._tip_link
+        ik_request.pose_stamped = target_pose
+        ik_request.robot_state.is_diff = True
+        if self._latest_arm_positions is not None:
+            ik_request.robot_state.joint_state.header.stamp = (
+                self.get_clock().now().to_msg()
+            )
+            ik_request.robot_state.joint_state.name = list(ARM_JOINT_NAMES)
+            ik_request.robot_state.joint_state.position = list(
+                self._latest_arm_positions
+            )
+        whole_seconds = int(self._ik_timeout_sec)
+        nanoseconds = int(round(
+            (self._ik_timeout_sec - whole_seconds) * 1.0e9
+        ))
+        if nanoseconds >= 1000000000:
+            whole_seconds += 1
+            nanoseconds = 0
+        ik_request.timeout.sec = whole_seconds
+        ik_request.timeout.nanosec = nanoseconds
+        return request
+
+    def _ik_result(self, future, token):
+        if not self._active_token_valid(token) or (
+                self._active['phase'] != 'computing_pregrasp_ik'):
+            return
+        try:
+            response = future.result()
+        except Exception as error:
+            self._finish_failure(
+                'compute_ik service failed: {}'.format(error)
+            )
+            return
+        error_code = response.error_code.val
+        if error_code != MoveItErrorCodes.SUCCESS:
+            self._try_next_candidate(
+                'collision-aware IK failed: {}'.format(
+                    MOVEIT_ERROR_NAMES.get(
+                        error_code,
+                        'MoveIt error {}'.format(error_code),
+                    )
+                )
+            )
+            return
+        try:
+            joint_constraints = self._joint_goal_constraints(
+                response.solution
+            )
+        except ValueError as error:
+            self._finish_failure('invalid compute_ik solution: {}'.format(error))
+            return
+
+        self._active['phase'] = 'planning_pregrasp'
+        self._publish_active_stage(
+            GraspStatus.STAGE_PLANNING,
+            'candidate {} has collision-aware IK; planning to its joint '
+            'solution'.format(self._active['candidate_index'] + 1),
+            self._active['pregrasp_pose'],
+        )
         future = self._move_group.send_goal_async(
-            self._move_group_goal(pose),
+            self._move_group_goal(joint_constraints),
             feedback_callback=lambda message, token=self._active['token']:
                 self._move_group_feedback(message, token),
         )
-        token = self._active['token']
         future.add_done_callback(
             lambda done, token=token:
                 self._move_group_goal_response(done, token)
         )
 
-    def _move_group_goal(self, target_pose):
-        primitive = SolidPrimitive()
-        primitive.type = SolidPrimitive.SPHERE
-        primitive.dimensions = [self._position_tolerance]
-        region_pose = Pose()
-        region_pose.position = target_pose.pose.position
-        region_pose.orientation.w = 1.0
+    def _joint_goal_constraints(self, robot_state):
+        by_name = dict(zip(
+            robot_state.joint_state.name,
+            robot_state.joint_state.position,
+        ))
+        missing = [name for name in ARM_JOINT_NAMES if name not in by_name]
+        if missing:
+            raise ValueError(
+                'missing arm joints: {}'.format(', '.join(missing))
+            )
+        constraints = []
+        for name in ARM_JOINT_NAMES:
+            position = float(by_name[name])
+            if not math.isfinite(position):
+                raise ValueError('{} position is not finite'.format(name))
+            constraint = JointConstraint()
+            constraint.joint_name = name
+            constraint.position = position
+            constraint.tolerance_above = self._joint_goal_tolerance_rad
+            constraint.tolerance_below = self._joint_goal_tolerance_rad
+            constraint.weight = 1.0
+            constraints.append(constraint)
+        return constraints
 
-        position = PositionConstraint()
-        position.header = target_pose.header
-        position.link_name = self._tip_link
-        position.constraint_region.primitives = [primitive]
-        position.constraint_region.primitive_poses = [region_pose]
-        position.weight = 1.0
-
-        orientation = OrientationConstraint()
-        orientation.header = target_pose.header
-        orientation.link_name = self._tip_link
-        orientation.orientation = target_pose.pose.orientation
-        orientation.absolute_x_axis_tolerance = self._orientation_tolerance
-        orientation.absolute_y_axis_tolerance = self._orientation_tolerance
-        orientation.absolute_z_axis_tolerance = self._orientation_tolerance
-        orientation.weight = 1.0
-
+    def _move_group_goal(self, joint_constraints):
         constraints = Constraints()
-        constraints.name = 'semantic_pregrasp'
-        constraints.position_constraints = [position]
-        constraints.orientation_constraints = [orientation]
+        constraints.name = 'semantic_pregrasp_ik_solution'
+        constraints.joint_constraints = list(joint_constraints)
 
         goal = MoveGroup.Goal()
         goal.request.start_state.is_diff = True
@@ -919,6 +1009,11 @@ class D1GraspCoordinator(Node):
     def _try_next_candidate(self, reason):
         if self._active is None:
             return
+        self._active.setdefault('candidate_failures', []).append(
+            '{}: {}'.format(
+                self._active['candidate_index'] + 1, reason
+            )
+        )
         self.get_logger().warning(
             'Approach candidate {} failed: {}'.format(
                 self._active['candidate_index'] + 1, reason
@@ -1147,6 +1242,9 @@ class D1GraspCoordinator(Node):
             ))
         self._active['candidates'] = tuple(remaining)
         self._active['candidate_index'] = 0
+        self._active['candidate_failures'] = [
+            'selected candidate after reacquisition: ' + reason
+        ]
         self._active['candidate'] = None
         self._active['pending_pregrasp_trajectory'] = None
         self._start_next_pregrasp_candidate()

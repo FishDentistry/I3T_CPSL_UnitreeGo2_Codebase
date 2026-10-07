@@ -76,7 +76,9 @@ class GroundingDinoNode(Node):
             'annotated_image_topic',
             '/grounding_dino/annotated_image',
         )
-        self.declare_parameter('camera_frame', 'front_camera')
+        self.declare_parameter(
+            'camera_frame', 'camera_color_optical_frame'
+        )
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('model_config_path', '')
         self.declare_parameter('model_checkpoint_path', '')

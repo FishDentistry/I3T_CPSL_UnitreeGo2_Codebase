@@ -82,9 +82,16 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn('self._restart_candidate_screening(description)', coordinator)
 
     def test_candidates_are_screened_before_pregrasp_execution(self):
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
+        self.assertIn('compute_ik_service: /compute_ik', config)
+        self.assertIn('tip_link: d1_gripper_tcp', config)
+        self.assertIn('GetPositionIK', coordinator)
+        self.assertIn('ik_request.avoid_collisions = True', coordinator)
+        self.assertIn('self._joint_goal_constraints(', coordinator)
+        self.assertIn('constraints.joint_constraints', coordinator)
         self.assertIn('goal.planning_options.plan_only = True', coordinator)
         self.assertIn('result.planned_trajectory', coordinator)
         self.assertIn("'pregrasp',", coordinator)

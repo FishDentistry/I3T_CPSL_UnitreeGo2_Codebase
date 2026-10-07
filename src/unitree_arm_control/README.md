@@ -281,7 +281,7 @@ ros2 topic echo /d1_arm_controller/joint_angles --once
 
 MoveIt configuration is contained in this package. It defines the
 six-joint `d1_arm` planning group from `d1_base_link` to the
-`d1_gripper_center` tool frame, KDL inverse kinematics, conservative motion
+`d1_gripper_tcp` tool-center frame, KDL inverse kinematics, conservative motion
 limits, OMPL planning, self-collision exclusions for adjacent arm links, and a
 controller mapping to the existing
 `/d1_arm_controller/follow_joint_trajectory` action. 
@@ -396,10 +396,10 @@ The coordinator performs the following sequence when execution is enabled:
    the object, including configured yaw and tool-roll fallbacks. Candidates are
    ordered by smallest yaw change, with tool-roll alternatives tried before
    moving to the next approach direction.
-3. Plan the preferred pre-grasp without moving the arm and validate its complete
-   final Cartesian segment from the planned endpoint. If either operation
-   fails, repeat with the next candidate. Stop as soon as one candidate passes
-   both checks.
+3. Run collision-aware inverse kinematics for the preferred pre-grasp, then
+   give OMPL the resulting joint state as its goal. Validate the complete final
+   Cartesian segment from the planned endpoint. If any stage fails, repeat with
+   the next candidate and stop as soon as one candidate passes every check.
 4. Execute only that validated full-pose MoveIt trajectory to a pre-grasp point
    0.11 metres from the object.
 5. Require a new matching Grounding DINO observation after pre-grasp. The
@@ -423,9 +423,10 @@ The generated poses are published on `/d1_grasp/pregrasp_pose` and
 `/d1_grasp/status`, including opening, reacquiring, approaching, closing,
 holding, releasing, retreating, and released stages.
 
-The defaults are in `config/grasping.yaml`. `d1_gripper_center` local +Z is
-treated as the approach axis; `tool_roll_rad` rotates the fingers around that
-axis. `approach_yaw_offsets_rad`, `tool_roll_offsets_rad`,
+The defaults are in `config/grasping.yaml`. `d1_gripper_tcp` is located at the
+geometric center of the closed finger meshes, and its local +Z axis is treated
+as the approach axis. `tool_roll_rad` rotates the fingers around that axis.
+`approach_yaw_offsets_rad`, `tool_roll_offsets_rad`,
 `approach_distance_m`, `grasp_center_offset_m`, and the configured gripper
 open/closed values are the main calibration parameters. The grasp-center
 offset defaults to zero and should only be changed from measured tool geometry

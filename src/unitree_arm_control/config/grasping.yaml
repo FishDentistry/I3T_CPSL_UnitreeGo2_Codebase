@@ -9,12 +9,13 @@ d1_grasp_coordinator:
     move_group_action: /move_action
     execute_trajectory_action: /execute_trajectory
     cartesian_path_service: /compute_cartesian_path
+    compute_ik_service: /compute_ik
     gripper_service: /d1_arm_controller/set_joint
     joint_angles_topic: /d1_arm_controller/joint_angles
     planning_group: d1_arm
     planning_frame: base_link
     reach_reference_frame: d1_base_link
-    tip_link: d1_gripper_center
+    tip_link: d1_gripper_tcp
     planner_id: ""
 
     # Reject uncertain, tentative, stale, or unreachable map entries.
@@ -35,8 +36,8 @@ d1_grasp_coordinator:
     grasp_center_offset_m: 0.0
     tool_roll_rad: 0.0
     tool_roll_offsets_rad: [0.0, 1.5707963268, -1.5707963268]
-    position_tolerance_m: 0.02
-    orientation_tolerance_rad: 0.20
+    ik_timeout_sec: 0.5
+    joint_goal_tolerance_rad: 0.005
 
     planning_time_sec: 5.0
     planning_attempts: 5

@@ -1346,6 +1346,15 @@ Stephen Brawner (brawner@gmail.com)
   <child link="camera_link" />
   <axis xyz="0 0 0" />
 </joint>
+
+<!-- Optical frame for the RGB image and depth aligned to RGB.
+     RealSense pixels use X right, Y down, Z forward. -->
+<link name="camera_color_optical_frame" />
+<joint name="camera_color_optical_joint" type="fixed">
+  <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679" />
+  <parent link="camera_link" />
+  <child link="camera_color_optical_frame" />
+</joint>
 <link
     name="livox_frame">
     <inertial>

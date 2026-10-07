@@ -1346,6 +1346,15 @@ Stephen Brawner (brawner@gmail.com)
   <child link="camera_link" />
   <axis xyz="0 0 0" />
 </joint>
+
+<!-- Optical frame for the RGB image and depth aligned to RGB.
+     RealSense pixels use X right, Y down, Z forward. -->
+<link name="camera_color_optical_frame" />
+<joint name="camera_color_optical_joint" type="fixed">
+  <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679" />
+  <parent link="camera_link" />
+  <child link="camera_color_optical_frame" />
+</joint>
 <link
     name="livox_frame">
     <inertial>
@@ -1685,6 +1694,16 @@ Stephen Brawner (brawner@gmail.com)
     <origin xyz="-0.00562 0 0.0706" rpy="0 0 0" />
     <parent link="d1_link_6" />
     <child link="d1_gripper_center" />
+  </joint>
+
+  <!-- Tool center point at the geometric center of the closed finger meshes.
+       Use this frame for grasp poses; d1_gripper_center remains the finger
+       mounting-plane reference. -->
+  <link name="d1_gripper_tcp" />
+  <joint name="d1_gripper_tcp_joint" type="fixed">
+    <origin xyz="0.00038 0 0.0946" rpy="0 0 0" />
+    <parent link="d1_link_6" />
+    <child link="d1_gripper_tcp" />
   </joint>
 
 </robot>
