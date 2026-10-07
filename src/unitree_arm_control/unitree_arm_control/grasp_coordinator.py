@@ -217,7 +217,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('cartesian_acceleration_scaling', 0.05)
 
         self.declare_parameter('gripper_joint_id', 6)
-        self.declare_parameter('gripper_open_degrees', 68.0)
+        self.declare_parameter('gripper_open_degrees', 49.0)
         self.declare_parameter('gripper_closed_degrees', 0.0)
         self.declare_parameter('gripper_tolerance_degrees', 2.0)
         self.declare_parameter('minimum_gripper_closure_degrees', 3.0)

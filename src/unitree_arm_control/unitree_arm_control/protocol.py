@@ -43,8 +43,7 @@ LAY_DOWN_ANGLES_DEGREES = (
 )
 
 # Mechanical angle limits published for D1-550 joints J0 through J5.
-# J6 is the gripper and is deliberately left unbounded here because its
-# command units/range differ between D1 variants.
+# J6 is handled separately because its lower command limit is unverified.
 JOINT_LIMITS_DEGREES = (
     (-135.0, 135.0),
     (-90.0, 90.0),
@@ -54,6 +53,10 @@ JOINT_LIMITS_DEGREES = (
     (-135.0, 135.0),
     None,
 )
+
+# Application-side opening ceiling for the mounted D1 gripper. This is not a
+# mechanical limit; powered opening has been observed to stop near 50 degrees.
+GRIPPER_MAX_COMMAND_DEGREES = 49.0
 
 
 class ProtocolError(ValueError):
@@ -151,7 +154,7 @@ def _require_number(value, field_name):
 def joint_state_positions_from_degrees(
         angles_degrees,
         gripper_closed_degrees=0.0,
-        gripper_open_degrees=68.0,
+        gripper_open_degrees=49.0,
         gripper_max_travel_m=0.03):
     """Convert D1 feedback to URDF joint positions.
 
@@ -195,7 +198,7 @@ def joint_state_positions_from_degrees(
 def d1_degrees_from_joint_state_positions(
         joint_positions,
         gripper_closed_degrees=0.0,
-        gripper_open_degrees=68.0,
+        gripper_open_degrees=49.0,
         gripper_max_travel_m=0.03):
     """Convert URDF joint positions to the seven D1 command values.
 
@@ -258,6 +261,13 @@ def _validate_joint_id(joint_id):
 def _validate_angle(joint_id, angle_degrees, enforce_limits):
     angle = _require_number(angle_degrees, 'angle_degrees')
     if enforce_limits:
+        if joint_id == 6 and angle > GRIPPER_MAX_COMMAND_DEGREES:
+            raise ProtocolError(
+                'joint 6 angle {} exceeds the configured opening ceiling '
+                'of {} degrees'.format(
+                    angle, GRIPPER_MAX_COMMAND_DEGREES
+                )
+            )
         limits = JOINT_LIMITS_DEGREES[joint_id]
         if limits is not None and not limits[0] <= angle <= limits[1]:
             raise ProtocolError(
