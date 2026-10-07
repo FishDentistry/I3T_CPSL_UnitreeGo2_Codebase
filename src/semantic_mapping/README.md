@@ -131,7 +131,7 @@ Paths and shared frame settings can be overridden on the launch command:
 ros2 launch semantic_mapping semantic_mapping.launch.py \
   model_config_path:=/path/to/GroundingDINO_SwinT_OGC.py \
   model_checkpoint_path:=/path/to/groundingdino_swint_ogc.pth \
-  camera_frame:=front_camera \
+  camera_frame:=camera_link \
   map_frame:=map
 ```
 
@@ -143,7 +143,7 @@ The launch file exposes the following arguments:
 | `model_checkpoint_path` | Standard user-local checkpoint path | Detector |
 | `device` | `auto` | Detector |
 | `detection_rate_hz` | `5.0` | Detector |
-| `camera_frame` | `front_camera` | Detector |
+| `camera_frame` | `camera_link` | Detector |
 | `map_frame` | `map` | Both nodes |
 | `detections_topic` | `/grounding_dino/detection_array` | Both nodes |
 | `minimum_confidence` | `0.60` | Semantic mapper |

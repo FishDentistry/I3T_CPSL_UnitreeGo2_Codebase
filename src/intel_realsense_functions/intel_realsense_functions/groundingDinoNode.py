@@ -44,6 +44,9 @@ from intel_realsense_functions.detection_geometry import (
     camera_point_from_depth,
 )
 from intel_realsense_functions.detection_geometry import (
+    optical_point_to_camera_link,
+)
+from intel_realsense_functions.detection_geometry import (
     parse_detection_targets,
 )
 from intel_realsense_functions.detection_geometry import transform_point
@@ -76,7 +79,7 @@ class GroundingDinoNode(Node):
             'annotated_image_topic',
             '/grounding_dino/annotated_image',
         )
-        self.declare_parameter('camera_frame', 'front_camera')
+        self.declare_parameter('camera_frame', 'camera_link')
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('model_config_path', '')
         self.declare_parameter('model_checkpoint_path', '')
@@ -379,7 +382,7 @@ class GroundingDinoNode(Node):
             max(0.0, min(float(image_width - 1), raw_box[2])),
             max(0.0, min(float(image_height - 1), raw_box[3])),
         )
-        camera_point = camera_point_from_depth(
+        optical_point = camera_point_from_depth(
             depth_image,
             box,
             intrinsics,
@@ -404,20 +407,21 @@ class GroundingDinoNode(Node):
             'map_coordinates_m': None,
             'depth_sample_count': 0,
         }
-        if camera_point is None:
+        if optical_point is None:
             return result
 
+        camera_point = optical_point_to_camera_link(optical_point)
         result['camera_coordinates_m'] = {
             'x': camera_point['x'],
             'y': camera_point['y'],
             'z': camera_point['z'],
         }
-        result['depth_sample_count'] = camera_point[
+        result['depth_sample_count'] = optical_point[
             'depth_sample_count'
         ]
         result['depth_pixel'] = {
-            'u': camera_point['pixel_u'],
-            'v': camera_point['pixel_v'],
+            'u': optical_point['pixel_u'],
+            'v': optical_point['pixel_v'],
         }
         if map_transform is not None:
             try:

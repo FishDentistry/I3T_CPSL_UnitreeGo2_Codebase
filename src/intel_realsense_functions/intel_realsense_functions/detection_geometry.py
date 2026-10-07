@@ -134,6 +134,25 @@ def camera_point_from_depth(
     }
 
 
+def optical_point_to_camera_link(point):
+    """Convert RealSense optical XYZ to the robot camera-link convention.
+
+    RealSense optical coordinates use X right, Y down, and Z forward.
+    ``camera_link`` uses X forward, Y left, and Z up.
+    """
+    optical_x = float(point['x'])
+    optical_y = float(point['y'])
+    optical_z = float(point['z'])
+    if not all(math.isfinite(value) for value in (
+            optical_x, optical_y, optical_z)):
+        raise ValueError('optical point coordinates must be finite')
+    return {
+        'x': optical_z,
+        'y': -optical_x,
+        'z': -optical_y,
+    }
+
+
 def transform_point(point, translation, quaternion):
     """Apply a geometry_msgs-style rigid transform to an XYZ point."""
     vector = np.asarray(point, dtype=np.float64)

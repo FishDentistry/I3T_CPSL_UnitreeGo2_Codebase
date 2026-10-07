@@ -30,9 +30,10 @@ ros2 run intel_realsense_functions getCameraFrames
 
 `groundingDinoNode` listens for text detection targets, applies Grounding DINO
 to the most recent RGB frame, estimates a robust depth from the center of each
-detection, and deprojects the result into the camera optical coordinate system.
-When the TF tree contains a transform from `front_camera` to `map`, the point is
-also transformed into map coordinates.
+detection, and deprojects the result into the RealSense optical coordinate
+system. It then converts the point to the robot `camera_link` convention. When
+the TF tree contains a transform from `camera_link` to `map`, the point is also
+transformed into map coordinates.
 
 The node runs inference only while at least one detection target is configured.
 Detections are published continuously at the configured inference rate. It does
@@ -91,7 +92,7 @@ compatibility with current consumers:
 {
   "stamp": {"sec": 0, "nanosec": 0},
   "requested_targets": ["cup"],
-  "camera_frame": "front_camera",
+  "camera_frame": "camera_link",
   "map_frame": "map",
   "map_transform_available": true,
   "detections": [
@@ -105,7 +106,7 @@ compatibility with current consumers:
         "x_max": 350,
         "y_max": 410
       },
-      "camera_coordinates_m": {"x": 0.1, "y": 0.0, "z": 1.2},
+      "camera_coordinates_m": {"x": 1.2, "y": -0.1, "z": 0.0},
       "map_coordinates_m": {"x": 2.4, "y": -0.7, "z": 0.8},
       "depth_sample_count": 1530,
       "depth_pixel": {"u": 280.0, "v": 265.0}
@@ -119,9 +120,12 @@ depth is unavailable. `map_coordinates_m` is also `null` when the TF lookup
 fails. A missing map transform never prevents publication of pixel and camera
 coordinates.
 
-Camera coordinates follow the optical convention used by the RealSense image:
-positive X points right, positive Y points down, and positive Z points forward.
-The `camera_frame` parameter must identify a TF frame with the same convention.
+Depth deprojection initially follows the RealSense optical convention: positive
+X points right, positive Y points down, and positive Z points forward. Before
+publication and TF transformation, the detector converts each point to
+`camera_link` as `[x, y, z] = [z_optical, -x_optical, -y_optical]`. Published
+camera coordinates therefore use positive X forward, positive Y left, and
+positive Z up.
 
 ## Grounding DINO installation for Python 3.8
 
@@ -258,7 +262,7 @@ head -n 1 \
 ## Running the detector
 
 Start the camera publisher and ensure that the robot TF tree includes the
-`front_camera` and `map` frames. Start the detector with the Grounding DINO
+`camera_link` and `map` frames. Start the detector with the Grounding DINO
 configuration and checkpoint paths:
 
 ```bash
@@ -294,7 +298,7 @@ ros2 run rqt_image_view rqt_image_view \
 | `box_threshold` | `0.35` | Minimum object-box score. |
 | `text_threshold` | `0.25` | Minimum token score used to form a label. |
 | `detection_rate_hz` | `5.0` | Maximum inference frequency. |
-| `camera_frame` | `front_camera` | Optical TF frame for camera coordinates. |
+| `camera_frame` | `camera_link` | Robot camera TF frame for converted camera coordinates. |
 | `map_frame` | `map` | TF frame for global coordinates. |
 | `structured_detections_topic` | `/grounding_dino/detection_array` | Structured detection output topic. |
 | `maximum_frame_age_sec` | `1.0` | Maximum accepted local receipt age. |
@@ -312,10 +316,11 @@ The current `getCameraFrames` node aligns depth to the RGB stream before
 publishing, which permits direct use of the color intrinsics. It assigns the
 same nonzero ROS timestamp to both images in an aligned pair without assigning
 a frame ID. The detector pairs stamped images by acquisition time and requests
-the map transform at that same time. For compatibility with other camera
-publishers, zero-stamped images fall back to local receipt-time pairing and the
-latest available transform. `maximum_frame_age_sec` still uses local receipt
-age so delayed processing cannot make old images appear fresh.
+the `map <- camera_link` transform at that same time after converting optical
+coordinates to the `camera_link` axis convention. For compatibility with other
+camera publishers, zero-stamped images fall back to local receipt-time pairing
+and the latest available transform. `maximum_frame_age_sec` still uses local
+receipt age so delayed processing cannot make old images appear fresh.
 
 The timestamp addition does not change the image topics, types, encodings,
 dimensions, publication rate, or empty frame IDs. Existing consumers using

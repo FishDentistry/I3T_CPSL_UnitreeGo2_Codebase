@@ -67,8 +67,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'camera_frame',
-            default_value='front_camera',
-            description='Optical TF frame used by Grounding DINO.',
+            default_value='camera_link',
+            description='Robot camera frame used by Grounding DINO.',
         ),
         DeclareLaunchArgument(
             'map_frame',

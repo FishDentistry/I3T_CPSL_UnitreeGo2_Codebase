@@ -15,12 +15,16 @@
 """Tests for Grounding DINO target parsing and coordinate calculations."""
 
 import math
+from pathlib import Path
 import unittest
 
 import numpy as np
 
 from intel_realsense_functions.detection_geometry import (
     camera_point_from_depth,
+)
+from intel_realsense_functions.detection_geometry import (
+    optical_point_to_camera_link,
 )
 from intel_realsense_functions.detection_geometry import (
     parse_detection_targets,
@@ -72,6 +76,41 @@ class DetectionGeometryTest(unittest.TestCase):
             0.1,
             5.0,
         ))
+
+    def test_optical_point_is_converted_to_camera_link_axes(self):
+        """RealSense right/down/forward maps to link forward/left/up."""
+        point = optical_point_to_camera_link({
+            'x': 0.2,
+            'y': -0.1,
+            'z': 2.0,
+        })
+        self.assertEqual(point, {
+            'x': 2.0,
+            'y': -0.2,
+            'z': 0.1,
+        })
+
+    def test_detector_and_mapping_launch_default_to_camera_link(self):
+        """The converted coordinates and TF source frame stay synchronized."""
+        package_root = Path(__file__).resolve().parents[1]
+        detector = (
+            package_root / 'intel_realsense_functions'
+            / 'groundingDinoNode.py'
+        ).read_text()
+        mapping_launch = (
+            package_root.parent / 'semantic_mapping' / 'launch'
+            / 'semantic_mapping.launch.py'
+        ).read_text()
+        expected = "default_value='camera_link'"
+        self.assertIn(
+            "declare_parameter('camera_frame', 'camera_link')", detector
+        )
+        self.assertIn(
+            'camera_point = optical_point_to_camera_link(optical_point)',
+            detector,
+        )
+        self.assertIn('_map_point(\n                    camera_point', detector)
+        self.assertIn(expected, mapping_launch)
 
     def test_transform_point_rotates_and_translates(self):
         """Quaternion transforms follow geometry_msgs XYZW ordering."""
