@@ -79,6 +79,7 @@ d1_grasp_coordinator:
     reacquire_match_distance_m: 0.25
     maximum_reacquire_correction_m: 0.08
     maximum_final_lateral_correction_m: 0.015
+    maximum_alignment_lateral_correction_m: 0.025
     # OMPL fallback corridor used when exact Cartesian orientation becomes
     # kinematically infeasible near the object.
     approach_corridor_radius_m: 0.015

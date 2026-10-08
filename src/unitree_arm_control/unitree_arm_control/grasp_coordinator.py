@@ -239,6 +239,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('reacquire_match_distance_m', 0.25)
         self.declare_parameter('maximum_reacquire_correction_m', 0.08)
         self.declare_parameter('maximum_final_lateral_correction_m', 0.015)
+        self.declare_parameter('maximum_alignment_lateral_correction_m', 0.025)
         self.declare_parameter('approach_corridor_radius_m', 0.015)
 
         # The final contact motion is a single short Cartesian segment.
@@ -305,6 +306,7 @@ class D1GraspCoordinator(Node):
             'reacquire_timeout_sec', 'reacquire_match_distance_m',
             'maximum_reacquire_correction_m',
             'maximum_final_lateral_correction_m',
+            'maximum_alignment_lateral_correction_m',
             'approach_corridor_radius_m',
             'cartesian_step_m', 'minimum_cartesian_fraction',
             'cartesian_jump_threshold', 'cartesian_velocity_scaling',
@@ -439,6 +441,10 @@ class D1GraspCoordinator(Node):
         if self._maximum_final_lateral_correction_m <= 0.0:
             raise RuntimeError(
                 'maximum_final_lateral_correction_m must be positive'
+            )
+        if self._maximum_alignment_lateral_correction_m <= 0.0:
+            raise RuntimeError(
+                'maximum_alignment_lateral_correction_m must be positive'
             )
         if self._approach_corridor_radius_m <= 0.0:
             raise RuntimeError('approach_corridor_radius_m must be positive')
@@ -2496,12 +2502,16 @@ class D1GraspCoordinator(Node):
                     'could not verify aligned pre-grasp: {}'.format(error)
                 )
                 return
-            if line_error > self._maximum_final_lateral_correction_m:
+            alignment_limit = max(
+                self._maximum_final_lateral_correction_m,
+                self._maximum_alignment_lateral_correction_m,
+            )
+            if line_error > alignment_limit:
                 self._finish_failure(
                     'wrist alignment moved the gripper {:.3f} m off the '
                     'measured-band approach line (limit {:.3f} m); no '
                     'contact motion was executed'.format(
-                        line_error, self._maximum_final_lateral_correction_m
+                        line_error, alignment_limit
                     )
                 )
                 return
