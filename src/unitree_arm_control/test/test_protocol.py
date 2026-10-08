@@ -120,7 +120,7 @@ class ProtocolTest(unittest.TestCase):
             math.pi / 4.0,
             -math.pi / 4.0,
             math.pi / 6.0,
-            0.03 * 15.0 / 50.0,
+            0.03 * 15.0 / 49.0,
         )
         for actual, target in zip(positions, expected):
             self.assertAlmostEqual(actual, target)

@@ -20,14 +20,14 @@ arm link transforms.
 
 J0 through J5 are converted from degrees to radians. The D1 documentation
 specifies the gripper stroke but not the J6 angle-to-stroke calibration, so
-J6 uses an adjustable linear mapping. The defaults map 0 to 50 degrees onto
+J6 uses an adjustable linear mapping. The defaults map 0 to 49 degrees onto
 0 to 0.03 metres of per-finger travel and clamp values outside that range.
 To use measured endpoints instead:
 
 ```bash
 ros2 launch unitree_arm_control d1_arm.launch.py \
   gripper_closed_degrees:=0.0 \
-  gripper_open_degrees:=50.0 \
+  gripper_open_degrees:=49.0 \
   gripper_max_travel_m:=0.03
 ```
 
@@ -45,8 +45,9 @@ By default it also refuses to publish if `/arm_Feedback` has not been received
 recently. No command is published automatically at startup.
 
 Joints 0 through 5 are checked against the published D1-550 mechanical angle
-limits. Joint 6 (the gripper) is checked only for a finite value because D1
-variants do not expose a consistent command range/unit for it.
+limits. Joint 6 (the gripper) is checked for a finite value and against the
+application-side 50-degree opening ceiling; D1 variants do not expose a
+consistent mechanical command range/unit for it.
 
 ## Build and verify on the robot workspace
 
@@ -180,11 +181,12 @@ ros2 launch unitree_arm_control d1_arm.launch.py \
   trajectory_command_rate_hz:=10.0 \
   trajectory_goal_tolerance_radians:=0.01 \
   trajectory_gripper_tolerance_m:=0.005 \
-  trajectory_goal_timeout_sec:=3.0
+  trajectory_goal_timeout_sec:=8.0
 ```
 
 When starting the complete stack through `dog.launch.py`, the corresponding
-launch argument is `arm_trajectory_goal_tolerance_radians`.
+launch arguments are `arm_trajectory_goal_tolerance_radians` and
+`arm_trajectory_goal_timeout_sec`.
 
 This action is the controller boundary intended for later MoveIt integration.
 It is currently a position-only trajectory executor; supplied waypoint
@@ -497,10 +499,12 @@ be accepted during either pre-grasp screening or final revalidation.
 `approach_corridor_radius_m` defines the half-width of the constrained MoveIt
 fallback used when that exact Cartesian segment is incomplete. Its default is
 `0.015` metres.
-The default opening command is 50 degrees. The controller and grasp
+The default opening command is 49 degrees. The controller and grasp
 coordinator use the same endpoint calibration, and arm wrapper commands
 reject J6 targets above 50 degrees. This is an application-side
 ceiling based on powered-operation observations, not a mechanical limit.
+The one-degree margin accommodates small feedback overshoot; it is not the
+default opening target.
 
 Grounding DINO currently provides a class, bounding box, and one depth-derived
 3D point rather than an object mesh or grasp pose. Consequently, the node does

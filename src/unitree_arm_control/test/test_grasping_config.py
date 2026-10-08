@@ -195,7 +195,7 @@ class GraspingConfigTest(unittest.TestCase):
         status = (INTERFACE_ROOT / 'msg' / 'GraspStatus.msg').read_text()
         self.assertIn('hold_duration_sec: 3.0', config)
         self.assertIn('gripper_service: /d1_arm_controller/set_joint', config)
-        self.assertIn('gripper_open_degrees: 50.0', config)
+        self.assertIn('gripper_open_degrees: 49.0', config)
         self.assertIn('STAGE_CLOSING=10', status)
         self.assertIn('STAGE_RELEASING=12', status)
         self.assertIn('STAGE_RELEASED=14', status)
@@ -209,9 +209,9 @@ class GraspingConfigTest(unittest.TestCase):
             CONTROL_ROOT / 'unitree_arm_control' / 'controller.py'
         ).read_text()
         launch = (CONTROL_ROOT / 'launch' / 'd1_arm.launch.py').read_text()
-        self.assertIn("declare_parameter('gripper_open_degrees', 50.0)", coordinator)
-        self.assertIn("declare_parameter('gripper_open_degrees', 50.0)", controller)
-        self.assertIn("'gripper_open_degrees',\n            default_value='50.0'", launch)
+        self.assertIn("declare_parameter('gripper_open_degrees', 49.0)", coordinator)
+        self.assertIn("declare_parameter('gripper_open_degrees', 49.0)", controller)
+        self.assertIn("'gripper_open_degrees',\n            default_value='49.0'", launch)
 
     def test_kdl_solver_uses_full_pose_ik(self):
         kinematics = (
@@ -248,6 +248,9 @@ class GraspingConfigTest(unittest.TestCase):
         )
         self.assertIn(
             "'arm_trajectory_goal_tolerance_radians'", dog_launch
+        )
+        self.assertIn(
+            "'arm_trajectory_goal_timeout_sec'", dog_launch
         )
 
 

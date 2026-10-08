@@ -60,7 +60,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'gripper_open_degrees',
-            default_value='50.0',
+            default_value='49.0',
             description='J6 feedback value representing open fingers.',
         ),
         DeclareLaunchArgument(
@@ -128,7 +128,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'trajectory_goal_timeout_sec',
-            default_value='3.0',
+            default_value='8.0',
             description='Time allowed for final feedback convergence.',
         ),
         Node(

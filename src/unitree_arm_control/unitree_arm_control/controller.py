@@ -69,7 +69,7 @@ class D1ArmController(Node):
         self.declare_parameter('feedback_topic', '/arm_Feedback')
         self.declare_parameter('joint_states_topic', '/joint_states')
         self.declare_parameter('gripper_closed_degrees', 0.0)
-        self.declare_parameter('gripper_open_degrees', 50.0)
+        self.declare_parameter('gripper_open_degrees', 49.0)
         self.declare_parameter('gripper_max_travel_m', 0.03)
         self.declare_parameter('commanding_enabled', False)
         self.declare_parameter('require_fresh_feedback', True)
@@ -85,7 +85,7 @@ class D1ArmController(Node):
         )
         self.declare_parameter('trajectory_goal_tolerance_radians', 0.01)
         self.declare_parameter('trajectory_gripper_tolerance_m', 0.005)
-        self.declare_parameter('trajectory_goal_timeout_sec', 3.0)
+        self.declare_parameter('trajectory_goal_timeout_sec', 8.0)
 
         command_topic = self._string_parameter('command_topic')
         feedback_topic = self._string_parameter('feedback_topic')
@@ -471,7 +471,10 @@ class D1ArmController(Node):
             start_positions = tuple(self._latest_joint_positions)
             held_gripper_degrees = None
             if 'd1_gripper_joint' not in names:
-                held_gripper_degrees = self._latest_angles_degrees[6]
+                held_gripper_degrees = min(
+                    self._latest_angles_degrees[6],
+                    protocol.GRIPPER_MAX_COMMAND_DEGREES,
+                )
             waypoints = tuple(
                 trajectory.expand_positions(
                     names,
@@ -645,10 +648,15 @@ class D1ArmController(Node):
         if self._latest_angles_degrees is None:
             return
         try:
+            angles = list(self._latest_angles_degrees)
+            # Feedback may overshoot the command ceiling slightly. Keep the
+            # measured arm pose, but never turn that overshoot into a J6
+            # command above the ceiling.
+            angles[6] = min(angles[6], protocol.GRIPPER_MAX_COMMAND_DEGREES)
             sequence = self._sequences.next()
             payload = protocol.set_joint_angles_command(
                 sequence,
-                self._latest_angles_degrees,
+                angles,
                 protocol.TRAJECTORY,
                 False,
             )

@@ -154,7 +154,7 @@ def _require_number(value, field_name):
 def joint_state_positions_from_degrees(
         angles_degrees,
         gripper_closed_degrees=0.0,
-        gripper_open_degrees=50.0,
+        gripper_open_degrees=49.0,
         gripper_max_travel_m=0.03):
     """Convert D1 feedback to URDF joint positions.
 
@@ -198,7 +198,7 @@ def joint_state_positions_from_degrees(
 def d1_degrees_from_joint_state_positions(
         joint_positions,
         gripper_closed_degrees=0.0,
-        gripper_open_degrees=50.0,
+        gripper_open_degrees=49.0,
         gripper_max_travel_m=0.03):
     """Convert URDF joint positions to the seven D1 command values.
 

@@ -29,6 +29,9 @@ def generate_launch_description():
     arm_trajectory_goal_tolerance_radians = LaunchConfiguration(
         'arm_trajectory_goal_tolerance_radians'
     )
+    arm_trajectory_goal_timeout_sec = LaunchConfiguration(
+        'arm_trajectory_goal_timeout_sec'
+    )
     grasp_execution_enabled = LaunchConfiguration(
         'grasp_execution_enabled'
     )
@@ -75,6 +78,15 @@ def generate_launch_description():
             default_value='0.035',
             description=(
                 'Final per-joint tolerance for D1 MoveIt trajectories.'
+            )
+        ),
+
+        DeclareLaunchArgument(
+            'arm_trajectory_goal_timeout_sec',
+            default_value='8.0',
+            description=(
+                'Time allowed for D1 joint feedback to reach the final '
+                'trajectory target.'
             )
         ),
 
@@ -145,6 +157,9 @@ def generate_launch_description():
                 'trajectory_command_mode': arm_trajectory_command_mode,
                 'trajectory_goal_tolerance_radians': (
                     arm_trajectory_goal_tolerance_radians
+                ),
+                'trajectory_goal_timeout_sec': (
+                    arm_trajectory_goal_timeout_sec
                 ),
             }.items()
         ),

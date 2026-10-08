@@ -96,7 +96,7 @@ def generate_launch_description():
         'allow_trajectory_execution': allow_execution,
         'moveit_manage_controllers': False,
         'trajectory_execution.allowed_execution_duration_scaling': 2.0,
-        'trajectory_execution.allowed_goal_duration_margin': 3.0,
+        'trajectory_execution.allowed_goal_duration_margin': 8.0,
         'trajectory_execution.allowed_start_tolerance': 0.035,
         'trajectory_execution.controller_connection_timeout': 15.0,
     }
