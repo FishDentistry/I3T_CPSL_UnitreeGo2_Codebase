@@ -1787,11 +1787,7 @@ class D1GraspCoordinator(Node):
         self._active['retreat_pose'] = retreat_pose
         self._grasp_publisher.publish(grasp_pose)
 
-        lateral_limit = (
-            self._grasp_position_tolerance_m
-            if band is not None
-            else self._maximum_final_lateral_correction_m
-        )
+        lateral_limit = self._maximum_final_lateral_correction_m
         if lateral_correction > lateral_limit:
             self._pregrasp_publisher.publish(retreat_pose)
             self._request_position_plan(
@@ -2437,13 +2433,14 @@ class D1GraspCoordinator(Node):
                         )
                     )
                     return
-                if line_error > self._grasp_position_tolerance_m:
+                if line_error > self._maximum_final_lateral_correction_m:
                     self._finish_failure(
                         'corrected pre-grasp stopped {:.3f} m off the '
                         'measured band approach line (limit {:.3f} m; '
                         'vertical error {:.3f} m); no contact motion was '
                         'executed'.format(
-                            line_error, self._grasp_position_tolerance_m,
+                            line_error,
+                            self._maximum_final_lateral_correction_m,
                             candidate['pregrasp_point'][2]
                             - actual_pregrasp[2],
                         )
@@ -2483,12 +2480,12 @@ class D1GraspCoordinator(Node):
                     'could not verify aligned pre-grasp: {}'.format(error)
                 )
                 return
-            if line_error > self._grasp_position_tolerance_m:
+            if line_error > self._maximum_final_lateral_correction_m:
                 self._finish_failure(
                     'wrist alignment moved the gripper {:.3f} m off the '
                     'measured-band approach line (limit {:.3f} m); no '
                     'contact motion was executed'.format(
-                        line_error, self._grasp_position_tolerance_m
+                        line_error, self._maximum_final_lateral_correction_m
                     )
                 )
                 return

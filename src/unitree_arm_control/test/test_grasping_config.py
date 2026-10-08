@@ -142,6 +142,21 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertNotIn('tool_roll_offsets_rad:', config)
         self.assertNotIn("'validated_candidates': []", coordinator)
 
+    def test_band_line_validation_uses_final_lateral_tolerance(self):
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        self.assertIn('maximum_final_lateral_correction_m: 0.015', config)
+        self.assertIn(
+            'self._maximum_final_lateral_correction_m',
+            coordinator,
+        )
+        self.assertIn(
+            'line_error > self._maximum_final_lateral_correction_m',
+            coordinator,
+        )
+
     def test_pregrasp_fk_callback_captures_request_token(self):
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
