@@ -700,6 +700,11 @@ class D1GraspCoordinator(Node):
             'gripper_start_angle': None,
             'gripper_last_angle': None,
             'gripper_last_change': 0.0,
+            'open_after_laydown': False,
+            'gripper_open_retry_used': False,
+            'gripper_open_best_distance': None,
+            'gripper_open_last_progress': 0.0,
+            'gripper_open_command_receipt': None,
             'raise_from_laydown': raise_from_laydown,
         }
         self._publish_active_stage(
@@ -840,6 +845,7 @@ class D1GraspCoordinator(Node):
             )
             return
         self._active['raise_from_laydown'] = False
+        self._active['open_after_laydown'] = True
         self._command_gripper(
             self._gripper_open_degrees,
             'wait_open_before_pregrasp',
@@ -2483,6 +2489,11 @@ class D1GraspCoordinator(Node):
         request.angle_degrees = float(angle)
         self._active['pending_gripper_phase'] = next_phase
         self._active['pending_gripper_target'] = float(angle)
+        if (next_phase == 'wait_open_before_pregrasp'
+                and self._active['open_after_laydown']):
+            self._active['gripper_open_command_receipt'] = (
+                self._latest_gripper_receipt
+            )
         self._publish_active_stage(stage, message)
         future = self._set_joint.call_async(request)
         token = self._active['token']
@@ -2511,6 +2522,14 @@ class D1GraspCoordinator(Node):
         self._active['gripper_start_angle'] = self._latest_gripper_angle
         self._active['gripper_last_angle'] = self._latest_gripper_angle
         self._active['gripper_last_change'] = now
+        if phase == 'wait_open_before_pregrasp' and (
+                self._active['open_after_laydown']):
+            self._active['gripper_open_best_distance'] = (
+                None if self._latest_gripper_angle is None
+                else abs(self._latest_gripper_angle
+                         - self._active['pending_gripper_target'])
+            )
+            self._active['gripper_open_last_progress'] = now
 
     def _periodic_update(self):
         if self._active is None:
@@ -2544,20 +2563,37 @@ class D1GraspCoordinator(Node):
 
     def _update_gripper_operation(self, phase, now):
         if now > self._active['deadline']:
-            self._finish_failure(
-                'gripper did not complete within {:.1f}s'.format(
-                    self._gripper_operation_timeout_sec
+            if (phase == 'wait_open_before_pregrasp'
+                    and self._active['open_after_laydown']):
+                self._finish_failure(
+                    'gripper did not open after the lay-down raise{}; '
+                    'no arm planning was started'.format(
+                        ' and one feedback-triggered resend'
+                        if self._active['gripper_open_retry_used'] else ''
+                    )
                 )
-            )
+            else:
+                self._finish_failure(
+                    'gripper did not complete within {:.1f}s'.format(
+                        self._gripper_operation_timeout_sec
+                    )
+                )
             return
         if self._latest_gripper_angle is None:
             return
         if now - self._latest_gripper_receipt > 1.0:
             return
+        if (phase == 'wait_open_before_pregrasp'
+                and self._active['open_after_laydown']
+                and self._active['gripper_open_command_receipt'] is not None
+                and self._latest_gripper_receipt
+                <= self._active['gripper_open_command_receipt']):
+            return
         current = self._latest_gripper_angle
         target = self._active['pending_gripper_target']
         if abs(current - target) <= self._gripper_tolerance_degrees:
             if phase == 'wait_open_before_pregrasp':
+                self._active['open_after_laydown'] = False
                 self._start_next_pregrasp_candidate()
             elif phase == 'wait_close':
                 if self._require_grasp_obstruction:
@@ -2571,6 +2607,25 @@ class D1GraspCoordinator(Node):
                     )
             else:
                 self._start_retreat()
+            return
+        if (phase == 'wait_open_before_pregrasp'
+                and self._active['open_after_laydown']):
+            distance = abs(current - target)
+            best = self._active['gripper_open_best_distance']
+            if (best is None or distance < best - max(
+                    0.5, self._gripper_stall_delta_degrees)):
+                self._active['gripper_open_best_distance'] = distance
+                self._active['gripper_open_last_progress'] = now
+            if (not self._active['gripper_open_retry_used']
+                    and now - self._active['gripper_open_last_progress'] >= 1.5):
+                self._active['gripper_open_retry_used'] = True
+                self._active['phase'] = 'retrying_open_after_laydown'
+                self._command_gripper(
+                    target, 'wait_open_before_pregrasp',
+                    GraspStatus.STAGE_OPENING,
+                    'gripper feedback did not advance after the lay-down '
+                    'raise; resending the opening command once',
+                )
             return
         if phase != 'wait_close':
             return

@@ -407,7 +407,9 @@ The coordinator performs the following sequence when execution is enabled:
    D1 trajectory action. The action must report that the joints reached the
    raised position before any MoveIt planning begins. This step is disabled
    in plan-only mode and can be disabled with `lay_down_raise_enabled`.
-   Open the gripper and confirm its feedback position.
+   Open the gripper and confirm its feedback position. If the first opening
+   command after the raise produces no feedback progress, send it once more;
+   planning remains blocked until the opening position is reported.
 2. Generate three-dimensional pre-grasp points from the D1 mount toward the
    object. This keeps the target approach independent of the arm's initial
    posture. For measured grasp bands, the pre-grasp and grasp tool centers
