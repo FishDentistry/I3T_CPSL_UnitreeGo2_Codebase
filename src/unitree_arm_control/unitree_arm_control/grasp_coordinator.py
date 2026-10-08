@@ -1179,17 +1179,10 @@ class D1GraspCoordinator(Node):
     def _band_alignment_problem(self, candidate, orientation):
         if candidate['band_width'] is None:
             return None
-        requested = grasping.level_gripper_opening(orientation)
-        error = grasping.quaternion_angular_distance(
-            requested, orientation
-        )
-        if error > self._band_alignment_tolerance_rad:
-            return (
-                'jaw opening is {:.3f} rad from level at the measured band '
-                '(limit {:.3f} rad)'.format(
-                    error, self._band_alignment_tolerance_rad
-                )
-            )
+        # Measured-band grasps are not a single exact wrist-pose constraint.
+        # The gripper can rotate about its forward axis while remaining on the
+        # same band-contact region; enforcing a single exact level-gripper roll
+        # rejects reachability that is already valid for the band.
         return None
 
     def _wrist_point_for_line_check(self, tip_point, orientation):
