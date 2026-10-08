@@ -1662,32 +1662,16 @@ class D1GraspCoordinator(Node):
         # Compare the live tool center, not the nominal earlier goal. MoveIt
         # may satisfy a pre-grasp goal a short distance below the band; using
         # the nominal goal hid that deviation and caused a rising final path.
-        correction = tuple(
-            new_value - actual_value
-            for new_value, actual_value in zip(
-                new_pregrasp, actual_pregrasp
+        try:
+            lateral_correction = grasping.approach_line_error(
+                actual_pregrasp, new_pregrasp,
+                candidate['approach_direction'],
             )
-        )
-        approach = tuple(
-            float(value) for value in candidate['approach_direction']
-        )
-        approach_norm = math.sqrt(sum(value * value for value in approach))
-        if approach_norm <= 1e-9:
+        except ValueError:
             self._finish_failure(
                 'reacquired approach direction has near-zero magnitude'
             )
             return
-        approach_axis = tuple(value / approach_norm for value in approach)
-        parallel_amount = sum(
-            delta * axis for delta, axis in zip(correction, approach_axis)
-        )
-        lateral = tuple(
-            delta - parallel_amount * axis
-            for delta, axis in zip(correction, approach_axis)
-        )
-        lateral_correction = math.sqrt(
-            sum(value * value for value in lateral)
-        )
 
         # The pre-grasp MoveGroup goal permits an orientation tolerance. Its
         # achieved orientation can therefore differ from the generated ideal
@@ -1950,6 +1934,14 @@ class D1GraspCoordinator(Node):
         if purpose == 'approach':
             if self._try_next_cartesian_orientation(description):
                 return
+            if self._active['grasp_band_width'] is not None:
+                self._finish_failure(
+                    '{}; no complete straight Cartesian approach to the '
+                    'measured grasp band. A corridor plan could move the '
+                    'gripper above or below that band, so no contact motion '
+                    'was executed'.format(description)
+                )
+                return
             try:
                 transform = self._lookup_transform(
                     self._planning_frame, self._tip_link
@@ -2198,14 +2190,45 @@ class D1GraspCoordinator(Node):
         elif purpose == 'reposition_pregrasp':
             try:
                 achieved_orientation = self._current_tip_orientation()
+                tip_transform = self._lookup_transform(
+                    self._planning_frame, self._tip_link
+                )
+                actual_pregrasp = self._point_tuple(
+                    tip_transform.transform.translation
+                )
             except Exception as error:
                 self._finish_failure(
-                    'could not read corrected pre-grasp orientation: {}'.format(
+                    'could not read corrected pre-grasp pose: {}'.format(
                         error
                     )
                 )
                 return
             candidate = dict(self._active['candidate'])
+            if candidate['band_width'] is not None:
+                try:
+                    line_error = grasping.approach_line_error(
+                        actual_pregrasp, candidate['pregrasp_point'],
+                        candidate['approach_direction'],
+                    )
+                except ValueError as error:
+                    self._finish_failure(
+                        'corrected pre-grasp has invalid approach: {}'.format(
+                            error
+                        )
+                    )
+                    return
+                if line_error > self._grasp_position_tolerance_m:
+                    self._finish_failure(
+                        'corrected pre-grasp stopped {:.3f} m off the '
+                        'measured band approach line (limit {:.3f} m; '
+                        'vertical error {:.3f} m); no contact motion was '
+                        'executed'.format(
+                            line_error, self._grasp_position_tolerance_m,
+                            candidate['pregrasp_point'][2]
+                            - actual_pregrasp[2],
+                        )
+                    )
+                    return
             candidate['orientation'] = achieved_orientation
             self._active['candidate'] = candidate
             self._active['grasp_pose'] = self._candidate_pose(

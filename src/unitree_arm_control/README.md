@@ -444,14 +444,17 @@ The coordinator performs the following sequence when execution is enabled:
    additional rotation. If the refreshed point requires a lateral pre-grasp
    correction, the corrected pre-grasp and its complete remaining approach
    are validated before the repositioning trajectory is executed. The final
-   approach is revalidated from the actual pose after repositioning. If the exact
+   approach is revalidated from the actual pose after repositioning. For a
+   measured band, execution also checks that the reached tool center is within
+   0.005 m of the corrected approach line; otherwise contact motion is stopped.
+   If the exact
    Cartesian orientation is infeasible, the coordinator checks nearby wrist
    orientations within `grasp_orientation_tolerance_rad` while keeping the
    same tool-center line and collision checking. Only complete Cartesian paths
-   are accepted. If all variants fail, MoveIt plans from the reached pre-grasp
-   through a narrow position corridor with orientation
-   tolerance. A failure leaves the arm at pre-grasp and reports the best
-   Cartesian fraction and final target coordinates.
+   are accepted for band-based grasps. If all variants fail, no contact motion
+   is executed for a measured band. The narrow-corridor MoveIt fallback remains
+   available only for legacy center-point grasps. A failure leaves the arm at
+   pre-grasp and reports the best Cartesian fraction and final target coordinates.
 7. Close the gripper. Position feedback is accepted when it reaches the closed
    target or stalls after meaningful closure, then the object is held for
    three seconds.
@@ -513,8 +516,8 @@ The band's own height takes precedence over class-specific vertical offsets.
 The class-specific upward correction therefore does not affect band-based
 grasps. Their camera-depth correction is horizontal in the planning frame, so
 it does not change the measured band height. Band pre-grasps use a 0.01 m
-position tolerance, and reacquisition
-compares the corrected pre-grasp with the reached tool-center position rather
+position tolerance, and reacquisition compares the corrected pre-grasp with the
+reached tool-center position rather
 than the old nominal goal. This prevents a tolerated low pre-grasp from being
 treated as already aligned with the measured band.
 The band is associated with the semantic object using the detection's

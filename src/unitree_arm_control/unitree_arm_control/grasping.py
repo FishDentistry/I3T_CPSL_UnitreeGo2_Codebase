@@ -280,6 +280,20 @@ def distance_between(first, second):
     ))
 
 
+def approach_line_error(actual_point, pregrasp_point, approach_direction):
+    """Distance from the reached tool center to a planned approach line."""
+    axis = _normalized(approach_direction)
+    offset = tuple(
+        float(target) - float(actual)
+        for target, actual in zip(pregrasp_point, actual_point)
+    )
+    along = sum(delta * direction for delta, direction in zip(offset, axis))
+    return math.sqrt(sum(
+        (delta - along * direction) ** 2
+        for delta, direction in zip(offset, axis)
+    ))
+
+
 def _normalized(vector):
     values = tuple(float(value) for value in vector)
     length = distance_from_origin(values)

@@ -316,6 +316,20 @@ class GraspingTest(unittest.TestCase):
         self.assertAlmostEqual(updated['pregrasp_point'][2], 0.09)
         self.assertAlmostEqual(updated['grasp_point'][2], 0.09)
 
+    def test_approach_line_error_ignores_progress_but_detects_height(self):
+        self.assertAlmostEqual(
+            grasping.approach_line_error(
+                (0.42, 0.0, 0.08), (0.40, 0.0, 0.08), (1.0, 0.0, 0.0),
+            ),
+            0.0,
+        )
+        self.assertAlmostEqual(
+            grasping.approach_line_error(
+                (0.42, 0.0, 0.065), (0.40, 0.0, 0.08), (1.0, 0.0, 0.0),
+            ),
+            0.015,
+        )
+
     def test_candidate_applies_forward_depth_without_lowering_target(self):
         candidate = grasping.generate_approach_candidates(
             (0.50, 0.0, 0.20),
