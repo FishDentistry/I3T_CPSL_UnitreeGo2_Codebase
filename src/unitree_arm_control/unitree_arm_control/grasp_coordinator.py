@@ -1195,15 +1195,9 @@ class D1GraspCoordinator(Node):
     def _band_pointing_problem(self, candidate, orientation):
         if candidate['band_width'] is None:
             return None
-        forward = grasping.rotate_vector((0.0, 0.0, 1.0), orientation)
-        approach = candidate['approach_direction']
-        approach_norm = math.sqrt(sum(value * value for value in approach))
-        if approach_norm <= 1.0e-9:
-            return 'measured-band approach direction is invalid'
-        cosine = sum(
-            axis * direction for axis, direction in zip(forward, approach)
-        ) / approach_norm
-        error = math.acos(max(-1.0, min(1.0, cosine)))
+        error = grasping.approach_axis_error(
+            orientation, candidate['approach_direction']
+        )
         if error > self._grasp_orientation_tolerance_rad:
             return (
                 'gripper forward axis is {:.3f} rad from the measured-band '
@@ -1547,12 +1541,16 @@ class D1GraspCoordinator(Node):
         candidate['orientation'] = tuple(value / norm for value in values)
         self._active['candidate'] = candidate
         self._active['pregrasp_pose'] = predicted_pose
-        pointing_problem = self._band_pointing_problem(
-            candidate, candidate['orientation']
-        )
-        if pointing_problem is not None:
-            self._preflight_failure(pointing_problem)
-            return
+        if candidate['band_width'] is None:
+            # Center-target grasps must already point at the approach. Banded
+            # candidates intentionally defer that check to the dedicated wrist
+            # alignment step, which is where the final approach is corrected.
+            pointing_problem = self._band_pointing_problem(
+                candidate, candidate['orientation']
+            )
+            if pointing_problem is not None:
+                self._preflight_failure(pointing_problem)
+                return
         alignment_problem = self._band_alignment_problem(
             candidate, candidate['orientation']
         )

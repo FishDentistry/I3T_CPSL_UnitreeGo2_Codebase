@@ -310,6 +310,14 @@ def approach_line_error(actual_point, pregrasp_point, approach_direction):
     ))
 
 
+def approach_axis_error(orientation, approach_direction):
+    """Return the angle between the gripper's forward axis and the approach."""
+    forward = rotate_vector((0.0, 0.0, 1.0), orientation)
+    direction = _normalized(approach_direction)
+    cosine = max(-1.0, min(1.0, _dot(forward, direction)))
+    return math.acos(cosine)
+
+
 def _normalized(vector):
     values = tuple(float(value) for value in vector)
     length = distance_from_origin(values)
