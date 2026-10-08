@@ -157,6 +157,10 @@ class GraspingConfigTest(unittest.TestCase):
             coordinator,
         )
 
+    def test_gripper_midline_offset_keeps_band_centered(self):
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
+        self.assertIn('grasp_center_offset_m: 0.005', config)
+
     def test_banded_grasps_do_not_require_exact_level_roll(self):
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'

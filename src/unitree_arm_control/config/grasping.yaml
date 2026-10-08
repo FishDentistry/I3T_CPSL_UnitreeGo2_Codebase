@@ -41,8 +41,9 @@ d1_grasp_coordinator:
     # orientation within the configured tolerance.
     approach_yaw_offsets_rad: [0.0, 0.5235987756, -0.5235987756, 1.0471975512, -1.0471975512]
     approach_distance_m: 0.11
-    # Apply only after measuring the desired tool-frame-to-object offset.
-    grasp_center_offset_m: 0.0
+    # The measured jaw midline sits a few millimetres ahead of the tool center,
+    # so a small positive offset keeps the grasp opening centered on the band.
+    grasp_center_offset_m: 0.005
     # Move the grasp point beyond the detected visible surface. Mug depth is
     # projected into the base_link XY plane to avoid lowering its target.
     default_forward_grasp_depth_offset_m: 0.05

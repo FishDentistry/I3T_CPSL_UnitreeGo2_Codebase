@@ -482,6 +482,11 @@ The defaults are in `config/grasping.yaml`. `approach_yaw_offsets_rad`,
 gripper open/closed values are the main calibration parameters. The
 grasp-center offset defaults to zero and represents measured tool geometry.
 
+`grasp_center_offset_m` is the small measured offset between the tool-center
+frame and the center of the jaw opening; it is used to keep the actual finger
+gap centered on the band. The default is `0.005` metres and should be tuned in
+small increments against the physical gripper geometry.
+
 `default_forward_grasp_depth_offset_m` moves the final target beyond the
 depth-derived visible surface along the viewing ray from `camera_frame`. The
 correction is independent of the arm's selected approach direction. Classes
