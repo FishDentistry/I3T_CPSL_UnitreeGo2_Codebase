@@ -441,14 +441,15 @@ def generate_approach_candidates(
         forward_grasp_depth=0.0,
         depth_direction=None,
         grasp_height_offset=0.0,
-        horizontal_depth=False):
+        horizontal_depth=False, level_approach=False):
     """Generate three-dimensional, object-directed pre-grasp candidates.
 
     The primary approach direction points from a fixed arm reference origin
     toward the object, independent of the current gripper position. Yaw
     alternatives rotate that direction about the planning frame's vertical
     axis while retaining its vertical component.
-    The pre-grasp offset is applied along the resulting direction.
+    The pre-grasp offset is applied along the resulting direction. For a
+    measured band, level_approach keeps both tool centers at band height.
     """
     if approach_distance <= 0.0:
         raise ValueError('approach_distance must be positive')
@@ -464,6 +465,11 @@ def generate_approach_candidates(
         float(object_point[1]) - float(approach_origin[1]),
         float(object_point[2]) - float(approach_origin[2]),
     )
+    if level_approach:
+        # The target already identifies the measured grasp band. A sloped
+        # approach would put the pre-grasp below/above that band and sweep the
+        # fingers vertically through the object during the final advance.
+        radial = (radial[0], radial[1], 0.0)
     radial = _normalized(radial)
     depth_axis = _depth_axis(
         radial if depth_direction is None else depth_direction,

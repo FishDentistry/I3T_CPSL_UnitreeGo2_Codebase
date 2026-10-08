@@ -11,6 +11,8 @@ d1_grasp_coordinator:
     cartesian_path_service: /compute_cartesian_path
     forward_kinematics_service: /compute_fk
     gripper_service: /d1_arm_controller/set_joint
+    arm_enable_service: /d1_arm_controller/set_arm_enabled
+    arm_trajectory_action: /d1_arm_controller/follow_joint_trajectory
     joint_angles_topic: /d1_arm_controller/joint_angles
     planning_group: d1_arm
     planning_frame: base_link
@@ -18,6 +20,11 @@ d1_grasp_coordinator:
     reach_reference_frame: d1_base_link
     tip_link: d1_gripper_center
     planner_id: ""
+    # Execution only: leave a near laid-down pose before MoveIt planning.
+    lay_down_raise_enabled: true
+    lay_down_detection_tolerance_degrees: 3.0
+    lay_down_raise_joint_2_degrees: 5.0
+    lay_down_raise_duration_sec: 2.0
 
     # Reject uncertain, tentative, stale, or unreachable map entries.
     minimum_confidence: 0.65
@@ -46,6 +53,7 @@ d1_grasp_coordinator:
     # Pre-grasp permits a wider region; the refreshed object target is tighter.
     position_tolerance_m: 0.02
     grasp_position_tolerance_m: 0.005
+    band_pregrasp_position_tolerance_m: 0.01
     # Used for pre-grasp goals and the bounded Cartesian wrist-orientation
     # search if a straight approach at the achieved orientation is incomplete.
     grasp_orientation_tolerance_rad: 0.35

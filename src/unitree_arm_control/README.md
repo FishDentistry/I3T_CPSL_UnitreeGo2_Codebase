@@ -402,10 +402,18 @@ last 20 seconds, and satisfy the configured height and reach safeguards.
 
 The coordinator performs the following sequence when execution is enabled:
 
-1. Open the gripper and confirm its feedback position.
+1. If fresh arm feedback places joints J0–J5 within 3 degrees of the measured
+   lay-down pose, enable the arm and command a 5-degree J2 raise using the
+   D1 trajectory action. The action must report that the joints reached the
+   raised position before any MoveIt planning begins. This step is disabled
+   in plan-only mode and can be disabled with `lay_down_raise_enabled`.
+   Open the gripper and confirm its feedback position.
 2. Generate three-dimensional pre-grasp points from the D1 mount toward the
    object. This keeps the target approach independent of the arm's initial
-   posture. Configured yaw fallbacks are ordered by smallest yaw change.
+   posture. For measured grasp bands, the pre-grasp and grasp tool centers
+   are at the same measured band height, so the contact segment advances
+   level rather than rising or falling through the object. Configured yaw
+   fallbacks are ordered by smallest yaw change.
 3. Plan, without executing, an orientation-tolerant MoveIt trajectory to each
    candidate pre-grasp. Compute the predicted gripper pose at that
    trajectory's final joint state, then check a collision-aware Cartesian path
@@ -502,6 +510,13 @@ for pre-grasp screening. Each is checked against
 `maximum_grasp_band_width_m`; planning tries another supported band when the
 preceding candidate cannot pass the pre-grasp and complete-approach checks.
 The band's own height takes precedence over class-specific vertical offsets.
+The class-specific upward correction therefore does not affect band-based
+grasps. Their camera-depth correction is horizontal in the planning frame, so
+it does not change the measured band height. Band pre-grasps use a 0.01 m
+position tolerance, and reacquisition
+compares the corrected pre-grasp with the reached tool-center position rather
+than the old nominal goal. This prevents a tolerated low pre-grasp from being
+treated as already aligned with the measured band.
 The band is associated with the semantic object using the detection's
 original center; the semantic map position and stable object identity are
 unchanged. After pre-grasp, the final approach waits for a fresh observation

@@ -294,6 +294,28 @@ class GraspingTest(unittest.TestCase):
         self.assertLess(candidate['approach_direction'][2], 0.0)
         self.assertGreater(candidate['pregrasp_point'][2], 0.20)
 
+    def test_measured_band_approach_stays_at_band_height(self):
+        candidate = grasping.generate_approach_candidates(
+            (0.50, 0.10, 0.08),
+            (-0.046, 0.0, 0.083),
+            [0.0],
+            0.11,
+            0.0,
+            forward_grasp_depth=0.04,
+            depth_direction=(1.0, 0.0, -0.5),
+            horizontal_depth=True,
+            level_approach=True,
+        )[0]
+        self.assertAlmostEqual(candidate['pregrasp_point'][2], 0.08)
+        self.assertAlmostEqual(candidate['grasp_point'][2], 0.08)
+        self.assertAlmostEqual(candidate['approach_direction'][2], 0.0)
+        updated = grasping.retarget_approach_candidate(
+            candidate, (0.51, 0.11, 0.09), 0.11, 0.0, 0.04,
+            (1.0, 0.0, -0.5), 0.0, True,
+        )
+        self.assertAlmostEqual(updated['pregrasp_point'][2], 0.09)
+        self.assertAlmostEqual(updated['grasp_point'][2], 0.09)
+
     def test_candidate_applies_forward_depth_without_lowering_target(self):
         candidate = grasping.generate_approach_candidates(
             (0.50, 0.0, 0.20),

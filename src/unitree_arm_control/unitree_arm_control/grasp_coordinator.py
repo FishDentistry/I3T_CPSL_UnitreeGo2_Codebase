@@ -4,6 +4,8 @@ from collections import deque
 import copy
 import math
 
+from builtin_interfaces.msg import Duration
+from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Pose
 from geometry_msgs.msg import PoseStamped
 from intel_realsense_interfaces.msg import GroundedDetectionArray
@@ -31,8 +33,11 @@ from unitree_arm.msg import GraspCommand
 from unitree_arm.msg import GraspStatus
 from unitree_arm.msg import JointAngles
 from unitree_arm.srv import SetJoint
+from unitree_arm.srv import SetArmEnabled
+from trajectory_msgs.msg import JointTrajectoryPoint
 
 from unitree_arm_control import grasping
+from unitree_arm_control import protocol
 
 
 MOVEIT_ERROR_NAMES = {
@@ -131,11 +136,19 @@ class D1GraspCoordinator(Node):
         self._set_joint = self.create_client(
             SetJoint, self._gripper_service
         )
+        self._set_arm_enabled = self.create_client(
+            SetArmEnabled, self._arm_enable_service
+        )
+        self._arm_trajectory = ActionClient(
+            self, FollowJointTrajectory, self._arm_trajectory_action
+        )
         self._latest_map = None
         self._latest_detections = None
         self._latest_detection_receipt = 0.0
         self._latest_gripper_angle = None
         self._latest_gripper_receipt = 0.0
+        self._latest_arm_angles = None
+        self._latest_arm_receipt = 0.0
         self._active = None
         self._recent_request_ids = deque(maxlen=100)
         self.create_timer(0.1, self._periodic_update)
@@ -166,6 +179,10 @@ class D1GraspCoordinator(Node):
             'cartesian_path_service': '/compute_cartesian_path',
             'forward_kinematics_service': '/compute_fk',
             'gripper_service': '/d1_arm_controller/set_joint',
+            'arm_enable_service': '/d1_arm_controller/set_arm_enabled',
+            'arm_trajectory_action': (
+                '/d1_arm_controller/follow_joint_trajectory'
+            ),
             'joint_angles_topic': '/d1_arm_controller/joint_angles',
             'planning_group': 'd1_arm',
             'planning_frame': 'base_link',
@@ -178,6 +195,10 @@ class D1GraspCoordinator(Node):
             self.declare_parameter(name, default)
 
         self.declare_parameter('execution_enabled', False)
+        self.declare_parameter('lay_down_raise_enabled', True)
+        self.declare_parameter('lay_down_detection_tolerance_degrees', 3.0)
+        self.declare_parameter('lay_down_raise_joint_2_degrees', 5.0)
+        self.declare_parameter('lay_down_raise_duration_sec', 2.0)
         self.declare_parameter('minimum_confidence', 0.65)
         self.declare_parameter('minimum_observations', 3)
         self.declare_parameter('maximum_object_age_sec', 20.0)
@@ -201,6 +222,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('horizontal_forward_depth_classes', ['mug'])
         self.declare_parameter('position_tolerance_m', 0.02)
         self.declare_parameter('grasp_position_tolerance_m', 0.005)
+        self.declare_parameter('band_pregrasp_position_tolerance_m', 0.01)
         self.declare_parameter('grasp_orientation_tolerance_rad', 0.35)
 
         self.declare_parameter('planning_time_sec', 5.0)
@@ -243,6 +265,7 @@ class D1GraspCoordinator(Node):
             'status_topic', 'pregrasp_pose_topic', 'grasp_pose_topic',
             'move_group_action', 'execute_trajectory_action',
             'cartesian_path_service', 'gripper_service',
+            'arm_enable_service', 'arm_trajectory_action',
             'forward_kinematics_service',
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'camera_frame',
@@ -254,6 +277,7 @@ class D1GraspCoordinator(Node):
         bool_names = (
             'execution_enabled', 'require_grasp_obstruction',
             'use_grasp_band',
+            'lay_down_raise_enabled',
         )
         for name in bool_names:
             setattr(self, '_' + name, bool(self._parameter(name)))
@@ -266,6 +290,10 @@ class D1GraspCoordinator(Node):
             'default_forward_grasp_depth_offset_m',
             'position_tolerance_m',
             'grasp_position_tolerance_m',
+            'band_pregrasp_position_tolerance_m',
+            'lay_down_detection_tolerance_degrees',
+            'lay_down_raise_joint_2_degrees',
+            'lay_down_raise_duration_sec',
             'grasp_orientation_tolerance_rad',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
@@ -327,6 +355,7 @@ class D1GraspCoordinator(Node):
             'status_topic', 'pregrasp_pose_topic', 'grasp_pose_topic',
             'move_group_action', 'execute_trajectory_action',
             'cartesian_path_service', 'gripper_service',
+            'arm_enable_service', 'arm_trajectory_action',
             'forward_kinematics_service',
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'camera_frame',
@@ -364,6 +393,16 @@ class D1GraspCoordinator(Node):
             raise RuntimeError(
                 'grasp_position_tolerance_m must be positive'
             )
+        if self._band_pregrasp_position_tolerance_m <= 0.0:
+            raise RuntimeError(
+                'band_pregrasp_position_tolerance_m must be positive'
+            )
+        for name in (
+                'lay_down_detection_tolerance_degrees',
+                'lay_down_raise_joint_2_degrees',
+                'lay_down_raise_duration_sec'):
+            if getattr(self, '_' + name) <= 0.0:
+                raise RuntimeError('{} must be positive'.format(name))
         if not 0.0 < self._grasp_orientation_tolerance_rad <= math.pi:
             raise RuntimeError(
                 'grasp_orientation_tolerance_rad must be in (0, pi]'
@@ -438,13 +477,29 @@ class D1GraspCoordinator(Node):
             self._try_reacquire(message, self._latest_detection_receipt)
 
     def _joint_angles_callback(self, message):
-        if len(message.angle_degrees) <= self._gripper_joint_id:
+        if len(message.angle_degrees) < protocol.JOINT_COUNT:
             return
         values = tuple(float(value) for value in message.angle_degrees)
         if not all(math.isfinite(value) for value in values):
             return
         self._latest_gripper_angle = values[self._gripper_joint_id]
         self._latest_gripper_receipt = self._now_seconds()
+        self._latest_arm_angles = values[:protocol.ARM_JOINT_COUNT]
+        self._latest_arm_receipt = self._latest_gripper_receipt
+
+    def _near_lay_down(self):
+        return (
+            self._latest_arm_angles is not None
+            and self._now_seconds() - self._latest_arm_receipt <= 1.0
+            and all(
+                abs(actual - reference)
+                <= self._lay_down_detection_tolerance_degrees
+                for actual, reference in zip(
+                    self._latest_arm_angles,
+                    protocol.LAY_DOWN_ANGLES_DEGREES[:protocol.ARM_JOINT_COUNT],
+                )
+            )
+        )
 
     def _now_seconds(self):
         return self.get_clock().now().nanoseconds * 1e-9
@@ -544,6 +599,7 @@ class D1GraspCoordinator(Node):
                 ),
             )
             return
+        raise_from_laydown = False
         if self._execution_enabled:
             missing = []
             if not self._execute_trajectory.wait_for_server(timeout_sec=0.0):
@@ -558,6 +614,22 @@ class D1GraspCoordinator(Node):
                     ),
                 )
                 return
+            if self._latest_arm_angles is None or (
+                    self._now_seconds() - self._latest_arm_receipt > 1.0):
+                self._reject(command, 'fresh D1 joint feedback is unavailable')
+                return
+            raise_from_laydown = (
+                self._lay_down_raise_enabled and self._near_lay_down()
+            )
+            if raise_from_laydown:
+                if not self._set_arm_enabled.wait_for_service(
+                        timeout_sec=0.0):
+                    self._reject(command, 'arm-enable service is unavailable')
+                    return
+                if not self._arm_trajectory.wait_for_server(
+                        timeout_sec=0.0):
+                    self._reject(command, 'D1 arm trajectory action is unavailable')
+                    return
 
         objects = grasping.eligible_objects(
             self._latest_map.objects, object_class, command.object_id,
@@ -621,6 +693,7 @@ class D1GraspCoordinator(Node):
             'gripper_start_angle': None,
             'gripper_last_angle': None,
             'gripper_last_change': 0.0,
+            'raise_from_laydown': raise_from_laydown,
         }
         self._publish_active_stage(
             GraspStatus.STAGE_ACCEPTED,
@@ -639,14 +712,133 @@ class D1GraspCoordinator(Node):
             first_pose,
         )
         if self._execution_enabled:
-            self._command_gripper(
-                self._gripper_open_degrees,
-                'wait_open_before_pregrasp',
-                GraspStatus.STAGE_OPENING,
-                'opening gripper before validating the arm motion',
-            )
+            if raise_from_laydown:
+                self._enable_laydown_arm()
+            else:
+                self._command_gripper(
+                    self._gripper_open_degrees,
+                    'wait_open_before_pregrasp',
+                    GraspStatus.STAGE_OPENING,
+                    'opening gripper before validating the arm motion',
+                )
         else:
             self._start_next_pregrasp_candidate()
+
+    def _enable_laydown_arm(self):
+        self._active['phase'] = 'enabling_laydown_arm'
+        self._publish_active_stage(
+            GraspStatus.STAGE_EXECUTING,
+            'near laid-down pose; enabling the arm for a small feedback-checked '
+            'raise before MoveIt planning',
+        )
+        request = SetArmEnabled.Request()
+        request.enabled = True
+        token = self._active['token']
+        self._set_arm_enabled.call_async(request).add_done_callback(
+            lambda done, token=token: self._laydown_enable_result(done, token)
+        )
+
+    def _laydown_enable_result(self, future, token):
+        if (not self._active_token_valid(token)
+                or self._active['phase'] != 'enabling_laydown_arm'):
+            return
+        try:
+            response = future.result()
+        except Exception as error:
+            self._finish_failure('could not enable laid-down arm: {}'.format(error))
+            return
+        if not response.published:
+            self._finish_failure(
+                'arm-enable command was rejected: {}'.format(response.message)
+            )
+            return
+        # The service confirms publication, not motor readiness. Give the
+        # controller a brief interval before issuing the feedback-checked move.
+        self._active['phase'] = 'waiting_laydown_enable'
+        self._active['deadline'] = self._now_seconds() + 0.5
+
+    def _start_laydown_raise(self):
+        if self._latest_arm_angles is None or (
+                self._now_seconds() - self._latest_arm_receipt > 1.0):
+            self._finish_failure('joint feedback became stale before the raise')
+            return
+        if not self._near_lay_down():
+            self._finish_failure(
+                'arm left the near lay-down pose before the raise; no '
+                'pre-planning motion was sent'
+            )
+            return
+        angles = list(self._latest_arm_angles)
+        # From the measured lay-down pose, decreasing J2 raises the gripper;
+        # increasing J1 lowers it. Bring a marginally out-of-bounds J1 toward
+        # its published limit at the same time.
+        angles[1] = max(angles[1], protocol.JOINT_LIMITS_DEGREES[1][0])
+        angles[2] = max(
+            protocol.JOINT_LIMITS_DEGREES[2][0],
+            angles[2] - self._lay_down_raise_joint_2_degrees,
+        )
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory.joint_names = [
+            'd1_joint_{}'.format(index)
+            for index in range(protocol.ARM_JOINT_COUNT)
+        ]
+        point = JointTrajectoryPoint()
+        point.positions = [math.radians(value) for value in angles]
+        duration = self._lay_down_raise_duration_sec
+        point.time_from_start = Duration(
+            sec=int(duration), nanosec=int((duration % 1.0) * 1e9)
+        )
+        goal.trajectory.points = [point]
+        goal.goal_time_tolerance = Duration(sec=8)
+        self._active['phase'] = 'raising_laydown_arm'
+        self._publish_active_stage(
+            GraspStatus.STAGE_EXECUTING,
+            'raising J2 by {:.1f} degrees before MoveIt planning'.format(
+                self._lay_down_raise_joint_2_degrees
+            ),
+        )
+        token = self._active['token']
+        self._arm_trajectory.send_goal_async(goal).add_done_callback(
+            lambda done, token=token: self._laydown_raise_goal(done, token)
+        )
+
+    def _laydown_raise_goal(self, future, token):
+        if (not self._active_token_valid(token)
+                or self._active['phase'] != 'raising_laydown_arm'):
+            return
+        try:
+            handle = future.result()
+        except Exception as error:
+            self._finish_failure('could not send lay-down raise: {}'.format(error))
+            return
+        if not handle.accepted:
+            self._finish_failure('D1 controller rejected the lay-down raise')
+            return
+        handle.get_result_async().add_done_callback(
+            lambda done, token=token: self._laydown_raise_result(done, token)
+        )
+
+    def _laydown_raise_result(self, future, token):
+        if (not self._active_token_valid(token)
+                or self._active['phase'] != 'raising_laydown_arm'):
+            return
+        try:
+            result = future.result().result
+        except Exception as error:
+            self._finish_failure('lay-down raise failed: {}'.format(error))
+            return
+        if result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
+            self._finish_failure(
+                'lay-down raise failed: {}'.format(result.error_string)
+            )
+            return
+        self._active['raise_from_laydown'] = False
+        self._command_gripper(
+            self._gripper_open_degrees,
+            'wait_open_before_pregrasp',
+            GraspStatus.STAGE_OPENING,
+            'lay-down raise reached; opening gripper before MoveIt planning',
+        )
 
     def _selection_failure_message(self, command):
         objects = list(self._latest_map.objects)
@@ -861,7 +1053,8 @@ class D1GraspCoordinator(Node):
                         forward_grasp_depth,
                         depth_direction,
                         target_height_offset,
-                        horizontal_depth,
+                        horizontal_depth or band is not None,
+                        level_approach=band is not None,
                     )
                 except ValueError as error:
                     failures.append(str(error))
@@ -1016,6 +1209,10 @@ class D1GraspCoordinator(Node):
         future = self._move_group.send_goal_async(
             self._move_group_goal(
                 pose,
+                position_tolerance=(
+                    self._band_pregrasp_position_tolerance_m
+                    if candidate['band_width'] is not None else None
+                ),
                 orientation_tolerance=self._grasp_orientation_tolerance_rad,
             ),
             feedback_callback=lambda message, token=self._active['token']:
@@ -1441,21 +1638,35 @@ class D1GraspCoordinator(Node):
             self._active['forward_grasp_depth_offset'],
             depth_direction,
             target_height_offset,
-            self._active['horizontal_depth'],
+            self._active['horizontal_depth'] or band is not None,
         )
         problem = self._candidate_problem(candidate)
         if problem is not None:
             self._finish_failure('reacquired target is unsafe: ' + problem)
             return
-        old_pregrasp = tuple(
-            float(value) for value in selected['pregrasp_point']
-        )
         new_pregrasp = tuple(
             float(value) for value in candidate['pregrasp_point']
         )
+        try:
+            tip_transform = self._lookup_transform(
+                self._planning_frame, self._tip_link
+            )
+            actual_pregrasp = self._point_tuple(
+                tip_transform.transform.translation
+            )
+        except Exception as error:
+            self._finish_failure(
+                'could not read the reached pre-grasp position: {}'.format(error)
+            )
+            return
+        # Compare the live tool center, not the nominal earlier goal. MoveIt
+        # may satisfy a pre-grasp goal a short distance below the band; using
+        # the nominal goal hid that deviation and caused a rising final path.
         correction = tuple(
-            new_value - old_value
-            for new_value, old_value in zip(new_pregrasp, old_pregrasp)
+            new_value - actual_value
+            for new_value, actual_value in zip(
+                new_pregrasp, actual_pregrasp
+            )
         )
         approach = tuple(
             float(value) for value in candidate['approach_direction']
@@ -1507,7 +1718,12 @@ class D1GraspCoordinator(Node):
         self._active['retreat_pose'] = retreat_pose
         self._grasp_publisher.publish(grasp_pose)
 
-        if lateral_correction > self._maximum_final_lateral_correction_m:
+        lateral_limit = (
+            self._grasp_position_tolerance_m
+            if band is not None
+            else self._maximum_final_lateral_correction_m
+        )
+        if lateral_correction > lateral_limit:
             self._pregrasp_publisher.publish(retreat_pose)
             self._request_position_plan(
                 retreat_pose,
@@ -1801,7 +2017,10 @@ class D1GraspCoordinator(Node):
         self._publish_active_stage(stage, message, pose)
         tolerance = (
             self._grasp_position_tolerance_m
-            if purpose == 'approach'
+            if purpose == 'approach' or (
+                purpose == 'reposition_pregrasp'
+                and self._active['grasp_band_width'] is not None
+            )
             else self._position_tolerance_m
         )
         preserve_grasp_orientation = purpose in (
@@ -2060,6 +2279,10 @@ class D1GraspCoordinator(Node):
             return
         phase = self._active['phase']
         now = self._now_seconds()
+        if phase == 'waiting_laydown_enable':
+            if now >= self._active['deadline']:
+                self._start_laydown_raise()
+            return
         if phase == 'reacquiring':
             if now > self._active['deadline']:
                 self._finish_failure(
