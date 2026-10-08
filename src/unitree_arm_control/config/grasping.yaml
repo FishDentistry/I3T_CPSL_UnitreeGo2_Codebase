@@ -8,6 +8,8 @@ d1_grasp_coordinator:
     grasp_pose_topic: /d1_grasp/grasp_pose
     move_group_action: /move_action
     execute_trajectory_action: /execute_trajectory
+    cartesian_path_service: /compute_cartesian_path
+    forward_kinematics_service: /compute_fk
     gripper_service: /d1_arm_controller/set_joint
     joint_angles_topic: /d1_arm_controller/joint_angles
     planning_group: d1_arm
@@ -51,6 +53,9 @@ d1_grasp_coordinator:
     planning_attempts: 5
     velocity_scaling: 0.15
     acceleration_scaling: 0.10
+    # A candidate is accepted only if the predicted and refreshed approaches
+    # reach the complete grasp waypoint without a collision or joint jump.
+    minimum_cartesian_fraction: 1.0
 
     # Recheck the target after the pre-grasp before planning the final motion.
     fresh_detection_age_sec: 5.0

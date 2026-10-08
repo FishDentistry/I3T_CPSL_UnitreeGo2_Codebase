@@ -16,6 +16,7 @@ from moveit_msgs.msg import MoveItErrorCodes
 from moveit_msgs.msg import OrientationConstraint
 from moveit_msgs.msg import PositionConstraint
 from moveit_msgs.srv import GetCartesianPath
+from moveit_msgs.srv import GetPositionFK
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -124,6 +125,9 @@ class D1GraspCoordinator(Node):
         self._cartesian_path = self.create_client(
             GetCartesianPath, self._cartesian_path_service
         )
+        self._forward_kinematics = self.create_client(
+            GetPositionFK, self._forward_kinematics_service
+        )
         self._set_joint = self.create_client(
             SetJoint, self._gripper_service
         )
@@ -160,6 +164,7 @@ class D1GraspCoordinator(Node):
             'move_group_action': '/move_action',
             'execute_trajectory_action': '/execute_trajectory',
             'cartesian_path_service': '/compute_cartesian_path',
+            'forward_kinematics_service': '/compute_fk',
             'gripper_service': '/d1_arm_controller/set_joint',
             'joint_angles_topic': '/d1_arm_controller/joint_angles',
             'planning_group': 'd1_arm',
@@ -211,7 +216,7 @@ class D1GraspCoordinator(Node):
 
         # The final contact motion is a single short Cartesian segment.
         self.declare_parameter('cartesian_step_m', 0.005)
-        self.declare_parameter('minimum_cartesian_fraction', 0.95)
+        self.declare_parameter('minimum_cartesian_fraction', 1.0)
         self.declare_parameter('cartesian_jump_threshold', 2.0)
         self.declare_parameter('cartesian_velocity_scaling', 0.05)
         self.declare_parameter('cartesian_acceleration_scaling', 0.05)
@@ -236,6 +241,7 @@ class D1GraspCoordinator(Node):
             'status_topic', 'pregrasp_pose_topic', 'grasp_pose_topic',
             'move_group_action', 'execute_trajectory_action',
             'cartesian_path_service', 'gripper_service',
+            'forward_kinematics_service',
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'camera_frame',
             'reach_reference_frame', 'tip_link', 'planner_id',
@@ -315,6 +321,7 @@ class D1GraspCoordinator(Node):
             'status_topic', 'pregrasp_pose_topic', 'grasp_pose_topic',
             'move_group_action', 'execute_trajectory_action',
             'cartesian_path_service', 'gripper_service',
+            'forward_kinematics_service',
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'camera_frame',
             'reach_reference_frame', 'tip_link',
@@ -379,9 +386,10 @@ class D1GraspCoordinator(Node):
             raise RuntimeError('approach_corridor_radius_m must be positive')
         if self._cartesian_step_m <= 0.0:
             raise RuntimeError('cartesian_step_m must be positive')
-        if not 0.0 < self._minimum_cartesian_fraction <= 1.0:
+        if self._minimum_cartesian_fraction != 1.0:
             raise RuntimeError(
-                'minimum_cartesian_fraction must be in (0, 1]'
+                'minimum_cartesian_fraction must be 1.0 to validate the '
+                'complete final approach'
             )
         if self._cartesian_jump_threshold < 0.0:
             raise RuntimeError(
@@ -512,12 +520,23 @@ class D1GraspCoordinator(Node):
         if not self._move_group.wait_for_server(timeout_sec=0.0):
             self._reject(command, 'MoveIt move_group action is unavailable')
             return
+        missing_planning = []
+        if not self._cartesian_path.wait_for_service(timeout_sec=0.0):
+            missing_planning.append(self._cartesian_path_service)
+        if not self._forward_kinematics.wait_for_service(timeout_sec=0.0):
+            missing_planning.append(self._forward_kinematics_service)
+        if missing_planning:
+            self._reject(
+                command,
+                'required planning interfaces are unavailable: {}'.format(
+                    ', '.join(missing_planning)
+                ),
+            )
+            return
         if self._execution_enabled:
             missing = []
             if not self._execute_trajectory.wait_for_server(timeout_sec=0.0):
                 missing.append(self._execute_trajectory_action)
-            if not self._cartesian_path.wait_for_service(timeout_sec=0.0):
-                missing.append(self._cartesian_path_service)
             if not self._set_joint.wait_for_service(timeout_sec=0.0):
                 missing.append(self._gripper_service)
             if missing:
@@ -573,8 +592,12 @@ class D1GraspCoordinator(Node):
             'candidate_index': 0,
             'candidate_failures': [],
             'candidate': None,
+            'preflight_trajectory': None,
+            'preflight_motion_purpose': None,
+            'predicted_pregrasp_state': None,
             'pregrasp_pose': first_pose,
             'grasp_pose': None,
+            'cartesian_start_state': None,
             'retreat_pose': None,
             'target_pose': first_pose,
             'last_stage': None,
@@ -585,7 +608,6 @@ class D1GraspCoordinator(Node):
             'gripper_last_angle': None,
             'gripper_last_change': 0.0,
         }
-        self._pregrasp_publisher.publish(first_pose)
         self._publish_active_stage(
             GraspStatus.STAGE_ACCEPTED,
             'selected {} with {} safeguard-compatible approach candidate(s); '
@@ -605,7 +627,7 @@ class D1GraspCoordinator(Node):
                 self._gripper_open_degrees,
                 'wait_open_before_pregrasp',
                 GraspStatus.STAGE_OPENING,
-                'opening gripper before planning the pre-grasp',
+                'opening gripper before validating the arm motion',
             )
         else:
             self._start_next_pregrasp_candidate()
@@ -1013,25 +1035,117 @@ class D1GraspCoordinator(Node):
                 self._try_next_candidate(description)
             return
 
-        if not self._execution_enabled:
-            self._finish_success(
-                GraspStatus.STAGE_PLAN_READY,
-                'pre-grasp plan succeeded; execution_enabled is false',
-            )
-            return
-
         trajectory = result.planned_trajectory
         if not trajectory.joint_trajectory.points:
             self._try_next_candidate('MoveIt returned an empty trajectory')
             return
-        self._execute_robot_trajectory(
-            trajectory,
-            'pregrasp',
-            GraspStatus.STAGE_EXECUTING,
-            'executing orientation-tolerant pre-grasp candidate {}'.format(
-                self._active['candidate_index'] + 1
+        self._check_planned_pregrasp(
+            result.trajectory_start, trajectory, 'pregrasp'
+        )
+
+    def _preflight_failure(self, reason):
+        if self._active['preflight_motion_purpose'] == 'pregrasp':
+            self._try_next_candidate(reason)
+        else:
+            self._finish_failure(
+                'corrected pre-grasp has no validated approach: ' + reason
+            )
+
+    def _check_planned_pregrasp(self, start_state, trajectory, purpose):
+        self._active['preflight_motion_purpose'] = purpose
+        try:
+            predicted_state = grasping.trajectory_endpoint_state(
+                start_state, trajectory
+            )
+        except ValueError as error:
+            self._preflight_failure(str(error))
+            return
+        self._active['preflight_trajectory'] = trajectory
+        self._active['predicted_pregrasp_state'] = predicted_state
+        self._active['phase'] = 'computing_pregrasp_fk'
+        self._publish_active_stage(
+            GraspStatus.STAGE_PLANNING,
+            '{} plan found; checking its predicted endpoint and '
+            'complete final approach before arm execution'.format(
+                purpose.replace('_', ' ')
             ),
             self._active['pregrasp_pose'],
+        )
+        request = GetPositionFK.Request()
+        request.header.stamp = self.get_clock().now().to_msg()
+        request.header.frame_id = self._planning_frame
+        request.fk_link_names = [self._tip_link]
+        request.robot_state = copy.deepcopy(predicted_state)
+        future = self._forward_kinematics.call_async(request)
+        future.add_done_callback(
+            lambda done, token=token: self._pregrasp_fk_result(done, token)
+        )
+
+    def _pregrasp_fk_result(self, future, token):
+        if not self._active_token_valid(token) or (
+                self._active['phase'] != 'computing_pregrasp_fk'):
+            return
+        try:
+            response = future.result()
+        except Exception as error:
+            self._preflight_failure(
+                'predicted pre-grasp FK failed: {}'.format(error)
+            )
+            return
+        if response.error_code.val != MoveItErrorCodes.SUCCESS:
+            self._preflight_failure(
+                'predicted pre-grasp FK failed: {}'.format(
+                    MOVEIT_ERROR_NAMES.get(
+                        response.error_code.val,
+                        'MoveIt error {}'.format(response.error_code.val),
+                    )
+                )
+            )
+            return
+        if (len(response.fk_link_names) != 1
+                or response.fk_link_names[0] != self._tip_link
+                or len(response.pose_stamped) != 1):
+            self._preflight_failure(
+                'predicted pre-grasp FK returned no unique tip pose'
+            )
+            return
+        predicted_pose = response.pose_stamped[0]
+        if (predicted_pose.header.frame_id.lstrip('/')
+                != self._planning_frame.lstrip('/')):
+            self._preflight_failure(
+                'predicted pre-grasp FK used an unexpected frame'
+            )
+            return
+        if not all(math.isfinite(value) for value in self._point_tuple(
+                predicted_pose.pose.position)):
+            self._preflight_failure(
+                'predicted pre-grasp FK returned an invalid position'
+            )
+            return
+        quaternion = predicted_pose.pose.orientation
+        values = (
+            float(quaternion.x), float(quaternion.y),
+            float(quaternion.z), float(quaternion.w),
+        )
+        norm = math.sqrt(sum(value * value for value in values))
+        if not all(math.isfinite(value) for value in values) or norm <= 1e-9:
+            self._preflight_failure(
+                'predicted pre-grasp FK returned an invalid orientation'
+            )
+            return
+        candidate = dict(self._active['candidate'])
+        candidate['orientation'] = tuple(value / norm for value in values)
+        self._active['candidate'] = candidate
+        self._active['pregrasp_pose'] = predicted_pose
+        grasp_pose = self._candidate_pose(candidate, 'grasp_point')
+        self._active['grasp_pose'] = grasp_pose
+        self._begin_final_approach(
+            grasp_pose, 'preflight', GraspStatus.STAGE_PLANNING,
+            'checking the full Cartesian approach from the predicted {} '
+            'endpoint'.format(
+                self._active['preflight_motion_purpose'].replace('_', ' ')
+            ),
+            start_state=self._active['predicted_pregrasp_state'],
         )
 
     def _begin_reacquisition(self):
@@ -1234,8 +1348,10 @@ class D1GraspCoordinator(Node):
             'fresh target acquired; computing the short Cartesian final approach',
         )
 
-    def _begin_final_approach(self, pose, purpose, stage, message):
+    def _begin_final_approach(
+            self, pose, purpose, stage, message, start_state=None):
         orientation = pose.pose.orientation
+        self._active['cartesian_start_state'] = start_state
         self._active['cartesian_orientations'] = (
             grasping.approach_orientation_candidates(
                 (orientation.x, orientation.y, orientation.z, orientation.w),
@@ -1257,7 +1373,11 @@ class D1GraspCoordinator(Node):
         request = GetCartesianPath.Request()
         request.header.stamp = self.get_clock().now().to_msg()
         request.header.frame_id = self._planning_frame
-        request.start_state.is_diff = True
+        start_state = self._active['cartesian_start_state']
+        if start_state is None:
+            request.start_state.is_diff = True
+        else:
+            request.start_state = copy.deepcopy(start_state)
         request.group_name = self._planning_group
         request.link_name = self._tip_link
         request.waypoints = [copy.deepcopy(pose.pose)]
@@ -1344,6 +1464,39 @@ class D1GraspCoordinator(Node):
             return
 
         accepted_pose = self._active['cartesian_probe_pose']
+        if purpose == 'preflight':
+            orientation = accepted_pose.pose.orientation
+            candidate = dict(self._active['candidate'])
+            candidate['orientation'] = (
+                orientation.x, orientation.y, orientation.z, orientation.w
+            )
+            self._active['candidate'] = candidate
+            self._active['grasp_pose'] = accepted_pose
+            self._pregrasp_publisher.publish(
+                self._active['pregrasp_pose']
+            )
+            self._grasp_publisher.publish(accepted_pose)
+            if not self._execution_enabled:
+                self._finish_success(
+                    GraspStatus.STAGE_PLAN_READY,
+                    'pre-grasp and complete Cartesian approach validated; '
+                    'execution_enabled is false',
+                )
+                return
+            motion_purpose = self._active['preflight_motion_purpose']
+            self._execute_robot_trajectory(
+                self._active['preflight_trajectory'],
+                motion_purpose,
+                (GraspStatus.STAGE_APPROACHING
+                 if motion_purpose == 'reposition_pregrasp'
+                 else GraspStatus.STAGE_EXECUTING),
+                'executing {} after full approach validation'.format(
+                    motion_purpose.replace('_', ' ')
+                ),
+                self._active['pregrasp_pose'],
+            )
+            return
+
         orientation = accepted_pose.pose.orientation
         candidate = dict(self._active['candidate'])
         candidate['orientation'] = (
@@ -1377,14 +1530,27 @@ class D1GraspCoordinator(Node):
         pose.pose.orientation.w = quaternion[3]
         self._request_cartesian_path(
             pose,
-            'approach',
-            GraspStatus.STAGE_APPROACHING,
+            self._active['cartesian_purpose'],
+            (GraspStatus.STAGE_PLANNING
+             if self._active['cartesian_purpose'] == 'preflight'
+             else GraspStatus.STAGE_APPROACHING),
             '{}; checking nearby wrist orientation {} of {} along the same '
             'straight approach'.format(reason, index + 1, len(orientations)),
         )
         return True
 
     def _cartesian_path_failure(self, purpose, description):
+        if purpose == 'preflight':
+            if self._try_next_cartesian_orientation(description):
+                return
+            self._preflight_failure(
+                'no complete Cartesian approach from planned pre-grasp; '
+                'best fraction {:.1f}%; {}'.format(
+                    100.0 * self._active['cartesian_best_fraction'],
+                    description,
+                )
+            )
+            return
         if purpose == 'approach':
             if self._try_next_cartesian_orientation(description):
                 return
@@ -1533,7 +1699,12 @@ class D1GraspCoordinator(Node):
                 )
             )
             return
-        is_approach_motion = purpose in ('approach', 'reposition_pregrasp')
+        if purpose == 'reposition_pregrasp':
+            self._check_planned_pregrasp(
+                result.trajectory_start, trajectory, purpose
+            )
+            return
+        is_approach_motion = purpose == 'approach'
         self._execute_robot_trajectory(
             trajectory,
             purpose,

@@ -42,7 +42,7 @@ class GraspingConfigTest(unittest.TestCase):
         ).read_text()
         self.assertIn('reach_reference_frame: d1_base_link', config)
         self.assertIn("'reach_reference_frame': 'd1_base_link'", coordinator)
-        self.assertIn('maximum_reach_m: 0.7', config)
+        self.assertIn('maximum_reach_m: 0.8', config)
         self.assertIn("self.declare_parameter('maximum_reach_m', 0.67)", coordinator)
 
     def test_grasp_candidate_age_default_is_twenty_seconds(self):
@@ -92,7 +92,7 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn('detections_topic: /grounding_dino/detection_array', config)
         self.assertIn('grasp_position_tolerance_m: 0.005', config)
         self.assertIn('GetCartesianPath', coordinator)
-        self.assertNotIn('GetPositionFK', coordinator)
+        self.assertIn('GetPositionFK', coordinator)
         self.assertIn('ExecuteTrajectory', coordinator)
         self.assertIn("'reacquiring'", coordinator)
         self.assertIn('retarget_approach_candidate(', coordinator)
@@ -105,6 +105,15 @@ class GraspingConfigTest(unittest.TestCase):
         )
         self.assertIn('request.avoid_collisions = True', coordinator)
         self.assertIn('self._minimum_cartesian_fraction', coordinator)
+        self.assertIn('minimum_cartesian_fraction: 1.0', config)
+        self.assertIn('request.start_state = copy.deepcopy(start_state)', coordinator)
+        self.assertIn('trajectory_endpoint_state(', coordinator)
+        self.assertIn("grasp_pose, 'preflight'", coordinator)
+        self.assertIn(
+            "if purpose == 'reposition_pregrasp':\n"
+            "            self._check_planned_pregrasp(",
+            coordinator,
+        )
         self.assertIn('straight_final_approach_corridor', coordinator)
         self.assertIn('goal.request.path_constraints', coordinator)
         self.assertIn('approach_corridor_radius_m: 0.015', config)
@@ -126,11 +135,9 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn('semantic_pose_target', coordinator)
         self.assertIn('goal.planning_options.plan_only = True', coordinator)
         self.assertIn('result.planned_trajectory', coordinator)
-        self.assertIn("'pregrasp',", coordinator)
-        self.assertIn(
-            'executing orientation-tolerant pre-grasp candidate',
-            coordinator,
-        )
+        self.assertIn("result.trajectory_start, trajectory, 'pregrasp'", coordinator)
+        self.assertIn('self._active[\'preflight_trajectory\']', coordinator)
+        self.assertIn('after full approach validation', coordinator)
         self.assertNotIn('GetPositionIK', coordinator)
         self.assertNotIn('tool_roll_offsets_rad:', config)
         self.assertNotIn("'validated_candidates': []", coordinator)

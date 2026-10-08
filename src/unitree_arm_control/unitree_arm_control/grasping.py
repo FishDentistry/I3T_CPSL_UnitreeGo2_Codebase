@@ -1,6 +1,36 @@
 """ROS-independent geometry and semantic-object selection helpers."""
 
+import copy
 import math
+
+
+def trajectory_endpoint_state(start_state, trajectory):
+    """Apply a planned group's final joint positions to its full start state."""
+    names = list(start_state.joint_state.name)
+    positions = list(start_state.joint_state.position)
+    joint_trajectory = trajectory.joint_trajectory
+    moving_names = list(joint_trajectory.joint_names)
+    if len(names) != len(positions) or len(set(names)) != len(names):
+        raise ValueError('planned trajectory has an invalid starting state')
+    if not joint_trajectory.points or not moving_names:
+        raise ValueError('planned pre-grasp trajectory is empty')
+    endpoint = list(joint_trajectory.points[-1].positions)
+    if (len(moving_names) != len(endpoint)
+            or len(set(moving_names)) != len(moving_names)):
+        raise ValueError('planned pre-grasp endpoint has invalid joint positions')
+    if not all(math.isfinite(value) for value in endpoint):
+        raise ValueError('planned pre-grasp endpoint has non-finite positions')
+    by_name = dict(zip(names, range(len(names))))
+    if any(name not in by_name for name in moving_names):
+        raise ValueError('planned pre-grasp endpoint lacks a full start state')
+    state = copy.deepcopy(start_state)
+    for name, value in zip(moving_names, endpoint):
+        positions[by_name[name]] = value
+    state.joint_state.position = positions
+    state.joint_state.velocity = []
+    state.joint_state.effort = []
+    state.is_diff = False
+    return state
 
 
 def normalize_label(value):

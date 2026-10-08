@@ -404,11 +404,14 @@ The coordinator performs the following sequence when execution is enabled:
 2. Generate three-dimensional pre-grasp points from the current gripper toward
    the object, including configured yaw fallbacks ordered by smallest yaw
    change.
-3. Give OMPL a position constraint and a tolerant orientation constraint for
-   the preferred pre-grasp point. If planning fails, repeat with the next
-   candidate.
-4. Execute the first successful MoveIt trajectory to a pre-grasp point 0.11
-   metres from the configured final grasp point.
+3. Plan, without executing, an orientation-tolerant MoveIt trajectory to each
+   candidate pre-grasp. Compute the predicted gripper pose at that
+   trajectory's final joint state, then check a collision-aware Cartesian path
+   from that state to the complete grasp waypoint. Reject candidates with an
+   incomplete approach and select the first candidate whose two segments are
+   valid. No arm trajectory is executed during candidate screening.
+4. Execute the selected pre-grasp trajectory to a point nominally 0.11 metres
+   from the configured final grasp point.
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
    limited to 0.08 metres by default.
@@ -417,16 +420,19 @@ The coordinator performs the following sequence when execution is enabled:
    The mug's forward correction is projected into the planning-frame XY plane
    so it does not lower the target. Both the pre-grasp and final target use
    these offsets.
-   The final collision-checked Cartesian segment preserves the orientation
-   actually reached at pre-grasp, so the tool moves
-   toward the refreshed grasp point without an additional rotation. If the
-   refreshed point requires a lateral pre-grasp correction, that correction is
-   executed before the achieved orientation is sampled again. If the exact
+   Recompute and validate the final Cartesian segment from the arm's actual
+   state; the predicted pre-grasp approach is never executed as a stale plan.
+   The refreshed segment preserves the orientation actually reached at
+   pre-grasp, so the tool moves toward the corrected grasp point without an
+   additional rotation. If the refreshed point requires a lateral pre-grasp
+   correction, the corrected pre-grasp and its complete remaining approach
+   are validated before the repositioning trajectory is executed. The final
+   approach is revalidated from the actual pose after repositioning. If the exact
    Cartesian orientation is infeasible, the coordinator checks nearby wrist
    orientations within `grasp_orientation_tolerance_rad` while keeping the
-   same tool-center line and collision checking. It executes only a path that
-   meets `minimum_cartesian_fraction`. If all variants fail, MoveIt plans from
-   the reached pre-grasp through a narrow position corridor with orientation
+   same tool-center line and collision checking. Only complete Cartesian paths
+   are accepted. If all variants fail, MoveIt plans from the reached pre-grasp
+   through a narrow position corridor with orientation
    tolerance. A failure leaves the arm at pre-grasp and reports the best
    Cartesian fraction and final target coordinates.
 7. Close the gripper. Position feedback is accepted when it reaches the closed
@@ -439,7 +445,7 @@ No lift is performed. Failures after contact cause a best-effort gripper-open
 command. Only one request is processed at a time, and recent request IDs cannot
 be reused.
 
-The generated poses are published on `/d1_grasp/pregrasp_pose` and
+The screened poses are published on `/d1_grasp/pregrasp_pose` and
 `/d1_grasp/grasp_pose`. Progress and terminal results are published on
 `/d1_grasp/status`, including opening, reacquiring, approaching, closing,
 holding, releasing, retreating, and released stages.
@@ -474,18 +480,20 @@ three-dimensional camera-ray correction.
 
 `class_grasp_height_offsets_m` applies signed vertical corrections in the
 planning frame after the horizontal depth correction. Unlisted classes use
-zero. The configured mug correction is 0.02 m:
+zero. The configured mug correction is 0.04 m:
 
 ```yaml
 class_grasp_height_offsets_m:
-  - "mug=0.02"
+  - "mug=0.04"
 ```
 
 `grasp_orientation_tolerance_rad` controls pre-grasp planning, corrected
 pre-grasp repositioning, and the maximum wrist adjustment tested for the
 Cartesian contact segment. Its default is `0.35` radians. The first Cartesian
-candidate preserves the live achieved orientation; subsequent candidates
+candidate preserves the predicted or live achieved orientation; subsequent candidates
 interpolate a bounded wrist rotation along the same tool-center line.
+`minimum_cartesian_fraction` is fixed at `1.0` so a partial contact path cannot
+be accepted during either pre-grasp screening or final revalidation.
 `approach_corridor_radius_m` defines the half-width of the constrained MoveIt
 fallback used when that exact Cartesian segment is incomplete. Its default is
 `0.015` metres.
@@ -536,9 +544,10 @@ ros2 topic pub --once /d1_grasp/command \
   "{request_id: 'cup_request_002', object_class: 'cup', object_id: ''}"
 ```
 
-The proposed pre-grasp is published as `geometry_msgs/msg/PoseStamped` on
-`/d1_grasp/pregrasp_pose`. A successful plan-only request terminates with
-`STAGE_PLAN_READY`; it does not open the gripper or approach the object.
+The screened pre-grasp is published as `geometry_msgs/msg/PoseStamped` on
+`/d1_grasp/pregrasp_pose`. A successful plan-only request validates both the
+pre-grasp and predicted complete Cartesian approach, then terminates with
+`STAGE_PLAN_READY`. It does not open the gripper or move the arm.
 
 ### Guarded grasp-and-release execution
 

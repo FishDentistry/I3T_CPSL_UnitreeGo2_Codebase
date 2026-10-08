@@ -32,6 +32,44 @@ def semantic_object(
 class GraspingTest(unittest.TestCase):
     """Exercise selection and transform behavior without ROS."""
 
+    def test_trajectory_endpoint_state_preserves_unplanned_joints(self):
+        start = SimpleNamespace(
+            joint_state=SimpleNamespace(
+                name=['d1_joint_0', 'd1_joint_1', 'd1_gripper_joint'],
+                position=[0.0, 0.1, 0.5],
+                velocity=[0.0, 0.0, 0.0],
+                effort=[0.0, 0.0, 0.0],
+            ),
+            is_diff=True,
+        )
+        trajectory = SimpleNamespace(joint_trajectory=SimpleNamespace(
+            joint_names=['d1_joint_1', 'd1_joint_0'],
+            points=[SimpleNamespace(positions=[0.3, -0.2])],
+        ))
+        endpoint = grasping.trajectory_endpoint_state(start, trajectory)
+        self.assertEqual(endpoint.joint_state.position, [-0.2, 0.3, 0.5])
+        self.assertEqual(start.joint_state.position, [0.0, 0.1, 0.5])
+        self.assertEqual(endpoint.joint_state.velocity, [])
+        self.assertFalse(endpoint.is_diff)
+
+    def test_trajectory_endpoint_state_rejects_incomplete_plan(self):
+        start = SimpleNamespace(
+            joint_state=SimpleNamespace(
+                name=['d1_joint_0'], position=[0.0], velocity=[], effort=[]
+            ),
+            is_diff=False,
+        )
+        for names, points in (
+                (['unknown_joint'], [SimpleNamespace(positions=[0.1])]),
+                (['d1_joint_0'], []),
+                (['d1_joint_0'], [SimpleNamespace(positions=[math.nan])])):
+            trajectory = SimpleNamespace(joint_trajectory=SimpleNamespace(
+                joint_names=names, points=points,
+            ))
+            with self.subTest(names=names, points=points):
+                with self.assertRaises(ValueError):
+                    grasping.trajectory_endpoint_state(start, trajectory)
+
     def test_normalize_label_is_case_and_whitespace_insensitive(self):
         self.assertEqual(
             grasping.normalize_label('  Coffee   CUP '), 'coffee cup'
