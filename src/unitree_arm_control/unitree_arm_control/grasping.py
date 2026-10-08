@@ -357,6 +357,22 @@ def _cross(first, second):
     )
 
 
+def _gripper_opening_axis(approach_direction):
+    """Return the gripper-opening axis in the world frame.
+
+    The D1 jaws open left-right, so their local +X axis is horizontal. Keep it
+    perpendicular to both the approach direction and gravity instead of using
+    the vertical world up as the jaw axis.
+    """
+    direction = _normalized(approach_direction)
+    lateral = _cross((0.0, 0.0, 1.0), direction)
+    if distance_from_origin(lateral) <= 1.0e-9:
+        lateral = _cross((1.0, 0.0, 0.0), direction)
+    if distance_from_origin(lateral) <= 1.0e-9:
+        lateral = (0.0, 1.0, 0.0)
+    return _normalized(lateral)
+
+
 def _dot(first, second):
     return sum(left * right for left, right in zip(first, second))
 
@@ -405,20 +421,14 @@ def _quaternion_from_matrix(columns):
 
 
 def quaternion_from_approach(approach_direction, tool_roll=0.0):
-    """Orient local +Z along an approach direction with local +X upward.
+    """Orient local +Z along an approach direction with a horizontal jaw axis.
 
-    ``tool_roll`` rotates the finger arrangement around the approach axis.
+    The D1 gripper jaws open left/right, so local +X is the horizontal opening
+    axis, not the world-up axis. ``tool_roll`` rotates the finger arrangement
+    about the approach axis.
     """
     local_z = _normalized(approach_direction)
-    up = (0.0, 0.0, 1.0)
-    projection = _dot(up, local_z)
-    projected_up = tuple(
-        up_value - projection * z_value
-        for up_value, z_value in zip(up, local_z)
-    )
-    if distance_from_origin(projected_up) <= 1.0e-6:
-        projected_up = (1.0, 0.0, 0.0)
-    local_x = _normalized(projected_up)
+    local_x = _gripper_opening_axis(local_z)
     local_y = _normalized(_cross(local_z, local_x))
 
     cosine = math.cos(float(tool_roll))
@@ -482,12 +492,13 @@ def approach_corridor_geometry(start_point, end_point, radius):
 def _corrected_grasp_point(
         object_point, depth_axis, approach_axis, forward_grasp_depth,
         grasp_center_offset, grasp_height_offset):
+    lateral_axis = _gripper_opening_axis(approach_axis)
     corrected = tuple(
         float(value)
         + float(forward_grasp_depth) * depth_value
-        - float(grasp_center_offset) * approach_value
-        for value, depth_value, approach_value in zip(
-            object_point, depth_axis, approach_axis
+        - float(grasp_center_offset) * lateral_value
+        for value, depth_value, lateral_value in zip(
+            object_point, depth_axis, lateral_axis
         )
     )
     return (

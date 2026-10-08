@@ -330,6 +330,24 @@ class GraspingTest(unittest.TestCase):
         for actual, expected in zip(recovered, wrist):
             self.assertAlmostEqual(actual, expected)
 
+    def test_quaternion_from_approach_keeps_gripper_opening_horizontal(self):
+        quaternion = grasping.quaternion_from_approach((1.0, 0.0, 0.0))
+        opening_axis = grasping.rotate_vector((1.0, 0.0, 0.0), quaternion)
+        self.assertAlmostEqual(opening_axis[2], 0.0)
+        self.assertAlmostEqual(opening_axis[0], 0.0)
+        self.assertAlmostEqual(opening_axis[1], 1.0)
+
+    def test_grasp_center_offset_uses_gripper_opening_axis(self):
+        corrected = grasping._corrected_grasp_point(
+            (0.5, 0.0, 0.08),
+            (1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            0.0,
+            0.005,
+            0.0,
+        )
+        self.assertAlmostEqual(corrected[1], -0.005)
+
     def test_approach_axis_error_uses_forward_axis_only(self):
         quaternion = grasping.quaternion_from_approach((1.0, 0.0, 0.0))
         self.assertAlmostEqual(
