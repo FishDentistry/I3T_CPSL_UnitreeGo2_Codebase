@@ -38,15 +38,15 @@ class ProtocolTest(unittest.TestCase):
             protocol.set_joint_command(1, 1, 91)
 
     def test_gripper_opening_ceiling_is_enforced(self):
-        payload = json.loads(protocol.set_joint_command(1, 6, 49.0))
-        self.assertEqual(payload['data']['angle'], 49.0)
+        payload = json.loads(protocol.set_joint_command(1, 6, 50.0))
+        self.assertEqual(payload['data']['angle'], 50.0)
         with self.assertRaisesRegex(protocol.ProtocolError, 'opening ceiling'):
-            protocol.set_joint_command(2, 6, 50.0)
+            protocol.set_joint_command(2, 6, 51.0)
         with self.assertRaisesRegex(protocol.ProtocolError, 'opening ceiling'):
-            protocol.set_joint_command(2, 6, 50.0, enforce_limits=False)
+            protocol.set_joint_command(2, 6, 51.0, enforce_limits=False)
         with self.assertRaisesRegex(protocol.ProtocolError, 'opening ceiling'):
             protocol.set_joint_angles_command(
-                3, [0, 0, 0, 0, 0, 0, 50.0]
+                3, [0, 0, 0, 0, 0, 0, 51.0]
             )
 
     def test_zero_command_has_no_data_member(self):
@@ -120,7 +120,7 @@ class ProtocolTest(unittest.TestCase):
             math.pi / 4.0,
             -math.pi / 4.0,
             math.pi / 6.0,
-            0.03 * 15.0 / 49.0,
+            0.03 * 15.0 / 50.0,
         )
         for actual, target in zip(positions, expected):
             self.assertAlmostEqual(actual, target)
@@ -130,7 +130,7 @@ class ProtocolTest(unittest.TestCase):
             [0, 0, 0, 0, 0, 0, -5]
         )
         opened = protocol.joint_state_positions_from_degrees(
-            [0, 0, 0, 0, 0, 0, 49]
+            [0, 0, 0, 0, 0, 0, 50]
         )
         self.assertEqual(closed[-1], 0.0)
         self.assertEqual(opened[-1], 0.03)

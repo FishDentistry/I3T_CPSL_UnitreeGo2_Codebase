@@ -20,14 +20,14 @@ arm link transforms.
 
 J0 through J5 are converted from degrees to radians. The D1 documentation
 specifies the gripper stroke but not the J6 angle-to-stroke calibration, so
-J6 uses an adjustable linear mapping. The defaults map 0 to 49 degrees onto
+J6 uses an adjustable linear mapping. The defaults map 0 to 50 degrees onto
 0 to 0.03 metres of per-finger travel and clamp values outside that range.
 To use measured endpoints instead:
 
 ```bash
 ros2 launch unitree_arm_control d1_arm.launch.py \
   gripper_closed_degrees:=0.0 \
-  gripper_open_degrees:=49.0 \
+  gripper_open_degrees:=50.0 \
   gripper_max_travel_m:=0.03
 ```
 
@@ -489,9 +489,9 @@ interpolate a bounded wrist rotation along the same tool-center line.
 `approach_corridor_radius_m` defines the half-width of the constrained MoveIt
 fallback used when that exact Cartesian segment is incomplete. Its default is
 `0.015` metres.
-The default opening command is 49 degrees. The controller and grasp
+The default opening command is 50 degrees. The controller and grasp
 coordinator use the same endpoint calibration, and arm wrapper commands
-reject J6 targets above 49 degrees. This is an application-side
+reject J6 targets above 50 degrees. This is an application-side
 ceiling based on powered-operation observations, not a mechanical limit.
 
 Grounding DINO currently provides a class, bounding box, and one depth-derived
