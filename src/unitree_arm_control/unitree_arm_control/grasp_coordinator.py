@@ -1077,6 +1077,7 @@ class D1GraspCoordinator(Node):
         request.fk_link_names = [self._tip_link]
         request.robot_state = copy.deepcopy(predicted_state)
         future = self._forward_kinematics.call_async(request)
+        token = self._active['token']
         future.add_done_callback(
             lambda done, token=token: self._pregrasp_fk_result(done, token)
         )

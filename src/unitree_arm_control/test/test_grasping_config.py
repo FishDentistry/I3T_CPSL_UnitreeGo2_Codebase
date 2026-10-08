@@ -1,5 +1,6 @@
 """Static consistency tests for the semantic grasp coordinator."""
 
+import ast
 from pathlib import Path
 import unittest
 
@@ -141,6 +142,39 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertNotIn('GetPositionIK', coordinator)
         self.assertNotIn('tool_roll_offsets_rad:', config)
         self.assertNotIn("'validated_candidates': []", coordinator)
+
+    def test_pregrasp_fk_callback_captures_request_token(self):
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        module = ast.parse(coordinator)
+        coordinator_class = next(
+            node for node in module.body
+            if isinstance(node, ast.ClassDef)
+            and node.name == 'D1GraspCoordinator'
+        )
+        method = next(
+            node for node in coordinator_class.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == '_check_planned_pregrasp'
+        )
+        token_assignments = [
+            node.lineno for node in ast.walk(method)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == 'token'
+                for target in node.targets
+            )
+        ]
+        callback_lines = [
+            node.lineno for node in ast.walk(method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'add_done_callback'
+        ]
+        self.assertEqual(len(token_assignments), 1)
+        self.assertEqual(len(callback_lines), 1)
+        self.assertLess(token_assignments[0], callback_lines[0])
 
     def test_primary_approach_uses_current_gripper_position(self):
         coordinator = (
