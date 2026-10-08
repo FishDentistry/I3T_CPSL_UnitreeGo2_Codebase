@@ -27,7 +27,7 @@ EXECUTE_RESULT = 2
 JOINT_COUNT = 7
 ARM_JOINT_COUNT = 6
 SMOOTH_10_HZ = 0
-TRAJECTORY = 0
+TRAJECTORY = 1
 
 # Measured /arm_Feedback values with the mounted arm in its lay-down pose.
 # Joint 1 is slightly outside the rounded published limit below, so only the
