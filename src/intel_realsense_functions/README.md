@@ -35,12 +35,13 @@ system. It then converts the point to the robot `camera_link` convention. When
 the TF tree contains a transform from `camera_link` to `map`, the point is also
 transformed into map coordinates.
 
-For each depth-supported detection, the node also estimates a narrow
-horizontal grasp band from the aligned depth silhouette inside the detection
+For each depth-supported detection, the node estimates up to three distinct
+horizontal grasp bands from the aligned depth silhouette inside the detection
 box. Candidate bands exclude the top and bottom box margins, require depth
 support across their height, and must be corroborated by a neighboring band.
-Among bands within `grasp_band_width_tolerance_m` of the narrowest measured
-width, the band closest to the box's vertical center is selected. This is a
+At each rank, bands within `grasp_band_width_tolerance_m` of the narrowest
+remaining width are ordered by proximity to the box's vertical center. The
+next rank must be at least 2 cm from the preceding band. This is a
 visible-surface estimate, not a segmentation mask or a complete 3-D model;
 handles, occlusions, similar-depth backgrounds, and camera angle can change
 the measured width. When support is insufficient, no band is published.
@@ -94,10 +95,13 @@ uses `intel_realsense_interfaces/msg/GroundedDetectionArray`, with one
 valid depth, camera coordinates, and map coordinates are present. Its header
 frame ID is intentionally empty; the coordinate frames are named by the
 `camera_frame` and `map_frame` fields. Optional `grasp_band_*` fields report
-the estimated band center in both frames when available, its visible width
-and height in metres, and its center pixel. `has_grasp_band` and
+the first ranked band's center in both frames, visible width and height in
+metres, and center pixel. `has_grasp_band` and
 `has_grasp_band_map_position` distinguish unavailable geometry from a point
-at the coordinate origin.
+at the coordinate origin. `grasp_band_candidates` contains the ranked bands
+as `intel_realsense_interfaces/msg/GraspBand` entries; the first entry matches
+the singular fields. Existing consumers may continue using the singular
+fields.
 
 `/grounding_dino/detections` retains the existing JSON representation for
 compatibility with current consumers:
@@ -149,7 +153,7 @@ Python or ROS installation dependency. Its parameters are
 `grasp_band_width_tolerance_m` (default `0.01`), and
 `grasp_band_depth_tolerance_m` (default `0.06`). The annotated image marks
 the selected band center in green with its estimated width in millimetres.
-Changing `GroundedDetection.msg` requires rebuilding
+Changing the detection message schema requires rebuilding
 `intel_realsense_interfaces` and downstream packages before launching them.
 From the sourced ROS 2 Foxy workspace:
 
@@ -157,6 +161,9 @@ From the sourced ROS 2 Foxy workspace:
 colcon build --packages-up-to intel_realsense_functions semantic_mapping unitree_arm_control --symlink-install
 source install/setup.bash
 ```
+
+Stop and restart both the semantic-mapping and arm launches after rebuilding
+so publishers and subscribers use the same generated message definition.
 
 Depth deprojection initially follows the RealSense optical convention: positive
 X points right, positive Y points down, and positive Z points forward. Before

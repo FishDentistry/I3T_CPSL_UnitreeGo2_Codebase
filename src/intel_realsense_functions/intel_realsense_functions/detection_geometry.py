@@ -134,11 +134,12 @@ def camera_point_from_depth(
     }
 
 
-def narrow_grasp_band_from_depth(
+def narrow_grasp_bands_from_depth(
         depth_image, bounding_box, intrinsics, reference_point,
         minimum_depth, maximum_depth, band_height_m=0.015,
-        width_tolerance_m=0.01, depth_tolerance_m=0.06):
-    """Estimate a narrow, vertically supported band on the visible object.
+        width_tolerance_m=0.01, depth_tolerance_m=0.06,
+        maximum_candidates=3):
+    """Rank distinct, vertically supported bands on the visible object.
 
     This is a depth silhouette estimate, not a full 3-D object model. Only
     depths near the central object sample are used. Edge rows and isolated
@@ -151,13 +152,15 @@ def narrow_grasp_band_from_depth(
         raise ValueError('band height and depth tolerance must be positive')
     if not math.isfinite(width_tolerance_m) or width_tolerance_m < 0.0:
         raise ValueError('band width tolerance must be nonnegative')
+    if maximum_candidates < 1:
+        raise ValueError('maximum band candidates must be positive')
     focal_x, focal_y, principal_x, principal_y = intrinsics
     if focal_x <= 0.0 or focal_y <= 0.0:
         raise ValueError('camera focal lengths must be positive')
     reference_depth = float(reference_point['z'])
     reference_u = float(reference_point['pixel_u'])
     if not math.isfinite(reference_depth) or reference_depth <= 0.0:
-        return None
+        return ()
 
     image_height, image_width = depth_image.shape
     x_min, y_min, x_max, y_max = bounding_box
@@ -168,13 +171,13 @@ def narrow_grasp_band_from_depth(
     box_width = x_max - x_min + 1
     box_height = y_max - y_min + 1
     if box_width < 8 or box_height < 12:
-        return None
+        return ()
 
     margin = max(2, int(round(0.15 * box_height)))
     first_row, last_row = y_min + margin, y_max - margin
     band_height = max(3, int(round(focal_y * band_height_m / reference_depth)))
     if last_row - first_row + 1 < 2 * band_height:
-        return None
+        return ()
     step = max(1, band_height // 2)
     candidates = []
     for top in range(first_row, last_row - band_height + 2, step):
@@ -231,17 +234,43 @@ def narrow_grasp_band_from_depth(
         )
     ]
     if not stable:
-        return None
-    minimum_width = min(item['width_m'] for item in stable)
-    eligible = [
-        item for item in stable
-        if item['width_m'] <= minimum_width + width_tolerance_m
-    ]
+        return ()
     center_v = 0.5 * (y_min + y_max)
-    return min(
-        eligible,
-        key=lambda item: (abs(item['pixel_v'] - center_v), item['width_m']),
+    minimum_separation = max(
+        band_height, int(round(focal_y * 0.02 / reference_depth))
     )
+    remaining = stable
+    selected = []
+    while remaining and len(selected) < maximum_candidates:
+        minimum_width = min(item['width_m'] for item in remaining)
+        eligible = [
+            item for item in remaining
+            if item['width_m'] <= minimum_width + width_tolerance_m
+        ]
+        choice = min(
+            eligible,
+            key=lambda item: (abs(item['pixel_v'] - center_v),
+                              item['width_m']),
+        )
+        selected.append(choice)
+        remaining = [
+            item for item in remaining
+            if abs(item['pixel_v'] - choice['pixel_v']) >= minimum_separation
+        ]
+    return tuple(selected)
+
+
+def narrow_grasp_band_from_depth(
+        depth_image, bounding_box, intrinsics, reference_point,
+        minimum_depth, maximum_depth, band_height_m=0.015,
+        width_tolerance_m=0.01, depth_tolerance_m=0.06):
+    """Return the first ranked band for callers using the singular API."""
+    bands = narrow_grasp_bands_from_depth(
+        depth_image, bounding_box, intrinsics, reference_point,
+        minimum_depth, maximum_depth, band_height_m,
+        width_tolerance_m, depth_tolerance_m, maximum_candidates=1,
+    )
+    return bands[0] if bands else None
 
 
 def optical_point_to_camera_link(point):

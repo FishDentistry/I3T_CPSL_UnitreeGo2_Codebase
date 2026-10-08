@@ -686,9 +686,18 @@ class D1GraspCoordinator(Node):
             requested_class, ' | '.join(details)
         )
 
-    def _detection_point(self, message, detection, band=False):
+    def _detection_point(
+            self, message, detection, band=False, band_candidate=None):
         """Express a detection center or band center in the planning frame."""
-        if band:
+        if band_candidate is not None:
+            if message.map_transform_available and (
+                    band_candidate.has_map_position):
+                source = band_candidate.map_position
+                source_frame = message.map_frame.strip()
+            else:
+                source = band_candidate.camera_position
+                source_frame = message.camera_frame.strip()
+        elif band:
             if not detection.has_grasp_band:
                 return None
             if message.map_transform_available and (
@@ -718,30 +727,51 @@ class D1GraspCoordinator(Node):
             return None
         return transformed
 
-    def _grasp_band_point(self, message, detection):
-        if not self._use_grasp_band or not detection.has_grasp_band:
-            return None
-        width = float(detection.grasp_band_width_m)
-        if not math.isfinite(width) or width <= 0.0:
-            return None
-        if width > self._maximum_grasp_band_width_m:
+    def _grasp_band_points(self, message, detection):
+        """Return ranked bands that fit the jaw-width safeguard."""
+        if not self._use_grasp_band:
+            return ()
+        candidates = list(detection.grasp_band_candidates)
+        if candidates:
+            entries = [
+                (candidate, float(candidate.width_m))
+                for candidate in candidates
+            ]
+        elif detection.has_grasp_band:
+            entries = [(None, float(detection.grasp_band_width_m))]
+        else:
+            return ()
+        usable = []
+        excessive = []
+        within_limit = False
+        for candidate, width in entries:
+            if not math.isfinite(width) or width <= 0.0:
+                continue
+            if width > self._maximum_grasp_band_width_m:
+                excessive.append(width)
+                continue
+            within_limit = True
+            point = self._detection_point(
+                message, detection, band=candidate is None,
+                band_candidate=candidate,
+            )
+            if point is not None:
+                usable.append((point, width))
+        if not usable and excessive and not within_limit:
             raise ValueError(
-                'narrowest visible band is {:.3f} m wide, above the '
-                '{:.3f} m gripper-width safeguard'.format(
-                    width, self._maximum_grasp_band_width_m
+                'all visible bands exceed the {:.3f} m gripper-width '
+                'safeguard (narrowest {:.3f} m)'.format(
+                    self._maximum_grasp_band_width_m, min(excessive)
                 )
             )
-        point = self._detection_point(message, detection, band=True)
-        if point is None:
-            return None
-        return point, width
+        return tuple(usable)
 
-    def _initial_grasp_band(self, object_point, object_class):
+    def _initial_grasp_bands(self, object_point, object_class):
         message = self._latest_detections
         if (not self._use_grasp_band or message is None
                 or self._now_seconds() - self._latest_detection_receipt
                 > self._fresh_detection_age_sec):
-            return None
+            return ()
         matches = []
         for detection in message.detections:
             label = detection.requested_target.strip() or detection.label.strip()
@@ -759,9 +789,9 @@ class D1GraspCoordinator(Node):
             if separation <= self._maximum_reacquire_correction_m:
                 matches.append((separation, detection))
         if not matches:
-            return None
+            return ()
         _, detection = min(matches, key=lambda item: item[0])
-        return self._grasp_band_point(message, detection)
+        return self._grasp_band_points(message, detection)
 
     def _select_object_and_candidates(self, objects, object_class):
         source_frame = self._latest_map.header.frame_id.strip()
@@ -808,46 +838,63 @@ class D1GraspCoordinator(Node):
             if not all(math.isfinite(value) for value in object_point):
                 continue
             try:
-                band = self._initial_grasp_band(object_point, object_class)
+                bands = self._initial_grasp_bands(object_point, object_class)
             except ValueError as error:
                 failures.append(str(error))
                 continue
-            target_point = object_point if band is None else band[0]
-            target_height_offset = (
-                grasp_height_offset if band is None else 0.0
+            usable_candidates = []
+            for band_index, band in enumerate(bands or (None,)):
+                target_point = object_point if band is None else band[0]
+                target_height_offset = (
+                    grasp_height_offset if band is None else 0.0
+                )
+                depth_direction = tuple(
+                    value - origin
+                    for value, origin in zip(target_point, camera_origin)
+                )
+                try:
+                    generated = grasping.generate_approach_candidates(
+                        target_point,
+                        approach_origin,
+                        self._approach_yaw_offsets,
+                        self._approach_distance,
+                        self._grasp_center_offset,
+                        0.0,
+                        forward_grasp_depth,
+                        depth_direction,
+                        target_height_offset,
+                        horizontal_depth,
+                    )
+                except ValueError as error:
+                    failures.append(str(error))
+                    continue
+                for candidate in generated:
+                    problem = self._candidate_problem(candidate)
+                    if problem is not None:
+                        failures.append(problem)
+                        continue
+                    candidate = dict(candidate)
+                    candidate['band_target_point'] = target_point
+                    candidate['band_width'] = None if band is None else band[1]
+                    candidate['band_index'] = band_index + 1 if band else 0
+                    candidate['band_count'] = len(bands)
+                    usable_candidates.append(candidate)
+            # Try another band at the same yaw before more oblique yaw angles.
+            ordered = sorted(
+                usable_candidates,
+                key=lambda candidate: (
+                    abs(candidate['yaw_offset']), candidate['band_index']
+                ),
             )
-            depth_direction = tuple(
-                value - origin
-                for value, origin in zip(target_point, camera_origin)
-            )
-            generated = []
-            try:
-                generated = list(grasping.generate_approach_candidates(
-                    target_point,
-                    approach_origin,
-                    self._approach_yaw_offsets,
-                    self._approach_distance,
-                    self._grasp_center_offset,
-                    0.0,
-                    forward_grasp_depth,
-                    depth_direction,
-                    target_height_offset,
-                    horizontal_depth,
-                ))
-            except ValueError as error:
-                failures.append(str(error))
-                continue
-            valid = []
-            for candidate in generated:
-                problem = self._candidate_problem(candidate)
-                if problem is None:
-                    valid.append(candidate)
-                else:
-                    failures.append(problem)
-            if valid:
+            if ordered:
+                first = ordered[0]
+                first_band = (
+                    None if first['band_width'] is None else
+                    (first['band_target_point'], first['band_width'])
+                )
                 viable.append((
-                    item, object_point, target_point, approach_origin,
-                    tuple(valid), band,
+                    item, object_point, first['band_target_point'],
+                    approach_origin, tuple(ordered), first_band,
                     grasping.distance_between(object_point, arm_origin),
                 ))
         if not viable:
@@ -943,19 +990,28 @@ class D1GraspCoordinator(Node):
         candidate = candidates[index]
         pose = self._candidate_pose(candidate, 'pregrasp_point')
         self._active['candidate'] = candidate
+        self._active['target_point'] = candidate['band_target_point']
+        self._active['grasp_band_width'] = candidate['band_width']
         self._active['pregrasp_pose'] = pose
         self._active['phase'] = 'planning_pregrasp'
         self._pregrasp_publisher.publish(pose)
+        band_description = (
+            'band {} of {} ({:.3f} m wide)'.format(
+                candidate['band_index'], candidate['band_count'],
+                candidate['band_width'],
+            ) if candidate['band_width'] is not None else 'center target'
+        )
         self._publish_active_stage(
             GraspStatus.STAGE_PLANNING,
             'MoveIt is planning pre-grasp candidate {} of {} with orientation '
             'tolerance at [{:.3f}, {:.3f}, {:.3f}] m '
-            '(yaw offset {:.3f} rad)'.format(
+            '(yaw offset {:.3f} rad; {})'.format(
                 index + 1, len(candidates),
                 candidate['pregrasp_point'][0],
                 candidate['pregrasp_point'][1],
                 candidate['pregrasp_point'][2],
                 candidate['yaw_offset'],
+                band_description,
             ),
             pose,
         )
@@ -1273,14 +1329,19 @@ class D1GraspCoordinator(Node):
     def _try_next_candidate(self, reason):
         if self._active is None:
             return
+        candidate = self._active['candidate']
+        band_label = (
+            'band {}'.format(candidate['band_index'])
+            if candidate['band_width'] is not None else 'center target'
+        )
         self._active.setdefault('candidate_failures', []).append(
-            '{}: {}'.format(
-                self._active['candidate_index'] + 1, reason
+            '{} ({}): {}'.format(
+                self._active['candidate_index'] + 1, band_label, reason
             )
         )
         self.get_logger().warning(
-            'Approach candidate {} failed: {}'.format(
-                self._active['candidate_index'] + 1, reason
+            'Approach candidate {} ({}) failed: {}'.format(
+                self._active['candidate_index'] + 1, band_label, reason
             )
         )
         self._active['candidate_index'] += 1
@@ -1331,14 +1392,26 @@ class D1GraspCoordinator(Node):
             )
             return
         try:
-            band = self._grasp_band_point(message, detection)
+            bands = self._grasp_band_points(message, detection)
         except (ValueError, TransformException) as error:
             self._finish_failure(str(error))
             return
-        if self._active['grasp_band_width'] is not None and band is None:
-            # A narrow band was used for pre-grasp. Wait for another supported
-            # band rather than silently switching back to the object center.
-            return
+        band = None
+        if self._active['grasp_band_width'] is not None:
+            if not bands:
+                # Preserve the validated band height rather than switching to
+                # the old center target after physical pre-grasp execution.
+                return
+            band = min(
+                bands,
+                key=lambda item: grasping.distance_between(
+                    item[0], self._active['target_point']
+                ),
+            )
+            if (grasping.distance_between(
+                    band[0], self._active['target_point'])
+                    > self._maximum_reacquire_correction_m):
+                return
         target_point = object_point if band is None else band[0]
         target_height_offset = (
             self._active['grasp_height_offset'] if band is None else 0.0

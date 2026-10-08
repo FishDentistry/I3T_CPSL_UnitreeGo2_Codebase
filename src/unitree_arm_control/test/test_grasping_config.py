@@ -198,13 +198,16 @@ class GraspingConfigTest(unittest.TestCase):
             / 'GroundedDetection.msg'
         ).read_text()
         self.assertIn('use_grasp_band: true', config)
-        self.assertIn('maximum_grasp_band_width_m: 0.06', config)
+        self.assertIn('maximum_grasp_band_width_m: 0.07', config)
         self.assertIn('bool has_grasp_band', detection)
         self.assertIn('float32 grasp_band_width_m', detection)
+        self.assertIn('GraspBand[] grasp_band_candidates', detection)
         self.assertIn(
-            'self._initial_grasp_band(object_point, object_class)',
+            'self._initial_grasp_bands(object_point, object_class)',
             coordinator,
         )
+        self.assertIn("candidate['band_target_point'] = target_point", coordinator)
+        self.assertIn("candidate['band_count'] = len(bands)", coordinator)
         self.assertIn("'object_point': object_point", coordinator)
         self.assertIn("'target_point': target_point", coordinator)
 

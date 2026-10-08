@@ -410,15 +410,18 @@ The coordinator performs the following sequence when execution is enabled:
    candidate pre-grasp. Compute the predicted gripper pose at that
    trajectory's final joint state, then check a collision-aware Cartesian path
    from that state to the complete grasp waypoint. Reject candidates with an
-   incomplete approach and select the first candidate whose two segments are
-   valid. No arm trajectory is executed during candidate screening.
+    incomplete approach and select the first candidate whose two segments are
+    valid. When a grasp band is available, distinct depth-supported bands are
+    interleaved at each yaw offset; a different band is tried before a more
+    oblique approach. No arm trajectory is executed during candidate screening.
 4. Execute the selected pre-grasp trajectory to a point nominally 0.11 metres
    from the configured final grasp point.
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
    limited to 0.08 metres by default.
-6. If the detection includes a supported narrow grasp band, use its 3-D
-   center as the target. Otherwise retain the original object-center target.
+ 6. If the detection includes supported grasp bands, reacquire the band nearest
+    the selected pre-grasp target and use its 3-D center. Otherwise retain the
+    original object-center target.
    Shift the selected visible-surface point along the camera viewing
    direction by the configured class depth. Apply any class-specific height
    correction only to the original object-center fallback; a measured band
@@ -494,15 +497,18 @@ class_grasp_height_offsets_m:
   - "mug=0.04"
 ```
 
-`use_grasp_band` enables the detector's narrow-band center for both the
-screened pre-grasp and the fresh post-pre-grasp correction. The band is
-associated with the semantic object using the detection's original center;
-the semantic map position and stable object identity are unchanged. If a band
-was used to screen a pre-grasp, the final approach waits for a fresh band
-rather than switching silently to the old center point. An estimated band
-wider than `maximum_grasp_band_width_m` is rejected before contact. The
-default limit is `0.06` m, leaving 0.01 m margin from the measured roughly
-0.07 m jaw opening at the configured 49-degree command. This estimate is a
+`use_grasp_band` enables up to three ranked, vertically distinct band centers
+for pre-grasp screening. Each is checked against
+`maximum_grasp_band_width_m`; planning tries another supported band when the
+preceding candidate cannot pass the pre-grasp and complete-approach checks.
+The band's own height takes precedence over class-specific vertical offsets.
+The band is associated with the semantic object using the detection's
+original center; the semantic map position and stable object identity are
+unchanged. After pre-grasp, the final approach waits for a fresh observation
+of the band nearest the selected target rather than switching silently to the
+old center point. The installed configuration sets the width limit to `0.07`
+m, approximately the measured jaw opening at the configured 49-degree
+command; the node's parameter default is `0.06` m. This estimate is a
 camera-visible width, not proof of jaw clearance or collision-free contact.
 When no reliable band is available before planning, the previous center-point
 behavior remains available. The depth-band calculation uses the existing

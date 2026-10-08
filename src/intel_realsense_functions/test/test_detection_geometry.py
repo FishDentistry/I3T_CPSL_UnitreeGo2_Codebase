@@ -27,6 +27,9 @@ from intel_realsense_functions.detection_geometry import (
     narrow_grasp_band_from_depth,
 )
 from intel_realsense_functions.detection_geometry import (
+    narrow_grasp_bands_from_depth,
+)
+from intel_realsense_functions.detection_geometry import (
     optical_point_to_camera_link,
 )
 from intel_realsense_functions.detection_geometry import (
@@ -106,6 +109,23 @@ class DetectionGeometryTest(unittest.TestCase):
             (1000.0, 1000.0, 50.0, 50.0),
             reference, 0.1, 3.0,
         ))
+
+    def test_ranked_bands_include_distinct_wider_alternative(self):
+        """A failed narrow grasp may use a separate supported band."""
+        depth = np.full((120, 100), 2.0, dtype=np.float32)
+        depth[20:100, 35:65] = 1.0
+        depth[20:50, 35:65] = 2.0
+        depth[20:50, 42:58] = 1.0
+        bands = narrow_grasp_bands_from_depth(
+            depth, (30, 10, 70, 110),
+            (1000.0, 1000.0, 50.0, 50.0),
+            {'z': 1.0, 'pixel_u': 50.0}, 0.1, 3.0,
+        )
+        self.assertGreaterEqual(len(bands), 2)
+        self.assertLess(bands[0]['width_m'], bands[1]['width_m'])
+        self.assertGreaterEqual(
+            abs(bands[0]['pixel_v'] - bands[1]['pixel_v']), 15.0,
+        )
 
     def test_optical_point_is_converted_to_camera_link_axes(self):
         """RealSense right/down/forward maps to link forward/left/up."""

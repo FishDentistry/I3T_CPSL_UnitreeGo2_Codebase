@@ -22,6 +22,7 @@ import time
 
 import cv2
 from cv_bridge import CvBridge, CvBridgeError
+from intel_realsense_interfaces.msg import GraspBand
 from intel_realsense_interfaces.msg import GroundedDetection
 from intel_realsense_interfaces.msg import GroundedDetectionArray
 import numpy as np
@@ -44,7 +45,7 @@ from intel_realsense_functions.detection_geometry import (
     camera_point_from_depth,
 )
 from intel_realsense_functions.detection_geometry import (
-    narrow_grasp_band_from_depth,
+    narrow_grasp_bands_from_depth,
 )
 from intel_realsense_functions.detection_geometry import (
     optical_point_to_camera_link,
@@ -422,6 +423,7 @@ class GroundingDinoNode(Node):
             'map_coordinates_m': None,
             'depth_sample_count': 0,
             'grasp_band': None,
+            'grasp_bands': [],
         }
         if optical_point is None:
             return result
@@ -455,14 +457,14 @@ class GroundingDinoNode(Node):
                     'y': map_y,
                     'z': map_z,
                 }
-        band = narrow_grasp_band_from_depth(
+        bands = narrow_grasp_bands_from_depth(
             depth_image, box, intrinsics, optical_point,
             depth_settings['minimum'], depth_settings['maximum'],
             depth_settings['band_height'],
             depth_settings['band_width_tolerance'],
             depth_settings['band_depth_tolerance'],
         )
-        if band is not None:
+        for band in bands:
             band_camera = optical_point_to_camera_link(band)
             band_map = None
             if map_transform is not None:
@@ -470,7 +472,7 @@ class GroundingDinoNode(Node):
                     band_map = self._map_point(band_camera, map_transform)
                 except ValueError:
                     pass
-            result['grasp_band'] = {
+            result['grasp_bands'].append({
                 'camera_coordinates_m': band_camera,
                 'map_coordinates_m': None if band_map is None else {
                     'x': band_map[0],
@@ -481,7 +483,9 @@ class GroundingDinoNode(Node):
                 'height_m': band['band_height_m'],
                 'pixel_u': band['pixel_u'],
                 'pixel_v': band['pixel_v'],
-            }
+            })
+        if result['grasp_bands']:
+            result['grasp_band'] = result['grasp_bands'][0]
         return result
 
     def _publish_annotated_image(self, image_rgb, detections, stamp, frame):
@@ -583,6 +587,23 @@ class GroundingDinoNode(Node):
             message.grasp_band_height_m = float(band['height_m'])
             message.grasp_band_pixel_u = float(band['pixel_u'])
             message.grasp_band_pixel_v = float(band['pixel_v'])
+        for alternative in detection.get('grasp_bands', []):
+            candidate = GraspBand()
+            camera = alternative['camera_coordinates_m']
+            candidate.camera_position.x = float(camera['x'])
+            candidate.camera_position.y = float(camera['y'])
+            candidate.camera_position.z = float(camera['z'])
+            mapped = alternative['map_coordinates_m']
+            candidate.has_map_position = mapped is not None
+            if mapped is not None:
+                candidate.map_position.x = float(mapped['x'])
+                candidate.map_position.y = float(mapped['y'])
+                candidate.map_position.z = float(mapped['z'])
+            candidate.width_m = float(alternative['width_m'])
+            candidate.height_m = float(alternative['height_m'])
+            candidate.pixel_u = float(alternative['pixel_u'])
+            candidate.pixel_v = float(alternative['pixel_v'])
+            message.grasp_band_candidates.append(candidate)
         return message
 
     def _publish_structured_detections(

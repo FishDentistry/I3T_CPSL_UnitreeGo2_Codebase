@@ -27,3 +27,6 @@ float32 grasp_band_width_m
 float32 grasp_band_height_m
 float64 grasp_band_pixel_u
 float64 grasp_band_pixel_v
+
+# Ranked alternatives. The legacy singular fields above describe the first.
+GraspBand[] grasp_band_candidates
