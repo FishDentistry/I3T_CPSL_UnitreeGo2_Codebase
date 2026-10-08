@@ -76,6 +76,6 @@ d1_grasp_coordinator:
     minimum_gripper_closure_degrees: 3.0
     gripper_stall_delta_degrees: 0.2
     gripper_stall_confirm_sec: 0.75
-    gripper_operation_timeout_sec: 5.0
+    gripper_operation_timeout_sec: 8.0
     require_grasp_obstruction: false
     hold_duration_sec: 3.0
