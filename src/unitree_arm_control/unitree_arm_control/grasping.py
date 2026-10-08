@@ -358,14 +358,15 @@ def _cross(first, second):
 
 
 def _gripper_opening_axis(approach_direction):
-    """Return the gripper-opening axis in the world frame.
+    """Return the horizontal jaw-opening axis for a vertical cup.
 
-    The D1 jaws open left-right, so their local +X axis is horizontal. Keep it
-    perpendicular to both the approach direction and gravity instead of using
-    the vertical world up as the jaw axis.
+    The D1 jaws open left-right across the object. For a side approach to a
+    vertical cup, the jaw axis must stay horizontal and perpendicular to the
+    cup's vertical axis; we therefore build it from the approach direction and
+    the world-up vector, not from the world-up vector alone.
     """
     direction = _normalized(approach_direction)
-    lateral = _cross((0.0, 0.0, 1.0), direction)
+    lateral = _cross(direction, (0.0, 0.0, 1.0))
     if distance_from_origin(lateral) <= 1.0e-9:
         lateral = _cross((1.0, 0.0, 0.0), direction)
     if distance_from_origin(lateral) <= 1.0e-9:
@@ -421,11 +422,12 @@ def _quaternion_from_matrix(columns):
 
 
 def quaternion_from_approach(approach_direction, tool_roll=0.0):
-    """Orient local +Z along an approach direction with a horizontal jaw axis.
+    """Orient the gripper so the jaw opening stays horizontal to the cup.
 
-    The D1 gripper jaws open left/right, so local +X is the horizontal opening
-    axis, not the world-up axis. ``tool_roll`` rotates the finger arrangement
-    about the approach axis.
+    The D1 wrist should approach with local +Z along the approach direction, but
+    the actual jaw opening plane must remain perpendicular to the cup's
+    vertical axis. That means the local +X axis is chosen in the horizontal
+    plane, not from the world-up axis directly.
     """
     local_z = _normalized(approach_direction)
     local_x = _gripper_opening_axis(local_z)
