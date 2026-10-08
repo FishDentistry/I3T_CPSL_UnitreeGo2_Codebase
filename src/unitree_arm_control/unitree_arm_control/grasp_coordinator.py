@@ -1889,7 +1889,14 @@ class D1GraspCoordinator(Node):
             request.start_state = copy.deepcopy(start_state)
         request.group_name = self._planning_group
         request.link_name = self._tip_link
-        request.waypoints = [copy.deepcopy(pose.pose)]
+        waypoints = []
+        if self._active.get('pregrasp_pose') is not None:
+            waypoints.append(copy.deepcopy(self._active['pregrasp_pose'].pose))
+        if pose is not None:
+            waypoints.append(copy.deepcopy(pose.pose))
+        if not waypoints:
+            waypoints = [copy.deepcopy(pose.pose)]
+        request.waypoints = waypoints
         request.max_step = self._cartesian_step_m
         if hasattr(request, 'jump_threshold'):
             request.jump_threshold = self._cartesian_jump_threshold
