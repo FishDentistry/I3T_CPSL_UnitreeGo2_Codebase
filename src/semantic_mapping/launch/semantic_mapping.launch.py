@@ -27,6 +27,13 @@ def generate_launch_description():
     model_checkpoint_path = LaunchConfiguration('model_checkpoint_path')
     device = LaunchConfiguration('device')
     detection_rate_hz = LaunchConfiguration('detection_rate_hz')
+    grasp_band_height_m = LaunchConfiguration('grasp_band_height_m')
+    grasp_band_width_tolerance_m = LaunchConfiguration(
+        'grasp_band_width_tolerance_m'
+    )
+    grasp_band_depth_tolerance_m = LaunchConfiguration(
+        'grasp_band_depth_tolerance_m'
+    )
     camera_frame = LaunchConfiguration('camera_frame')
     map_frame = LaunchConfiguration('map_frame')
     detections_topic = LaunchConfiguration('detections_topic')
@@ -66,6 +73,21 @@ def generate_launch_description():
             description='Maximum detector scheduling frequency.',
         ),
         DeclareLaunchArgument(
+            'grasp_band_height_m',
+            default_value='0.015',
+            description='Vertical height of each depth-profile band.',
+        ),
+        DeclareLaunchArgument(
+            'grasp_band_width_tolerance_m',
+            default_value='0.01',
+            description='Allowed excess width above the narrowest band.',
+        ),
+        DeclareLaunchArgument(
+            'grasp_band_depth_tolerance_m',
+            default_value='0.06',
+            description='Depth separation from the detected object surface.',
+        ),
+        DeclareLaunchArgument(
             'camera_frame',
             default_value='camera_link',
             description='Robot camera frame used by Grounding DINO.',
@@ -100,6 +122,13 @@ def generate_launch_description():
                 'model_checkpoint_path': model_checkpoint_path,
                 'device': device,
                 'detection_rate_hz': detection_rate_hz,
+                'grasp_band_height_m': grasp_band_height_m,
+                'grasp_band_width_tolerance_m': (
+                    grasp_band_width_tolerance_m
+                ),
+                'grasp_band_depth_tolerance_m': (
+                    grasp_band_depth_tolerance_m
+                ),
                 'camera_frame': camera_frame,
                 'map_frame': map_frame,
                 'structured_detections_topic': detections_topic,

@@ -44,6 +44,9 @@ from intel_realsense_functions.detection_geometry import (
     camera_point_from_depth,
 )
 from intel_realsense_functions.detection_geometry import (
+    narrow_grasp_band_from_depth,
+)
+from intel_realsense_functions.detection_geometry import (
     optical_point_to_camera_link,
 )
 from intel_realsense_functions.detection_geometry import (
@@ -92,6 +95,9 @@ class GroundingDinoNode(Node):
         self.declare_parameter('minimum_depth_m', 0.15)
         self.declare_parameter('maximum_depth_m', 6.0)
         self.declare_parameter('depth_center_fraction', 0.5)
+        self.declare_parameter('grasp_band_height_m', 0.015)
+        self.declare_parameter('grasp_band_width_tolerance_m', 0.01)
+        self.declare_parameter('grasp_band_depth_tolerance_m', 0.06)
 
         config_path = self.get_parameter('model_config_path').value
         checkpoint_path = self.get_parameter(
@@ -199,6 +205,8 @@ class GroundingDinoNode(Node):
             'minimum_depth_m',
             'maximum_depth_m',
             'depth_center_fraction',
+            'grasp_band_height_m',
+            'grasp_band_depth_tolerance_m',
         )
         for name in positive_parameters:
             if float(self.get_parameter(name).value) <= 0.0:
@@ -214,6 +222,13 @@ class GroundingDinoNode(Node):
         )
         if center_fraction > 1.0:
             raise RuntimeError('depth_center_fraction must not exceed 1.0')
+        width_tolerance = float(
+            self.get_parameter('grasp_band_width_tolerance_m').value
+        )
+        if not np.isfinite(width_tolerance) or width_tolerance < 0.0:
+            raise RuntimeError(
+                'grasp_band_width_tolerance_m must be nonnegative'
+            )
         for name in ('box_threshold', 'text_threshold'):
             threshold = float(self.get_parameter(name).value)
             if not 0.0 <= threshold <= 1.0:
@@ -406,6 +421,7 @@ class GroundingDinoNode(Node):
             'camera_coordinates_m': None,
             'map_coordinates_m': None,
             'depth_sample_count': 0,
+            'grasp_band': None,
         }
         if optical_point is None:
             return result
@@ -439,6 +455,33 @@ class GroundingDinoNode(Node):
                     'y': map_y,
                     'z': map_z,
                 }
+        band = narrow_grasp_band_from_depth(
+            depth_image, box, intrinsics, optical_point,
+            depth_settings['minimum'], depth_settings['maximum'],
+            depth_settings['band_height'],
+            depth_settings['band_width_tolerance'],
+            depth_settings['band_depth_tolerance'],
+        )
+        if band is not None:
+            band_camera = optical_point_to_camera_link(band)
+            band_map = None
+            if map_transform is not None:
+                try:
+                    band_map = self._map_point(band_camera, map_transform)
+                except ValueError:
+                    pass
+            result['grasp_band'] = {
+                'camera_coordinates_m': band_camera,
+                'map_coordinates_m': None if band_map is None else {
+                    'x': band_map[0],
+                    'y': band_map[1],
+                    'z': band_map[2],
+                },
+                'width_m': band['width_m'],
+                'height_m': band['band_height_m'],
+                'pixel_u': band['pixel_u'],
+                'pixel_v': band['pixel_v'],
+            }
         return result
 
     def _publish_annotated_image(self, image_rgb, detections, stamp, frame):
@@ -462,6 +505,23 @@ class GroundingDinoNode(Node):
                 1,
                 cv2.LINE_AA,
             )
+            band = detection.get('grasp_band')
+            if band is not None:
+                pixel = (
+                    int(round(band['pixel_u'])),
+                    int(round(band['pixel_v'])),
+                )
+                cv2.circle(annotated, pixel, 5, (0, 255, 0), 2)
+                cv2.putText(
+                    annotated,
+                    '{:.0f} mm'.format(1000.0 * band['width_m']),
+                    (pixel[0] + 7, pixel[1]),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45,
+                    (0, 255, 0),
+                    1,
+                    cv2.LINE_AA,
+                )
         try:
             message = self._output_bridge.cv2_to_imgmsg(
                 annotated, encoding='rgb8'
@@ -506,6 +566,23 @@ class GroundingDinoNode(Node):
         if depth_pixel is not None:
             message.depth_pixel_u = float(depth_pixel['u'])
             message.depth_pixel_v = float(depth_pixel['v'])
+        band = detection.get('grasp_band')
+        message.has_grasp_band = band is not None
+        if band is not None:
+            camera = band['camera_coordinates_m']
+            message.grasp_band_camera_position.x = float(camera['x'])
+            message.grasp_band_camera_position.y = float(camera['y'])
+            message.grasp_band_camera_position.z = float(camera['z'])
+            mapped = band['map_coordinates_m']
+            message.has_grasp_band_map_position = mapped is not None
+            if mapped is not None:
+                message.grasp_band_map_position.x = float(mapped['x'])
+                message.grasp_band_map_position.y = float(mapped['y'])
+                message.grasp_band_map_position.z = float(mapped['z'])
+            message.grasp_band_width_m = float(band['width_m'])
+            message.grasp_band_height_m = float(band['height_m'])
+            message.grasp_band_pixel_u = float(band['pixel_u'])
+            message.grasp_band_pixel_v = float(band['pixel_v'])
         return message
 
     def _publish_structured_detections(
@@ -551,6 +628,15 @@ class GroundingDinoNode(Node):
                 ),
                 'center_fraction': float(
                     self.get_parameter('depth_center_fraction').value
+                ),
+                'band_height': float(
+                    self.get_parameter('grasp_band_height_m').value
+                ),
+                'band_width_tolerance': float(
+                    self.get_parameter('grasp_band_width_tolerance_m').value
+                ),
+                'band_depth_tolerance': float(
+                    self.get_parameter('grasp_band_depth_tolerance_m').value
                 ),
             },
             'camera_frame': self.get_parameter('camera_frame').value,

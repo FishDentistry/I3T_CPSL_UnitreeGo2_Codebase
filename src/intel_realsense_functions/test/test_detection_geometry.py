@@ -24,6 +24,9 @@ from intel_realsense_functions.detection_geometry import (
     camera_point_from_depth,
 )
 from intel_realsense_functions.detection_geometry import (
+    narrow_grasp_band_from_depth,
+)
+from intel_realsense_functions.detection_geometry import (
     optical_point_to_camera_link,
 )
 from intel_realsense_functions.detection_geometry import (
@@ -75,6 +78,33 @@ class DetectionGeometryTest(unittest.TestCase):
             (100.0, 100.0, 2.0, 2.0),
             0.1,
             5.0,
+        ))
+
+    def test_narrow_grasp_band_uses_supported_object_neck(self):
+        """A persistent narrow depth silhouette beats the wider body."""
+        depth = np.full((100, 100), 2.0, dtype=np.float32)
+        depth[20:80, 35:65] = 1.0
+        depth[20:50, 35:65] = 2.0
+        depth[20:50, 42:58] = 1.0
+        reference = {
+            'z': 1.0, 'pixel_u': 50.0,
+        }
+        band = narrow_grasp_band_from_depth(
+            depth, (30, 15, 70, 85),
+            (1000.0, 1000.0, 50.0, 50.0),
+            reference, 0.1, 3.0,
+        )
+        self.assertIsNotNone(band)
+        self.assertAlmostEqual(band['width_m'], 0.016, places=3)
+        self.assertLess(band['pixel_v'], 50.0)
+
+    def test_narrow_grasp_band_rejects_unreliable_depth(self):
+        depth = np.full((100, 100), 2.0, dtype=np.float32)
+        reference = {'z': 1.0, 'pixel_u': 50.0}
+        self.assertIsNone(narrow_grasp_band_from_depth(
+            depth, (30, 15, 70, 85),
+            (1000.0, 1000.0, 50.0, 50.0),
+            reference, 0.1, 3.0,
         ))
 
     def test_optical_point_is_converted_to_camera_link_axes(self):

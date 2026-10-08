@@ -417,8 +417,12 @@ The coordinator performs the following sequence when execution is enabled:
 5. Require a new matching Grounding DINO observation after pre-grasp. The
    observation must remain close to the mapped point, and the correction is
    limited to 0.08 metres by default.
-6. Shift the detected surface point along the camera viewing direction by
-   the configured class depth, then apply any class-specific height correction.
+6. If the detection includes a supported narrow grasp band, use its 3-D
+   center as the target. Otherwise retain the original object-center target.
+   Shift the selected visible-surface point along the camera viewing
+   direction by the configured class depth. Apply any class-specific height
+   correction only to the original object-center fallback; a measured band
+   already supplies its own target height.
    The mug's forward correction is projected into the planning-frame XY plane
    so it does not lower the target. Both the pre-grasp and final target use
    these offsets.
@@ -481,13 +485,28 @@ camera ray, preserving the detected target height; other classes retain the
 three-dimensional camera-ray correction.
 
 `class_grasp_height_offsets_m` applies signed vertical corrections in the
-planning frame after the horizontal depth correction. Unlisted classes use
-zero. The configured mug correction is 0.04 m:
+planning frame after the horizontal depth correction when no reliable grasp
+band is available. Unlisted classes use zero. The configured mug correction
+is 0.04 m:
 
 ```yaml
 class_grasp_height_offsets_m:
   - "mug=0.04"
 ```
+
+`use_grasp_band` enables the detector's narrow-band center for both the
+screened pre-grasp and the fresh post-pre-grasp correction. The band is
+associated with the semantic object using the detection's original center;
+the semantic map position and stable object identity are unchanged. If a band
+was used to screen a pre-grasp, the final approach waits for a fresh band
+rather than switching silently to the old center point. An estimated band
+wider than `maximum_grasp_band_width_m` is rejected before contact. The
+default limit is `0.06` m, leaving 0.01 m margin from the measured roughly
+0.07 m jaw opening at the configured 49-degree command. This estimate is a
+camera-visible width, not proof of jaw clearance or collision-free contact.
+When no reliable band is available before planning, the previous center-point
+behavior remains available. The depth-band calculation uses the existing
+RealSense and NumPy dependencies; no segmentation package is required.
 
 `grasp_orientation_tolerance_rad` controls pre-grasp planning, corrected
 pre-grasp repositioning, and the maximum wrist adjustment tested for the
@@ -506,10 +525,11 @@ ceiling based on powered-operation observations, not a mechanical limit.
 The one-degree margin accommodates small feedback overshoot; it is not the
 default opening target.
 
-Grounding DINO currently provides a class, bounding box, and one depth-derived
-3D point rather than an object mesh or grasp pose. Consequently, the node does
-not infer cup handles, object width, support surfaces, or neighboring-object
-geometry. It also has gripper position feedback but no contact-force sensor.
+Grounding DINO provides a class, bounding box, depth-derived object center,
+and an optional estimated narrow band rather than an object mesh or complete
+grasp pose. Consequently, the node does not infer cup handles, hidden object
+width, support surfaces, or neighboring-object geometry. It also has gripper
+position feedback but no contact-force sensor.
 Physical testing therefore requires a clear workspace and conservative
 objects until segmented geometry and grasp-pose estimation are added.
 

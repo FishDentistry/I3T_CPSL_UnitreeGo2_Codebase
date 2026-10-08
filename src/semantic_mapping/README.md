@@ -143,6 +143,9 @@ The launch file exposes the following arguments:
 | `model_checkpoint_path` | Standard user-local checkpoint path | Detector |
 | `device` | `auto` | Detector |
 | `detection_rate_hz` | `5.0` | Detector |
+| `grasp_band_height_m` | `0.015` | Detector |
+| `grasp_band_width_tolerance_m` | `0.01` | Detector |
+| `grasp_band_depth_tolerance_m` | `0.06` | Detector |
 | `camera_frame` | `camera_link` | Detector |
 | `map_frame` | `map` | Both nodes |
 | `detections_topic` | `/grounding_dino/detection_array` | Both nodes |
@@ -151,7 +154,9 @@ The launch file exposes the following arguments:
 
 The detector and mapper receive the same `map_frame` and structured detection
 topic from the launch file so the connection cannot drift through separate
-configuration. To run the mapper for debugging, use:
+configuration. Optional grasp-band fields in detections are not fused into
+the semantic map; the map continues to track each object's center. To run
+the mapper for debugging, use:
 
 ```bash
 ros2 run semantic_mapping semanticMappingNode

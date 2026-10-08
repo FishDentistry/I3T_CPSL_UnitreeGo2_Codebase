@@ -134,6 +134,116 @@ def camera_point_from_depth(
     }
 
 
+def narrow_grasp_band_from_depth(
+        depth_image, bounding_box, intrinsics, reference_point,
+        minimum_depth, maximum_depth, band_height_m=0.015,
+        width_tolerance_m=0.01, depth_tolerance_m=0.06):
+    """Estimate a narrow, vertically supported band on the visible object.
+
+    This is a depth silhouette estimate, not a full 3-D object model. Only
+    depths near the central object sample are used. Edge rows and isolated
+    narrow runs are rejected so background gaps cannot become grasp targets.
+    """
+    if depth_image.ndim != 2:
+        raise ValueError('depth image must have one channel')
+    if not all(math.isfinite(value) and value > 0.0 for value in (
+            band_height_m, depth_tolerance_m)):
+        raise ValueError('band height and depth tolerance must be positive')
+    if not math.isfinite(width_tolerance_m) or width_tolerance_m < 0.0:
+        raise ValueError('band width tolerance must be nonnegative')
+    focal_x, focal_y, principal_x, principal_y = intrinsics
+    if focal_x <= 0.0 or focal_y <= 0.0:
+        raise ValueError('camera focal lengths must be positive')
+    reference_depth = float(reference_point['z'])
+    reference_u = float(reference_point['pixel_u'])
+    if not math.isfinite(reference_depth) or reference_depth <= 0.0:
+        return None
+
+    image_height, image_width = depth_image.shape
+    x_min, y_min, x_max, y_max = bounding_box
+    x_min = max(0, min(image_width - 1, int(math.floor(x_min))))
+    y_min = max(0, min(image_height - 1, int(math.floor(y_min))))
+    x_max = max(0, min(image_width - 1, int(math.ceil(x_max))))
+    y_max = max(0, min(image_height - 1, int(math.ceil(y_max))))
+    box_width = x_max - x_min + 1
+    box_height = y_max - y_min + 1
+    if box_width < 8 or box_height < 12:
+        return None
+
+    margin = max(2, int(round(0.15 * box_height)))
+    first_row, last_row = y_min + margin, y_max - margin
+    band_height = max(3, int(round(focal_y * band_height_m / reference_depth)))
+    if last_row - first_row + 1 < 2 * band_height:
+        return None
+    step = max(1, band_height // 2)
+    candidates = []
+    for top in range(first_row, last_row - band_height + 2, step):
+        sample = depth_image[top:top + band_height, x_min:x_max + 1]
+        foreground = (
+            np.isfinite(sample)
+            & (sample >= minimum_depth)
+            & (sample <= maximum_depth)
+            & (np.abs(sample - reference_depth) <= depth_tolerance_m)
+        )
+        supported = np.count_nonzero(foreground, axis=0) >= max(
+            2, int(math.ceil(0.7 * band_height))
+        )
+        padded = np.concatenate(([False], supported, [False]))
+        transitions = np.diff(padded.astype(np.int8))
+        starts = np.flatnonzero(transitions == 1)
+        ends = np.flatnonzero(transitions == -1)
+        runs = []
+        for start, end in zip(starts, ends):
+            width_m = (end - start) * reference_depth / focal_x
+            center_u = x_min + 0.5 * (start + end - 1)
+            if width_m < 0.01 or (
+                    abs(center_u - reference_u) > max(
+                        0.2 * box_width, 0.5 * (end - start))):
+                continue
+            runs.append((abs(center_u - reference_u), start, end, width_m))
+        if not runs:
+            continue
+        _, start, end, width_m = min(runs)
+        depths = sample[:, start:end][foreground[:, start:end]]
+        if depths.size < band_height * 3:
+            continue
+        depth = float(np.median(depths))
+        pixel_u = x_min + 0.5 * (start + end - 1)
+        pixel_v = top + 0.5 * (band_height - 1)
+        candidates.append({
+            'x': (pixel_u - principal_x) * depth / focal_x,
+            'y': (pixel_v - principal_y) * depth / focal_y,
+            'z': depth,
+            'pixel_u': pixel_u,
+            'pixel_v': pixel_v,
+            'width_m': (end - start) * depth / focal_x,
+            'band_height_m': band_height * depth / focal_y,
+        })
+
+    stable = [
+        candidate for candidate in candidates
+        if any(
+            other is not candidate
+            and abs(other['pixel_v'] - candidate['pixel_v']) <= band_height
+            and abs(other['width_m'] - candidate['width_m'])
+            <= width_tolerance_m
+            for other in candidates
+        )
+    ]
+    if not stable:
+        return None
+    minimum_width = min(item['width_m'] for item in stable)
+    eligible = [
+        item for item in stable
+        if item['width_m'] <= minimum_width + width_tolerance_m
+    ]
+    center_v = 0.5 * (y_min + y_max)
+    return min(
+        eligible,
+        key=lambda item: (abs(item['pixel_v'] - center_v), item['width_m']),
+    )
+
+
 def optical_point_to_camera_link(point):
     """Convert RealSense optical XYZ to the robot camera-link convention.
 

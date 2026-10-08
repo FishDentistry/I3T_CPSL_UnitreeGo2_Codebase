@@ -35,6 +35,16 @@ system. It then converts the point to the robot `camera_link` convention. When
 the TF tree contains a transform from `camera_link` to `map`, the point is also
 transformed into map coordinates.
 
+For each depth-supported detection, the node also estimates a narrow
+horizontal grasp band from the aligned depth silhouette inside the detection
+box. Candidate bands exclude the top and bottom box margins, require depth
+support across their height, and must be corroborated by a neighboring band.
+Among bands within `grasp_band_width_tolerance_m` of the narrowest measured
+width, the band closest to the box's vertical center is selected. This is a
+visible-surface estimate, not a segmentation mask or a complete 3-D model;
+handles, occlusions, similar-depth backgrounds, and camera angle can change
+the measured width. When support is insufficient, no band is published.
+
 The node runs inference only while at least one detection target is configured.
 Detections are published continuously at the configured inference rate. It does
 not publish robot or arm commands.
@@ -83,7 +93,11 @@ uses `intel_realsense_interfaces/msg/GroundedDetectionArray`, with one
 `GroundedDetection` for each result. Boolean fields explicitly state whether
 valid depth, camera coordinates, and map coordinates are present. Its header
 frame ID is intentionally empty; the coordinate frames are named by the
-`camera_frame` and `map_frame` fields.
+`camera_frame` and `map_frame` fields. Optional `grasp_band_*` fields report
+the estimated band center in both frames when available, its visible width
+and height in metres, and its center pixel. `has_grasp_band` and
+`has_grasp_band_map_position` distinguish unavailable geometry from a point
+at the coordinate origin.
 
 `/grounding_dino/detections` retains the existing JSON representation for
 compatibility with current consumers:
@@ -109,7 +123,15 @@ compatibility with current consumers:
       "camera_coordinates_m": {"x": 1.2, "y": -0.1, "z": 0.0},
       "map_coordinates_m": {"x": 2.4, "y": -0.7, "z": 0.8},
       "depth_sample_count": 1530,
-      "depth_pixel": {"u": 280.0, "v": 265.0}
+      "depth_pixel": {"u": 280.0, "v": 265.0},
+      "grasp_band": {
+        "camera_coordinates_m": {"x": 1.2, "y": -0.1, "z": 0.02},
+        "map_coordinates_m": {"x": 2.4, "y": -0.7, "z": 0.82},
+        "width_m": 0.05,
+        "height_m": 0.015,
+        "pixel_u": 280.0,
+        "pixel_v": 250.0
+      }
     }
   ]
 }
@@ -119,6 +141,22 @@ compatibility with current consumers:
 depth is unavailable. `map_coordinates_m` is also `null` when the TF lookup
 fails. A missing map transform never prevents publication of pixel and camera
 coordinates.
+`grasp_band` is `null` when the depth profile is unreliable.
+
+The band estimator uses NumPy already required by this package; it adds no
+Python or ROS installation dependency. Its parameters are
+`grasp_band_height_m` (default `0.015`),
+`grasp_band_width_tolerance_m` (default `0.01`), and
+`grasp_band_depth_tolerance_m` (default `0.06`). The annotated image marks
+the selected band center in green with its estimated width in millimetres.
+Changing `GroundedDetection.msg` requires rebuilding
+`intel_realsense_interfaces` and downstream packages before launching them.
+From the sourced ROS 2 Foxy workspace:
+
+```bash
+colcon build --packages-up-to intel_realsense_functions semantic_mapping unitree_arm_control --symlink-install
+source install/setup.bash
+```
 
 Depth deprojection initially follows the RealSense optical convention: positive
 X points right, positive Y points down, and positive Z points forward. Before

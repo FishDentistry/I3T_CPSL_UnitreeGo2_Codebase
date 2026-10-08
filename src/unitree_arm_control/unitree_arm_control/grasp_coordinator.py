@@ -208,6 +208,8 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('velocity_scaling', 0.15)
         self.declare_parameter('acceleration_scaling', 0.10)
         self.declare_parameter('fresh_detection_age_sec', 5.0)
+        self.declare_parameter('use_grasp_band', True)
+        self.declare_parameter('maximum_grasp_band_width_m', 0.06)
         self.declare_parameter('reacquire_timeout_sec', 10.0)
         self.declare_parameter('reacquire_match_distance_m', 0.25)
         self.declare_parameter('maximum_reacquire_correction_m', 0.08)
@@ -249,7 +251,10 @@ class D1GraspCoordinator(Node):
         for name in string_names:
             setattr(self, '_' + name, str(self._parameter(name)).strip())
 
-        bool_names = ('execution_enabled', 'require_grasp_obstruction')
+        bool_names = (
+            'execution_enabled', 'require_grasp_obstruction',
+            'use_grasp_band',
+        )
         for name in bool_names:
             setattr(self, '_' + name, bool(self._parameter(name)))
 
@@ -264,6 +269,7 @@ class D1GraspCoordinator(Node):
             'grasp_orientation_tolerance_rad',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
+            'maximum_grasp_band_width_m',
             'reacquire_timeout_sec', 'reacquire_match_distance_m',
             'maximum_reacquire_correction_m',
             'maximum_final_lateral_correction_m',
@@ -370,6 +376,11 @@ class D1GraspCoordinator(Node):
                 raise RuntimeError('{} must be in (0, 1]'.format(name))
         if self._fresh_detection_age_sec <= 0.0:
             raise RuntimeError('fresh_detection_age_sec must be positive')
+        if (not math.isfinite(self._maximum_grasp_band_width_m)
+                or self._maximum_grasp_band_width_m <= 0.0):
+            raise RuntimeError(
+                'maximum_grasp_band_width_m must be finite and positive'
+            )
         if self._reacquire_timeout_sec <= 0.0:
             raise RuntimeError('reacquire_timeout_sec must be positive')
         if self._reacquire_match_distance_m <= 0.0:
@@ -559,9 +570,10 @@ class D1GraspCoordinator(Node):
             return
 
         try:
-            selected, object_point, approach_origin, candidates = (
-                self._select_object_and_candidates(objects, object_class)
-            )
+            (
+                selected, object_point, target_point, approach_origin,
+                candidates, band,
+            ) = self._select_object_and_candidates(objects, object_class)
         except Exception as error:
             self._reject(command, str(error))
             return
@@ -587,6 +599,8 @@ class D1GraspCoordinator(Node):
                 object_class in self._horizontal_forward_depth_classes
             ),
             'object_point': object_point,
+            'target_point': target_point,
+            'grasp_band_width': None if band is None else band[1],
             'approach_origin': approach_origin,
             'candidates': candidates,
             'candidate_index': 0,
@@ -611,7 +625,7 @@ class D1GraspCoordinator(Node):
         self._publish_active_stage(
             GraspStatus.STAGE_ACCEPTED,
             'selected {} with {} safeguard-compatible approach candidate(s); '
-            'forward grasp depth is {:.3f} m'.format(
+            'forward grasp depth is {:.3f} m; {}'.format(
                 selected.object_id,
                 len(candidates),
                 grasping.forward_grasp_depth_for_class(
@@ -619,6 +633,8 @@ class D1GraspCoordinator(Node):
                     self._default_forward_grasp_depth_offset,
                     self._class_forward_grasp_depth_offsets,
                 ),
+                ('narrow band width {:.3f} m'.format(band[1])
+                 if band is not None else 'using legacy center target'),
             ),
             first_pose,
         )
@@ -670,6 +686,83 @@ class D1GraspCoordinator(Node):
             requested_class, ' | '.join(details)
         )
 
+    def _detection_point(self, message, detection, band=False):
+        """Express a detection center or band center in the planning frame."""
+        if band:
+            if not detection.has_grasp_band:
+                return None
+            if message.map_transform_available and (
+                    detection.has_grasp_band_map_position):
+                source = detection.grasp_band_map_position
+                source_frame = message.map_frame.strip()
+            else:
+                source = detection.grasp_band_camera_position
+                source_frame = message.camera_frame.strip()
+        elif message.map_transform_available and detection.has_map_position:
+            source = detection.map_position
+            source_frame = message.map_frame.strip()
+        elif detection.has_camera_position:
+            source = detection.camera_position
+            source_frame = message.camera_frame.strip()
+        else:
+            return None
+        if not source_frame:
+            source_frame = message.header.frame_id.strip()
+        if not source_frame:
+            return None
+        transformed = self._transform_point(
+            self._point_tuple(source),
+            self._lookup_transform(self._planning_frame, source_frame),
+        )
+        if not all(math.isfinite(value) for value in transformed):
+            return None
+        return transformed
+
+    def _grasp_band_point(self, message, detection):
+        if not self._use_grasp_band or not detection.has_grasp_band:
+            return None
+        width = float(detection.grasp_band_width_m)
+        if not math.isfinite(width) or width <= 0.0:
+            return None
+        if width > self._maximum_grasp_band_width_m:
+            raise ValueError(
+                'narrowest visible band is {:.3f} m wide, above the '
+                '{:.3f} m gripper-width safeguard'.format(
+                    width, self._maximum_grasp_band_width_m
+                )
+            )
+        point = self._detection_point(message, detection, band=True)
+        if point is None:
+            return None
+        return point, width
+
+    def _initial_grasp_band(self, object_point, object_class):
+        message = self._latest_detections
+        if (not self._use_grasp_band or message is None
+                or self._now_seconds() - self._latest_detection_receipt
+                > self._fresh_detection_age_sec):
+            return None
+        matches = []
+        for detection in message.detections:
+            label = detection.requested_target.strip() or detection.label.strip()
+            if grasping.normalize_label(label) != object_class:
+                continue
+            if float(detection.score) < self._minimum_confidence:
+                continue
+            try:
+                center = self._detection_point(message, detection)
+            except Exception:
+                continue
+            if center is None:
+                continue
+            separation = grasping.distance_between(center, object_point)
+            if separation <= self._maximum_reacquire_correction_m:
+                matches.append((separation, detection))
+        if not matches:
+            return None
+        _, detection = min(matches, key=lambda item: item[0])
+        return self._grasp_band_point(message, detection)
+
     def _select_object_and_candidates(self, objects, object_class):
         source_frame = self._latest_map.header.frame_id.strip()
         if not source_frame:
@@ -714,14 +807,23 @@ class D1GraspCoordinator(Node):
             )
             if not all(math.isfinite(value) for value in object_point):
                 continue
+            try:
+                band = self._initial_grasp_band(object_point, object_class)
+            except ValueError as error:
+                failures.append(str(error))
+                continue
+            target_point = object_point if band is None else band[0]
+            target_height_offset = (
+                grasp_height_offset if band is None else 0.0
+            )
             depth_direction = tuple(
                 value - origin
-                for value, origin in zip(object_point, camera_origin)
+                for value, origin in zip(target_point, camera_origin)
             )
             generated = []
             try:
                 generated = list(grasping.generate_approach_candidates(
-                    object_point,
+                    target_point,
                     approach_origin,
                     self._approach_yaw_offsets,
                     self._approach_distance,
@@ -729,7 +831,7 @@ class D1GraspCoordinator(Node):
                     0.0,
                     forward_grasp_depth,
                     depth_direction,
-                    grasp_height_offset,
+                    target_height_offset,
                     horizontal_depth,
                 ))
             except ValueError as error:
@@ -744,7 +846,8 @@ class D1GraspCoordinator(Node):
                     failures.append(problem)
             if valid:
                 viable.append((
-                    item, object_point, approach_origin, tuple(valid),
+                    item, object_point, target_point, approach_origin,
+                    tuple(valid), band,
                     grasping.distance_between(object_point, arm_origin),
                 ))
         if not viable:
@@ -753,8 +856,8 @@ class D1GraspCoordinator(Node):
                 'no approach candidate satisfies reach and height safeguards: '
                 + detail
             )
-        selected = min(viable, key=lambda value: value[4])
-        return selected[0], selected[1], selected[2], selected[3]
+        selected = min(viable, key=lambda value: value[6])
+        return selected[:6]
 
     def _lookup_transform(self, target_frame, source_frame):
         if target_frame == source_frame:
@@ -1199,30 +1302,15 @@ class D1GraspCoordinator(Node):
                 continue
             if float(detection.score) < self._minimum_confidence:
                 continue
-            if message.map_transform_available and detection.has_map_position:
-                source_point = self._point_tuple(detection.map_position)
-                source_frame = message.map_frame.strip()
-            elif detection.has_camera_position:
-                source_point = self._point_tuple(detection.camera_position)
-                source_frame = message.camera_frame.strip()
-            else:
-                continue
-            if not source_frame:
-                source_frame = message.header.frame_id.strip()
-            if not source_frame:
-                continue
             try:
-                transform = self._lookup_transform(
-                    self._planning_frame, source_frame
-                )
+                point = self._detection_point(message, detection)
             except Exception as error:
                 self.get_logger().warning(
-                    'Could not transform fresh detection from {}: {}'.format(
-                        source_frame, error
-                    )
+                    'Could not transform fresh detection: {}'.format(error)
                 )
                 continue
-            point = self._transform_point(source_point, transform)
+            if point is None:
+                continue
             separation = grasping.distance_between(
                 point, self._active['object_point']
             )
@@ -1231,7 +1319,9 @@ class D1GraspCoordinator(Node):
         if not matches:
             return
 
-        separation, object_point, _ = min(matches, key=lambda item: item[0])
+        separation, object_point, detection = min(
+            matches, key=lambda item: item[0]
+        )
         if separation > self._maximum_reacquire_correction_m:
             self._finish_failure(
                 'fresh detection moved {:.3f} m from the mapped point, above '
@@ -1240,6 +1330,19 @@ class D1GraspCoordinator(Node):
                 )
             )
             return
+        try:
+            band = self._grasp_band_point(message, detection)
+        except (ValueError, TransformException) as error:
+            self._finish_failure(str(error))
+            return
+        if self._active['grasp_band_width'] is not None and band is None:
+            # A narrow band was used for pre-grasp. Wait for another supported
+            # band rather than silently switching back to the object center.
+            return
+        target_point = object_point if band is None else band[0]
+        target_height_offset = (
+            self._active['grasp_height_offset'] if band is None else 0.0
+        )
         selected = self._active['candidate']
         camera_frame = message.camera_frame.strip() or self._camera_frame
         try:
@@ -1259,14 +1362,14 @@ class D1GraspCoordinator(Node):
         )
         depth_direction = tuple(
             value - origin
-            for value, origin in zip(object_point, camera_origin)
+            for value, origin in zip(target_point, camera_origin)
         )
         candidate = grasping.retarget_approach_candidate(
-            selected, object_point, self._approach_distance,
+            selected, target_point, self._approach_distance,
             self._grasp_center_offset,
             self._active['forward_grasp_depth_offset'],
             depth_direction,
-            self._active['grasp_height_offset'],
+            target_height_offset,
             self._active['horizontal_depth'],
         )
         problem = self._candidate_problem(candidate)
@@ -1325,6 +1428,8 @@ class D1GraspCoordinator(Node):
         grasp_pose = self._candidate_pose(candidate, 'grasp_point')
         retreat_pose = self._candidate_pose(candidate, 'pregrasp_point')
         self._active['object_point'] = object_point
+        self._active['target_point'] = target_point
+        self._active['grasp_band_width'] = None if band is None else band[1]
         self._active['candidate'] = candidate
         self._active['pregrasp_pose'] = retreat_pose
         self._active['grasp_pose'] = grasp_pose
@@ -1346,7 +1451,10 @@ class D1GraspCoordinator(Node):
 
         self._begin_final_approach(
             grasp_pose, 'approach', GraspStatus.STAGE_APPROACHING,
-            'fresh target acquired; computing the short Cartesian final approach',
+            'fresh {} acquired; computing the short Cartesian final approach'.format(
+                'narrow band ({:.3f} m)'.format(band[1])
+                if band is not None else 'center target'
+            ),
         )
 
     def _begin_final_approach(

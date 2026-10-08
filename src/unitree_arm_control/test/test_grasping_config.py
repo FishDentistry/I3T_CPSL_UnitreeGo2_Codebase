@@ -184,8 +184,29 @@ class GraspingConfigTest(unittest.TestCase):
             'self._planning_frame, self._tip_link, Time()', coordinator
         )
         self.assertIn(
-            'object_point, approach_origin,', coordinator
+            'target_point = object_point if band is None else band[0]',
+            coordinator,
         )
+
+    def test_narrow_band_target_keeps_semantic_center_for_association(self):
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        detection = (
+            REPOSITORY_SRC / 'intel_realsense_interfaces' / 'msg'
+            / 'GroundedDetection.msg'
+        ).read_text()
+        self.assertIn('use_grasp_band: true', config)
+        self.assertIn('maximum_grasp_band_width_m: 0.06', config)
+        self.assertIn('bool has_grasp_band', detection)
+        self.assertIn('float32 grasp_band_width_m', detection)
+        self.assertIn(
+            'self._initial_grasp_band(object_point, object_class)',
+            coordinator,
+        )
+        self.assertIn("'object_point': object_point", coordinator)
+        self.assertIn("'target_point': target_point", coordinator)
 
     def test_gripper_sequence_holds_releases_and_does_not_lift(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()

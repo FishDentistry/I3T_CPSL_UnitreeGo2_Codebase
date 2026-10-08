@@ -17,3 +17,13 @@ geometry_msgs/Point camera_position
 
 bool has_map_position
 geometry_msgs/Point map_position
+
+# Narrow horizontal band estimated from aligned depth inside the detection.
+bool has_grasp_band
+geometry_msgs/Point grasp_band_camera_position
+bool has_grasp_band_map_position
+geometry_msgs/Point grasp_band_map_position
+float32 grasp_band_width_m
+float32 grasp_band_height_m
+float64 grasp_band_pixel_u
+float64 grasp_band_pixel_v
