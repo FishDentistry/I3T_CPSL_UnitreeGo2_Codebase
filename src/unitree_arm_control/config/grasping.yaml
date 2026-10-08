@@ -28,9 +28,10 @@ d1_grasp_coordinator:
     minimum_target_z_m: -0.10
     maximum_target_z_m: 0.80
 
-    # Aim from the live gripper position toward the object in 3-D, then try
-    # yaw alternatives around that direction. MoveIt may vary each generated
-    # pre-grasp orientation within the configured tolerance.
+    # Aim from the fixed D1 mount toward the object in 3-D, then try yaw
+    # alternatives around that direction. The grasp geometry is independent
+    # of the arm's current posture. MoveIt may vary each generated pre-grasp
+    # orientation within the configured tolerance.
     approach_yaw_offsets_rad: [0.0, 0.5235987756, -0.5235987756, 1.0471975512, -1.0471975512]
     approach_distance_m: 0.11
     # Apply only after measuring the desired tool-frame-to-object offset.

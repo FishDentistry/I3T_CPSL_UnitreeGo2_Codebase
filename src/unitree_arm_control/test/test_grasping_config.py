@@ -176,12 +176,20 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertEqual(len(callback_lines), 1)
         self.assertLess(token_assignments[0], callback_lines[0])
 
-    def test_primary_approach_uses_current_gripper_position(self):
+    def test_primary_approach_uses_arm_mount_position(self):
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
         self.assertIn(
-            'self._planning_frame, self._tip_link, Time()', coordinator
+            'self._planning_frame, self._reach_reference_frame, Time()',
+            coordinator,
+        )
+        self.assertIn(
+            'approach_origin = arm_origin', coordinator
+        )
+        self.assertNotIn(
+            'tip_transform = self._tf_buffer.lookup_transform(',
+            coordinator,
         )
         self.assertIn(
             'target_point = object_point if band is None else band[0]',

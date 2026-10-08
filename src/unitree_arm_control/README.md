@@ -403,9 +403,9 @@ last 20 seconds, and satisfy the configured height and reach safeguards.
 The coordinator performs the following sequence when execution is enabled:
 
 1. Open the gripper and confirm its feedback position.
-2. Generate three-dimensional pre-grasp points from the current gripper toward
-   the object, including configured yaw fallbacks ordered by smallest yaw
-   change.
+2. Generate three-dimensional pre-grasp points from the D1 mount toward the
+   object. This keeps the target approach independent of the arm's initial
+   posture. Configured yaw fallbacks are ordered by smallest yaw change.
 3. Plan, without executing, an orientation-tolerant MoveIt trajectory to each
    candidate pre-grasp. Compute the predicted gripper pose at that
    trajectory's final joint state, then check a collision-aware Cartesian path

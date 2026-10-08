@@ -804,12 +804,10 @@ class D1GraspCoordinator(Node):
             self._planning_frame, self._reach_reference_frame, Time()
         )
         arm_origin = self._point_tuple(arm_transform.transform.translation)
-        tip_transform = self._tf_buffer.lookup_transform(
-            self._planning_frame, self._tip_link, Time()
-        )
-        approach_origin = self._point_tuple(
-            tip_transform.transform.translation
-        )
+        # A grasp's approach is a property of the object and arm mounting,
+        # not of the current arm posture. Using the live tip here changes the
+        # pre-grasp and wrist orientation between laid-down and zero starts.
+        approach_origin = arm_origin
         camera_transform = self._lookup_transform(
             self._planning_frame, self._camera_frame
         )

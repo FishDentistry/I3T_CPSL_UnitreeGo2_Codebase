@@ -444,9 +444,10 @@ def generate_approach_candidates(
         horizontal_depth=False):
     """Generate three-dimensional, object-directed pre-grasp candidates.
 
-    The primary approach direction points from the current gripper position
-    toward the object. Yaw alternatives rotate that direction about the
-    planning frame's vertical axis while retaining its vertical component.
+    The primary approach direction points from a fixed arm reference origin
+    toward the object, independent of the current gripper position. Yaw
+    alternatives rotate that direction about the planning frame's vertical
+    axis while retaining its vertical component.
     The pre-grasp offset is applied along the resulting direction.
     """
     if approach_distance <= 0.0:
