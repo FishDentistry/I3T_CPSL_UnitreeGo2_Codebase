@@ -57,8 +57,7 @@ d1_grasp_coordinator:
     # Used for pre-grasp goals and the bounded Cartesian wrist-orientation
     # search if a straight approach at the achieved orientation is incomplete.
     grasp_orientation_tolerance_rad: 0.35
-    # Maximum angular difference between a measured band's requested gripper
-    # orientation and the planned or reached pre-grasp orientation.
+    # Maximum jaw-roll error relative to a level opening at a measured band.
     band_alignment_tolerance_rad: 0.10
 
     planning_time_sec: 5.0
