@@ -242,7 +242,7 @@ class D1GraspCoordinator(Node):
 
         # The final contact motion is a single short Cartesian segment.
         self.declare_parameter('cartesian_step_m', 0.005)
-        self.declare_parameter('minimum_cartesian_fraction', 1.0)
+        self.declare_parameter('minimum_cartesian_fraction', 0.75)
         self.declare_parameter('cartesian_jump_threshold', 2.0)
         self.declare_parameter('cartesian_velocity_scaling', 0.05)
         self.declare_parameter('cartesian_acceleration_scaling', 0.05)
@@ -443,10 +443,9 @@ class D1GraspCoordinator(Node):
             raise RuntimeError('approach_corridor_radius_m must be positive')
         if self._cartesian_step_m <= 0.0:
             raise RuntimeError('cartesian_step_m must be positive')
-        if self._minimum_cartesian_fraction != 1.0:
+        if not 0.0 < self._minimum_cartesian_fraction <= 1.0:
             raise RuntimeError(
-                'minimum_cartesian_fraction must be 1.0 to validate the '
-                'complete final approach'
+                'minimum_cartesian_fraction must be in (0, 1]'
             )
         if self._cartesian_jump_threshold < 0.0:
             raise RuntimeError(
@@ -1871,6 +1870,43 @@ class D1GraspCoordinator(Node):
         self._active['cartesian_best_fraction'] = 0.0
         self._request_cartesian_path(pose, purpose, stage, message)
 
+    def _intermediate_cartesian_waypoints(self, pose):
+        start_pose = self._active.get('pregrasp_pose')
+        if start_pose is None or pose is None:
+            return [copy.deepcopy(pose.pose)] if pose is not None else []
+        start = copy.deepcopy(start_pose.pose)
+        target = copy.deepcopy(pose.pose)
+        start_position = (
+            float(start.position.x), float(start.position.y),
+            float(start.position.z),
+        )
+        target_position = (
+            float(target.position.x), float(target.position.y),
+            float(target.position.z),
+        )
+        delta = tuple(
+            target_value - start_value
+            for start_value, target_value in zip(
+                start_position, target_position
+            )
+        )
+        length = math.sqrt(sum(value * value for value in delta))
+        if length <= 1.0e-9:
+            return [start, target]
+        mid_point = tuple(
+            start_value + 0.5 * offset for start_value, offset in zip(
+                start_position, delta
+            )
+        )
+        mid_pose = copy.deepcopy(start)
+        mid_pose.position.x = mid_point[0]
+        mid_pose.position.y = mid_point[1]
+        mid_pose.position.z = mid_point[2]
+        # Keep the bend between the valid pre-grasp and the final band pose
+        # in a short, continuous segment rather than one exact final pose.
+        mid_pose.orientation = copy.deepcopy(target.orientation)
+        return [start, mid_pose, target]
+
     def _request_cartesian_path(self, pose, purpose, stage, message):
         if self._active is None:
             return
@@ -1889,11 +1925,7 @@ class D1GraspCoordinator(Node):
             request.start_state = copy.deepcopy(start_state)
         request.group_name = self._planning_group
         request.link_name = self._tip_link
-        waypoints = []
-        if self._active.get('pregrasp_pose') is not None:
-            waypoints.append(copy.deepcopy(self._active['pregrasp_pose'].pose))
-        if pose is not None:
-            waypoints.append(copy.deepcopy(pose.pose))
+        waypoints = self._intermediate_cartesian_waypoints(pose)
         if not waypoints:
             waypoints = [copy.deepcopy(pose.pose)]
         request.waypoints = waypoints

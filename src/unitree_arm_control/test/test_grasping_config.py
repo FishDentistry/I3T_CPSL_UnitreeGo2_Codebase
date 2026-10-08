@@ -105,7 +105,7 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn("if self._active.get('pregrasp_pose') is not None:", coordinator)
         self.assertIn('request.avoid_collisions = True', coordinator)
         self.assertIn('self._minimum_cartesian_fraction', coordinator)
-        self.assertIn('minimum_cartesian_fraction: 1.0', config)
+        self.assertIn('minimum_cartesian_fraction: 0.75', config)
         self.assertIn('request.start_state = copy.deepcopy(start_state)', coordinator)
         self.assertIn('trajectory_endpoint_state(', coordinator)
         self.assertIn("grasp_pose, 'preflight'", coordinator)

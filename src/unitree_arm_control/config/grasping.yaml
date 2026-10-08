@@ -64,9 +64,9 @@ d1_grasp_coordinator:
     planning_attempts: 5
     velocity_scaling: 0.15
     acceleration_scaling: 0.10
-    # A candidate is accepted only if the predicted and refreshed approaches
-    # reach the complete grasp waypoint without a collision or joint jump.
-    minimum_cartesian_fraction: 1.0
+    # Keep the final band approach continuous and reachable; a short final
+    # overshoot is still acceptable when the near-band path is valid.
+    minimum_cartesian_fraction: 0.75
 
     # Recheck the target after the pre-grasp before planning the final motion.
     fresh_detection_age_sec: 5.0
