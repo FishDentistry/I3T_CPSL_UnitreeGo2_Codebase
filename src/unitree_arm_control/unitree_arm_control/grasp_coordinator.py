@@ -1902,9 +1902,12 @@ class D1GraspCoordinator(Node):
         mid_pose.position.x = mid_point[0]
         mid_pose.position.y = mid_point[1]
         mid_pose.position.z = mid_point[2]
-        # Keep the bend between the valid pre-grasp and the final band pose
-        # in a short, continuous segment rather than one exact final pose.
-        mid_pose.orientation = copy.deepcopy(target.orientation)
+        # For a banded grasp, the translational Cartesian move should keep the
+        # wrist orientation fixed. Rotating the tool while translating is what
+        # causes the low-fraction failures; the band orientation is validated
+        # separately at the reached pre-grasp.
+        mid_pose.orientation = copy.deepcopy(start.orientation)
+        target.orientation = copy.deepcopy(start.orientation)
         return [start, mid_pose, target]
 
     def _request_cartesian_path(self, pose, purpose, stage, message):
