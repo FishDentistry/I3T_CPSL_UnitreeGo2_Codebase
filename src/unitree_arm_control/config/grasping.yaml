@@ -42,7 +42,7 @@ d1_grasp_coordinator:
     class_forward_grasp_depth_offsets_m: ["mug=0.04", "cup=0.04", "soda can=0.04", "dry erase marker=0.03"]
     horizontal_forward_depth_classes: ["mug","cup","soda can","dry erase marker"]
     # Class-specific vertical correction in base_link; unlisted classes use 0.
-    class_grasp_height_offsets_m: ["mug=0.04", "cup=0.0", "soda can=0.04", "dry erase marker=0.03"]
+    class_grasp_height_offsets_m: ["mug=0.04", "cup=0.04", "soda can=0.04", "dry erase marker=0.03"]
     # Pre-grasp permits a wider region; the refreshed object target is tighter.
     position_tolerance_m: 0.02
     grasp_position_tolerance_m: 0.005
