@@ -22,7 +22,7 @@ d1_grasp_coordinator:
     minimum_observations: 3
     maximum_object_age_sec: 20.0
     minimum_reach_m: 0.10
-    maximum_reach_m: 0.7
+    maximum_reach_m: 0.8
     minimum_target_z_m: -0.10
     maximum_target_z_m: 0.80
 

@@ -490,8 +490,8 @@ interpolate a bounded wrist rotation along the same tool-center line.
 fallback used when that exact Cartesian segment is incomplete. Its default is
 `0.015` metres.
 The default opening command is 49 degrees. The controller and grasp
-coordinator use the same endpoint calibration, and normal validated joint
-commands reject J6 targets above 49 degrees. This is an application-side
+coordinator use the same endpoint calibration, and arm wrapper commands
+reject J6 targets above 49 degrees. This is an application-side
 ceiling based on powered-operation observations, not a mechanical limit.
 
 Grounding DINO currently provides a class, bounding box, and one depth-derived

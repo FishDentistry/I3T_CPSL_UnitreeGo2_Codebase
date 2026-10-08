@@ -260,14 +260,14 @@ def _validate_joint_id(joint_id):
 
 def _validate_angle(joint_id, angle_degrees, enforce_limits):
     angle = _require_number(angle_degrees, 'angle_degrees')
-    if enforce_limits:
-        if joint_id == 6 and angle > GRIPPER_MAX_COMMAND_DEGREES:
-            raise ProtocolError(
-                'joint 6 angle {} exceeds the configured opening ceiling '
-                'of {} degrees'.format(
-                    angle, GRIPPER_MAX_COMMAND_DEGREES
-                )
+    if joint_id == 6 and angle > GRIPPER_MAX_COMMAND_DEGREES:
+        raise ProtocolError(
+            'joint 6 angle {} exceeds the configured opening ceiling '
+            'of {} degrees'.format(
+                angle, GRIPPER_MAX_COMMAND_DEGREES
             )
+        )
+    if enforce_limits:
         limits = JOINT_LIMITS_DEGREES[joint_id]
         if limits is not None and not limits[0] <= angle <= limits[1]:
             raise ProtocolError(

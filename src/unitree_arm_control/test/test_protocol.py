@@ -43,6 +43,8 @@ class ProtocolTest(unittest.TestCase):
         with self.assertRaisesRegex(protocol.ProtocolError, 'opening ceiling'):
             protocol.set_joint_command(2, 6, 50.0)
         with self.assertRaisesRegex(protocol.ProtocolError, 'opening ceiling'):
+            protocol.set_joint_command(2, 6, 50.0, enforce_limits=False)
+        with self.assertRaisesRegex(protocol.ProtocolError, 'opening ceiling'):
             protocol.set_joint_angles_command(
                 3, [0, 0, 0, 0, 0, 0, 50.0]
             )
