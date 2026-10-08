@@ -381,6 +381,23 @@ class GraspingTest(unittest.TestCase):
             0.015,
         )
 
+    def test_candidate_approach_stays_level_for_horizontal_side_grasp(self):
+        candidate = grasping.generate_approach_candidates(
+            (0.50, 0.0, 0.20),
+            (0.30, -0.20, 0.40),
+            [0.0],
+            0.10,
+            0.0,
+            0.0,
+            0.04,
+            (1.0, 0.0, -1.0),
+            0.02,
+            True,
+        )[0]
+        self.assertAlmostEqual(candidate['approach_direction'][2], 0.0)
+        self.assertAlmostEqual(candidate['pregrasp_point'][2], 0.20)
+        self.assertAlmostEqual(candidate['grasp_point'][2], 0.20)
+
     def test_candidate_applies_forward_depth_without_lowering_target(self):
         candidate = grasping.generate_approach_candidates(
             (0.50, 0.0, 0.20),

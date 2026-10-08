@@ -543,10 +543,11 @@ def generate_approach_candidates(
         float(object_point[1]) - float(approach_origin[1]),
         float(object_point[2]) - float(approach_origin[2]),
     )
-    if level_approach:
-        # The target already identifies the measured grasp band. A sloped
-        # approach would put the pre-grasp below/above that band and sweep the
-        # fingers vertically through the object during the final advance.
+    if level_approach or horizontal_depth:
+        # Side approaches must remain in the planning-frame XY plane. If the
+        # approach retains the object's z offset, the gripper drops below the
+        # target before rising into the final pose instead of arriving at the
+        # correct vertical height and moving straight in.
         radial = (radial[0], radial[1], 0.0)
     radial = _normalized(radial)
     depth_axis = _depth_axis(
