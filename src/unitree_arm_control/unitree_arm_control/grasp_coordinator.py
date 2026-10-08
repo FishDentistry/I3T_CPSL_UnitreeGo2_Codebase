@@ -1072,6 +1072,9 @@ class D1GraspCoordinator(Node):
                         failures.append(problem)
                         continue
                     candidate = dict(candidate)
+                    candidate['band_alignment_orientation'] = (
+                        candidate['orientation'] if band is not None else None
+                    )
                     candidate['band_target_point'] = target_point
                     candidate['band_width'] = None if band is None else band[1]
                     candidate['band_index'] = band_index + 1 if band else 0
@@ -1171,16 +1174,16 @@ class D1GraspCoordinator(Node):
         )
 
     def _band_alignment_problem(self, candidate, orientation):
-        if candidate['band_width'] is None:
+        requested = candidate.get('band_alignment_orientation')
+        if requested is None:
             return None
-        requested = grasping.level_gripper_opening(orientation)
         error = grasping.quaternion_angular_distance(
             requested, orientation
         )
         if error > self._band_alignment_tolerance_rad:
             return (
-                'gripper jaw roll is {:.3f} rad from level at the measured '
-                'band (limit {:.3f} rad)'.format(
+                'gripper orientation is {:.3f} rad from the measured-band '
+                'approach (limit {:.3f} rad)'.format(
                     error, self._band_alignment_tolerance_rad
                 )
             )
@@ -1236,7 +1239,10 @@ class D1GraspCoordinator(Node):
                     self._band_pregrasp_position_tolerance_m
                     if candidate['band_width'] is not None else None
                 ),
-                orientation_tolerance=self._grasp_orientation_tolerance_rad,
+                orientation_tolerance=(
+                    None if candidate['band_width'] is not None
+                    else self._grasp_orientation_tolerance_rad
+                ),
             ),
             feedback_callback=lambda message, token=self._active['token']:
                 self._move_group_feedback(message, token),
@@ -1524,9 +1530,7 @@ class D1GraspCoordinator(Node):
             # the straight contact segment; do not demand exact orientation
             # of the long transit plan.
             aligned_pose = copy.deepcopy(predicted_pose)
-            requested = grasping.level_gripper_opening(
-                candidate['orientation']
-            )
+            requested = candidate['band_alignment_orientation']
             aligned_pose.pose.orientation.x = requested[0]
             aligned_pose.pose.orientation.y = requested[1]
             aligned_pose.pose.orientation.z = requested[2]
@@ -1786,8 +1790,7 @@ class D1GraspCoordinator(Node):
         )
         if alignment_problem is not None:
             alignment_pose = self._target_pose(
-                actual_pregrasp,
-                grasping.level_gripper_opening(achieved_orientation),
+                actual_pregrasp, candidate['band_alignment_orientation'],
             )
             self._active['cartesian_start_state'] = None
             self._active['cartesian_best_fraction'] = 0.0

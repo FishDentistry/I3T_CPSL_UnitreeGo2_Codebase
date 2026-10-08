@@ -417,21 +417,6 @@ def quaternion_from_approach(approach_direction, tool_roll=0.0):
     return _quaternion_from_matrix((rolled_x, rolled_y, local_z))
 
 
-def level_gripper_opening(orientation):
-    """Level the jaw opening by the shortest roll around the current tool axis."""
-    forward = rotate_vector((0.0, 0.0, 1.0), orientation)
-    candidates = (
-        quaternion_from_approach(forward),
-        quaternion_from_approach(forward, math.pi),
-    )
-    return min(
-        candidates,
-        key=lambda candidate: quaternion_angular_distance(
-            candidate, orientation
-        ),
-    )
-
-
 def approach_corridor_geometry(start_point, end_point, radius):
     """Return a box corridor whose local Z axis joins two tool positions."""
     if radius <= 0.0:

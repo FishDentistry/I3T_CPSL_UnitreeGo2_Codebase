@@ -414,10 +414,11 @@ The coordinator performs the following sequence when execution is enabled:
    are at the same measured band height, so the contact segment advances
    level rather than rising or falling through the object. Configured yaw
    fallbacks are ordered by smallest yaw change.
-3. Plan, without executing, an orientation-tolerant MoveIt trajectory to each
-   candidate pre-grasp. Compute the predicted gripper pose at that
-   trajectory's final joint state. If a measured-band grasp needs a jaw-roll
-   adjustment, validate it at pre-grasp before checking the collision-aware
+3. Plan, without executing, a MoveIt trajectory to each candidate pre-grasp.
+   Measured-band transit uses a position goal; the gripper orientation is
+   aligned separately at pre-grasp. Compute the predicted gripper pose at the
+   trajectory's final joint state. Validate any orientation adjustment there
+   before checking the collision-aware
    straight Cartesian path to the grasp waypoint. Reject candidates with an
    incomplete approach and select the first fully validated candidate. When a
    grasp band is available, distinct depth-supported bands are interleaved at
@@ -448,8 +449,8 @@ The coordinator performs the following sequence when execution is enabled:
    approach is revalidated from the actual pose after repositioning. For a
    measured band, execution also checks that the reached tool center is within
    0.005 m of the corrected approach line; otherwise contact motion is stopped.
-   For a measured band, a jaw-roll adjustment is planned at pre-grasp if
-   the reached opening is not level with the band. Its predicted endpoint
+   For a measured band, an orientation adjustment is planned at pre-grasp if
+   the reached opening is not aligned with the band. Its predicted endpoint
    and complete approach are checked before the adjustment is executed. The
    final approach holds the reached orientation and accepts only a complete
    Cartesian path; it does not rotate the wrist during contact. If that path
@@ -534,16 +535,16 @@ When no reliable band is available before planning, the previous center-point
 behavior remains available. The depth-band calculation uses the existing
 RealSense and NumPy dependencies; no segmentation package is required.
 
-`grasp_orientation_tolerance_rad` controls pre-grasp and lateral-reposition
-planning and bounds wrist adjustments tested for legacy center-point Cartesian
-contact. Its default is `0.35` radians. A measured-band grasp retains that
-planning tolerance. If the predicted or reached jaw roll differs from a level
-opening by more than `band_alignment_tolerance_rad` (default `0.10` radians),
-a separate collision-checked Cartesian adjustment is validated at pre-grasp.
-This adjustment preserves the tool's forward axis and chooses the shorter of
-the equivalent jaw orientations. The final approach is revalidated from the
-reached aligned pose. Band-based contact motion holds that orientation; no
-wrist adjustment is attempted during contact.
+`grasp_orientation_tolerance_rad` controls legacy center-point pre-grasp and
+lateral-reposition planning and bounds wrist adjustments tested for legacy
+Cartesian contact. Its default is `0.35` radians. A measured-band initial
+pre-grasp uses a position goal instead of imposing this orientation constraint
+on the long transit plan. If the predicted or reached orientation differs from
+the generated band approach by more than `band_alignment_tolerance_rad`
+(default `0.10` radians), a separate collision-checked Cartesian adjustment is
+validated at pre-grasp. The final approach is revalidated from the reached
+aligned pose. Band-based contact motion holds that orientation; no wrist
+adjustment is attempted during contact.
 `minimum_cartesian_fraction` is fixed at `1.0` so a partial contact path cannot
 be accepted during either pre-grasp screening or final revalidation.
 `approach_corridor_radius_m` defines the half-width of the constrained MoveIt
