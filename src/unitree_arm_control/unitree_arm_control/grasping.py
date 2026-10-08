@@ -235,6 +235,22 @@ def approach_orientation_candidates(orientation, maximum_adjustment):
     return tuple(candidates)
 
 
+def quaternion_angular_distance(first, second):
+    """Return the shortest rotation between two xyzw orientations in radians."""
+    values = []
+    for quaternion in (first, second):
+        components = tuple(float(value) for value in quaternion)
+        if (len(components) != 4
+                or not all(math.isfinite(value) for value in components)):
+            raise ValueError('orientation must be a finite xyzw quaternion')
+        norm = math.sqrt(sum(value * value for value in components))
+        if norm <= 1.0e-9:
+            raise ValueError('orientation must have non-zero length')
+        values.append(tuple(value / norm for value in components))
+    dot = abs(sum(a * b for a, b in zip(*values)))
+    return 2.0 * math.acos(min(1.0, dot))
+
+
 def rotate_vector(vector, quaternion):
     """Rotate a three-vector by an xyzw unit quaternion."""
     x, y, z = (float(value) for value in vector)

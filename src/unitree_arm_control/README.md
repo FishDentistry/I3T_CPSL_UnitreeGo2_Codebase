@@ -447,14 +447,13 @@ The coordinator performs the following sequence when execution is enabled:
    approach is revalidated from the actual pose after repositioning. For a
    measured band, execution also checks that the reached tool center is within
    0.005 m of the corrected approach line; otherwise contact motion is stopped.
-   If the exact
-   Cartesian orientation is infeasible, the coordinator checks nearby wrist
-   orientations within `grasp_orientation_tolerance_rad` while keeping the
-   same tool-center line and collision checking. Only complete Cartesian paths
-   are accepted for band-based grasps. If all variants fail, no contact motion
-   is executed for a measured band. The narrow-corridor MoveIt fallback remains
-   available only for legacy center-point grasps. A failure leaves the arm at
-   pre-grasp and reports the best Cartesian fraction and final target coordinates.
+    For a measured band, the final approach holds the orientation reached at
+    pre-grasp and accepts only a complete Cartesian path; it does not rotate
+    the wrist during contact. If that path is incomplete, no contact motion is
+    executed. Legacy center-point grasps may still try nearby wrist
+    orientations and a constrained MoveIt fallback. A failure leaves the arm
+    at pre-grasp and reports the best Cartesian fraction and final target
+    coordinates.
 7. Close the gripper. Position feedback is accepted when it reaches the closed
    target or stalls after meaningful closure, then the object is held for
    three seconds.
@@ -532,11 +531,14 @@ When no reliable band is available before planning, the previous center-point
 behavior remains available. The depth-band calculation uses the existing
 RealSense and NumPy dependencies; no segmentation package is required.
 
-`grasp_orientation_tolerance_rad` controls pre-grasp planning, corrected
-pre-grasp repositioning, and the maximum wrist adjustment tested for the
-Cartesian contact segment. Its default is `0.35` radians. The first Cartesian
-candidate preserves the predicted or live achieved orientation; subsequent candidates
-interpolate a bounded wrist rotation along the same tool-center line.
+`grasp_orientation_tolerance_rad` controls pre-grasp planning and corrected
+pre-grasp repositioning. For legacy center-point grasps it also bounds wrist
+adjustments tested for the Cartesian contact segment. Its default is `0.35`
+radians. For a measured band, pre-grasp planning uses the tighter of this value
+and `band_alignment_tolerance_rad` (default `0.10` radians). The predicted and
+reached pre-grasp orientations must also be within that alignment limit of the
+generated band approach orientation. Band-based contact motion then holds the
+achieved pre-grasp orientation; no wrist adjustment is attempted during contact.
 `minimum_cartesian_fraction` is fixed at `1.0` so a partial contact path cannot
 be accepted during either pre-grasp screening or final revalidation.
 `approach_corridor_radius_m` defines the half-width of the constrained MoveIt

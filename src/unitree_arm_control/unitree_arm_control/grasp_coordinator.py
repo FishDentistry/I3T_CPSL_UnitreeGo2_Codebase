@@ -224,6 +224,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('grasp_position_tolerance_m', 0.005)
         self.declare_parameter('band_pregrasp_position_tolerance_m', 0.01)
         self.declare_parameter('grasp_orientation_tolerance_rad', 0.35)
+        self.declare_parameter('band_alignment_tolerance_rad', 0.10)
 
         self.declare_parameter('planning_time_sec', 5.0)
         self.declare_parameter('planning_attempts', 5)
@@ -295,6 +296,7 @@ class D1GraspCoordinator(Node):
             'lay_down_raise_joint_2_degrees',
             'lay_down_raise_duration_sec',
             'grasp_orientation_tolerance_rad',
+            'band_alignment_tolerance_rad',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
             'maximum_grasp_band_width_m',
@@ -406,6 +408,10 @@ class D1GraspCoordinator(Node):
         if not 0.0 < self._grasp_orientation_tolerance_rad <= math.pi:
             raise RuntimeError(
                 'grasp_orientation_tolerance_rad must be in (0, pi]'
+            )
+        if not 0.0 < self._band_alignment_tolerance_rad <= math.pi:
+            raise RuntimeError(
+                'band_alignment_tolerance_rad must be in (0, pi]'
             )
         if self._planning_time <= 0.0 or self._planning_attempts < 1:
             raise RuntimeError('planning limits are invalid')
@@ -1065,6 +1071,9 @@ class D1GraspCoordinator(Node):
                         failures.append(problem)
                         continue
                     candidate = dict(candidate)
+                    candidate['band_alignment_orientation'] = (
+                        candidate['orientation'] if band is not None else None
+                    )
                     candidate['band_target_point'] = target_point
                     candidate['band_width'] = None if band is None else band[1]
                     candidate['band_index'] = band_index + 1 if band else 0
@@ -1163,6 +1172,22 @@ class D1GraspCoordinator(Node):
             candidate[point_name], candidate['orientation']
         )
 
+    def _band_alignment_problem(self, candidate, orientation):
+        requested = candidate.get('band_alignment_orientation')
+        if requested is None:
+            return None
+        error = grasping.quaternion_angular_distance(
+            requested, orientation
+        )
+        if error > self._band_alignment_tolerance_rad:
+            return (
+                'gripper orientation is {:.3f} rad from the measured-band '
+                'approach (limit {:.3f} rad)'.format(
+                    error, self._band_alignment_tolerance_rad
+                )
+            )
+        return None
+
     def _start_next_pregrasp_candidate(self):
         if self._active is None:
             return
@@ -1213,7 +1238,12 @@ class D1GraspCoordinator(Node):
                     self._band_pregrasp_position_tolerance_m
                     if candidate['band_width'] is not None else None
                 ),
-                orientation_tolerance=self._grasp_orientation_tolerance_rad,
+                orientation_tolerance=(
+                    min(self._grasp_orientation_tolerance_rad,
+                        self._band_alignment_tolerance_rad)
+                    if candidate['band_width'] is not None
+                    else self._grasp_orientation_tolerance_rad
+                ),
             ),
             feedback_callback=lambda message, token=self._active['token']:
                 self._move_group_feedback(message, token),
@@ -1488,6 +1518,12 @@ class D1GraspCoordinator(Node):
                 'predicted pre-grasp FK returned an invalid orientation'
             )
             return
+        alignment_problem = self._band_alignment_problem(
+            self._active['candidate'], values
+        )
+        if alignment_problem is not None:
+            self._preflight_failure(alignment_problem)
+            return
         candidate = dict(self._active['candidate'])
         candidate['orientation'] = tuple(value / norm for value in values)
         self._active['candidate'] = candidate
@@ -1689,6 +1725,14 @@ class D1GraspCoordinator(Node):
             )
             return
         candidate = dict(candidate)
+        alignment_problem = self._band_alignment_problem(
+            candidate, achieved_orientation
+        )
+        if alignment_problem is not None:
+            self._finish_failure(
+                'reached pre-grasp is not aligned: ' + alignment_problem
+            )
+            return
         candidate['orientation'] = achieved_orientation
 
         grasp_pose = self._candidate_pose(candidate, 'grasp_point')
@@ -1732,10 +1776,17 @@ class D1GraspCoordinator(Node):
             self, pose, purpose, stage, message, start_state=None):
         orientation = pose.pose.orientation
         self._active['cartesian_start_state'] = start_state
+        achieved_orientation = (
+            orientation.x, orientation.y, orientation.z, orientation.w
+        )
+        # A band grasp must advance with the jaw opening already aligned at
+        # pre-grasp. Rotating the wrist during contact can sweep the fingers
+        # below the band even when the tool-center path is straight.
         self._active['cartesian_orientations'] = (
-            grasping.approach_orientation_candidates(
-                (orientation.x, orientation.y, orientation.z, orientation.w),
-                self._grasp_orientation_tolerance_rad,
+            (achieved_orientation,)
+            if self._active['grasp_band_width'] is not None
+            else grasping.approach_orientation_candidates(
+                achieved_orientation, self._grasp_orientation_tolerance_rad
             )
         )
         self._active['cartesian_orientation_index'] = 0
@@ -2018,11 +2069,18 @@ class D1GraspCoordinator(Node):
         preserve_grasp_orientation = purpose in (
             'approach', 'reposition_pregrasp'
         )
+        orientation_tolerance = (
+            min(self._grasp_orientation_tolerance_rad,
+                self._band_alignment_tolerance_rad)
+            if (purpose == 'reposition_pregrasp'
+                and self._active['grasp_band_width'] is not None)
+            else self._grasp_orientation_tolerance_rad
+        )
         future = self._move_group.send_goal_async(
             self._move_group_goal(
                 pose,
                 tolerance,
-                self._grasp_orientation_tolerance_rad
+                orientation_tolerance
                 if preserve_grasp_orientation else None,
                 path_constraints,
             ),
@@ -2204,6 +2262,15 @@ class D1GraspCoordinator(Node):
                 )
                 return
             candidate = dict(self._active['candidate'])
+            alignment_problem = self._band_alignment_problem(
+                candidate, achieved_orientation
+            )
+            if alignment_problem is not None:
+                self._finish_failure(
+                    'corrected pre-grasp is not aligned: '
+                    + alignment_problem
+                )
+                return
             if candidate['band_width'] is not None:
                 try:
                     line_error = grasping.approach_line_error(
