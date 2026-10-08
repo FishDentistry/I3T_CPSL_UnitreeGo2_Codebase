@@ -417,8 +417,9 @@ The coordinator performs the following sequence when execution is enabled:
 3. Plan, without executing, a MoveIt trajectory to each candidate pre-grasp.
    Measured-band transit uses a position goal; the gripper orientation is
    aligned separately at pre-grasp. Compute the predicted gripper pose at the
-   trajectory's final joint state. Validate any orientation adjustment there
-   before checking the collision-aware
+   trajectory's final joint state. Reject a band candidate if the gripper's
+   forward axis does not point toward the object. Validate any jaw-opening
+   roll adjustment there before checking the collision-aware
    straight Cartesian path to the grasp waypoint. Reject candidates with an
    incomplete approach and select the first fully validated candidate. When a
    grasp band is available, distinct depth-supported bands are interleaved at
@@ -537,14 +538,17 @@ RealSense and NumPy dependencies; no segmentation package is required.
 
 `grasp_orientation_tolerance_rad` controls legacy center-point pre-grasp and
 lateral-reposition planning and bounds wrist adjustments tested for legacy
-Cartesian contact. Its default is `0.35` radians. A measured-band initial
-pre-grasp uses a position goal instead of imposing this orientation constraint
-on the long transit plan. If the predicted or reached orientation differs from
-the generated band approach by more than `band_alignment_tolerance_rad`
-(default `0.10` radians), a separate collision-checked Cartesian adjustment is
-validated at pre-grasp. The final approach is revalidated from the reached
-aligned pose. Band-based contact motion holds that orientation; no wrist
-adjustment is attempted during contact.
+Cartesian contact. It also limits the angular difference between the
+gripper's forward axis and a measured-band approach direction. Its default is
+`0.35` radians. A measured-band initial pre-grasp uses a position goal instead
+of imposing a full orientation constraint on the long transit plan. If the
+predicted or reached jaw opening differs from level by more than
+`band_alignment_tolerance_rad` (default `0.10` radians), a separate
+collision-checked roll about the current tool-forward axis is validated at
+pre-grasp. The nearer of the two equivalent horizontal-jaw orientations is
+used. The final approach is revalidated from the reached aligned pose.
+Band-based contact motion holds that orientation; no wrist adjustment is
+attempted during contact.
 `minimum_cartesian_fraction` is fixed at `1.0` so a partial contact path cannot
 be accepted during either pre-grasp screening or final revalidation.
 `approach_corridor_radius_m` defines the half-width of the constrained MoveIt

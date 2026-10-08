@@ -1072,9 +1072,6 @@ class D1GraspCoordinator(Node):
                         failures.append(problem)
                         continue
                     candidate = dict(candidate)
-                    candidate['band_alignment_orientation'] = (
-                        candidate['orientation'] if band is not None else None
-                    )
                     candidate['band_target_point'] = target_point
                     candidate['band_width'] = None if band is None else band[1]
                     candidate['band_index'] = band_index + 1 if band else 0
@@ -1174,17 +1171,38 @@ class D1GraspCoordinator(Node):
         )
 
     def _band_alignment_problem(self, candidate, orientation):
-        requested = candidate.get('band_alignment_orientation')
-        if requested is None:
+        if candidate['band_width'] is None:
             return None
+        requested = grasping.level_gripper_opening(orientation)
         error = grasping.quaternion_angular_distance(
             requested, orientation
         )
         if error > self._band_alignment_tolerance_rad:
             return (
-                'gripper orientation is {:.3f} rad from the measured-band '
-                'approach (limit {:.3f} rad)'.format(
+                'jaw opening is {:.3f} rad from level at the measured band '
+                '(limit {:.3f} rad)'.format(
                     error, self._band_alignment_tolerance_rad
+                )
+            )
+        return None
+
+    def _band_pointing_problem(self, candidate, orientation):
+        if candidate['band_width'] is None:
+            return None
+        forward = grasping.rotate_vector((0.0, 0.0, 1.0), orientation)
+        approach = candidate['approach_direction']
+        approach_norm = math.sqrt(sum(value * value for value in approach))
+        if approach_norm <= 1.0e-9:
+            return 'measured-band approach direction is invalid'
+        cosine = sum(
+            axis * direction for axis, direction in zip(forward, approach)
+        ) / approach_norm
+        error = math.acos(max(-1.0, min(1.0, cosine)))
+        if error > self._grasp_orientation_tolerance_rad:
+            return (
+                'gripper forward axis is {:.3f} rad from the measured-band '
+                'approach (limit {:.3f} rad)'.format(
+                    error, self._grasp_orientation_tolerance_rad
                 )
             )
         return None
@@ -1200,8 +1218,8 @@ class D1GraspCoordinator(Node):
             if failures:
                 detail = '; recent failures: ' + ' | '.join(failures[-3:])
             self._finish_failure(
-                'no approach candidate produced a valid orientation-tolerant '
-                'pre-grasp plan' + detail
+                'no approach candidate passed pre-grasp and Cartesian '
+                'approach preflight' + detail
             )
             return
         candidate = candidates[index]
@@ -1220,10 +1238,12 @@ class D1GraspCoordinator(Node):
         )
         self._publish_active_stage(
             GraspStatus.STAGE_PLANNING,
-            'MoveIt is planning pre-grasp candidate {} of {} with orientation '
-            'tolerance at [{:.3f}, {:.3f}, {:.3f}] m '
+            'MoveIt is planning pre-grasp candidate {} of {} with {} '
+            'at [{:.3f}, {:.3f}, {:.3f}] m '
             '(yaw offset {:.3f} rad; {})'.format(
                 index + 1, len(candidates),
+                ('a position goal' if candidate['band_width'] is not None
+                 else 'orientation tolerance'),
                 candidate['pregrasp_point'][0],
                 candidate['pregrasp_point'][1],
                 candidate['pregrasp_point'][2],
@@ -1521,6 +1541,12 @@ class D1GraspCoordinator(Node):
         candidate['orientation'] = tuple(value / norm for value in values)
         self._active['candidate'] = candidate
         self._active['pregrasp_pose'] = predicted_pose
+        pointing_problem = self._band_pointing_problem(
+            candidate, candidate['orientation']
+        )
+        if pointing_problem is not None:
+            self._preflight_failure(pointing_problem)
+            return
         alignment_problem = self._band_alignment_problem(
             candidate, candidate['orientation']
         )
@@ -1530,7 +1556,9 @@ class D1GraspCoordinator(Node):
             # the straight contact segment; do not demand exact orientation
             # of the long transit plan.
             aligned_pose = copy.deepcopy(predicted_pose)
-            requested = candidate['band_alignment_orientation']
+            requested = grasping.level_gripper_opening(
+                candidate['orientation']
+            )
             aligned_pose.pose.orientation.x = requested[0]
             aligned_pose.pose.orientation.y = requested[1]
             aligned_pose.pose.orientation.z = requested[2]
@@ -1785,12 +1813,21 @@ class D1GraspCoordinator(Node):
     def _align_or_approach_from_pregrasp(
             self, actual_pregrasp, achieved_orientation, message):
         candidate = self._active['candidate']
+        pointing_problem = self._band_pointing_problem(
+            candidate, achieved_orientation
+        )
+        if pointing_problem is not None:
+            self._finish_failure(
+                pointing_problem + '; no contact motion was executed'
+            )
+            return
         alignment_problem = self._band_alignment_problem(
             candidate, achieved_orientation
         )
         if alignment_problem is not None:
             alignment_pose = self._target_pose(
-                actual_pregrasp, candidate['band_alignment_orientation'],
+                actual_pregrasp,
+                grasping.level_gripper_opening(achieved_orientation),
             )
             self._active['cartesian_start_state'] = None
             self._active['cartesian_best_fraction'] = 0.0
