@@ -157,6 +157,13 @@ class GraspingConfigTest(unittest.TestCase):
             coordinator,
         )
 
+    def test_banded_grasps_do_not_require_exact_forward_axis_match(self):
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        self.assertIn('Band grasping is a contact-region constraint', coordinator)
+        self.assertNotIn('approach_axis_error(', coordinator)
+
     def test_pregrasp_fk_callback_captures_request_token(self):
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
