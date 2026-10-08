@@ -1858,13 +1858,12 @@ class D1GraspCoordinator(Node):
         achieved_orientation = (
             orientation.x, orientation.y, orientation.z, orientation.w
         )
-        # A band grasp must advance with the jaw opening already aligned at
-        # pre-grasp. Rotating the wrist during contact can sweep the fingers
-        # below the band even when the tool-center path is straight.
+        # Banded targets must still allow a small, bounded wrist-orientation
+        # search. A single exact pose is often kinematically infeasible near
+        # the object even when nearby orientations are valid; rejecting them
+        # early causes the exact failure pattern seen in the logs.
         self._active['cartesian_orientations'] = (
-            (achieved_orientation,)
-            if self._active['grasp_band_width'] is not None
-            else grasping.approach_orientation_candidates(
+            grasping.approach_orientation_candidates(
                 achieved_orientation, self._grasp_orientation_tolerance_rad
             )
         )

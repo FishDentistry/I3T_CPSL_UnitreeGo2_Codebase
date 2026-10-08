@@ -327,6 +327,14 @@ class GraspingTest(unittest.TestCase):
             math.pi / 2.0,
         )
 
+    def test_banded_approach_still_tries_local_orientation_variants(self):
+        orientation = grasping.quaternion_from_approach((1.0, 0.0, 0.0))
+        candidates = grasping.approach_orientation_candidates(
+            orientation, 0.35
+        )
+        self.assertGreater(len(candidates), 1)
+        self.assertEqual(candidates[0], orientation)
+
     def test_approach_line_error_ignores_progress_but_detects_height(self):
         self.assertAlmostEqual(
             grasping.approach_line_error(
