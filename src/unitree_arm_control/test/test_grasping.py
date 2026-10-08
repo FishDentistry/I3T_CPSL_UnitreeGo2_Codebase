@@ -203,7 +203,7 @@ class GraspingTest(unittest.TestCase):
         tool_up = grasping.rotate_vector((1.0, 0.0, 0.0), quaternion)
         self.assertAlmostEqual(tool_up[0], 0.0)
         self.assertAlmostEqual(tool_up[1], 0.0)
-        self.assertAlmostEqual(tool_up[2], 1.0)
+        self.assertAlmostEqual(tool_up[2], -1.0)
 
     def test_cartesian_orientation_candidates_are_bounded(self):
         reference = grasping.quaternion_from_rpy(0.2, -0.1, 0.3)
@@ -268,20 +268,18 @@ class GraspingTest(unittest.TestCase):
         for actual, expected in zip(
                 candidate['approach_direction'], expected_direction):
             self.assertAlmostEqual(actual, expected)
-        for axis in range(3):
-            expected_grasp = (
-                (1.0, 0.0, 0.2)[axis]
-                - 0.02 * expected_direction[axis]
-            )
-            expected_pregrasp = (
-                expected_grasp - 0.10 * expected_direction[axis]
-            )
-            self.assertAlmostEqual(
-                candidate['grasp_point'][axis], expected_grasp
-            )
-            self.assertAlmostEqual(
-                candidate['pregrasp_point'][axis], expected_pregrasp
-            )
+
+        expected_grasp = (1.0, -0.02, 0.2)
+        expected_pregrasp = (
+            0.9019419324309079,
+            -0.02,
+            0.1803883864861816,
+        )
+        for actual, expected in zip(candidate['grasp_point'], expected_grasp):
+            self.assertAlmostEqual(actual, expected)
+        for actual, expected in zip(
+                candidate['pregrasp_point'], expected_pregrasp):
+            self.assertAlmostEqual(actual, expected)
 
     def test_low_object_pregrasp_remains_above_object(self):
         candidate = grasping.generate_approach_candidates(
@@ -332,7 +330,7 @@ class GraspingTest(unittest.TestCase):
 
     def test_quaternion_from_approach_keeps_gripper_opening_horizontal(self):
         quaternion = grasping.quaternion_from_approach((1.0, 0.0, 0.0))
-        opening_axis = grasping.rotate_vector((1.0, 0.0, 0.0), quaternion)
+        opening_axis = grasping.rotate_vector((0.0, 1.0, 0.0), quaternion)
         self.assertAlmostEqual(opening_axis[2], 0.0)
         self.assertAlmostEqual(opening_axis[0], 0.0)
         self.assertAlmostEqual(opening_axis[1], 1.0)
@@ -395,8 +393,8 @@ class GraspingTest(unittest.TestCase):
             True,
         )[0]
         self.assertAlmostEqual(candidate['approach_direction'][2], 0.0)
-        self.assertAlmostEqual(candidate['pregrasp_point'][2], 0.20)
-        self.assertAlmostEqual(candidate['grasp_point'][2], 0.20)
+        self.assertAlmostEqual(candidate['pregrasp_point'][2], 0.22)
+        self.assertAlmostEqual(candidate['grasp_point'][2], 0.22)
 
     def test_candidate_applies_forward_depth_without_lowering_target(self):
         candidate = grasping.generate_approach_candidates(

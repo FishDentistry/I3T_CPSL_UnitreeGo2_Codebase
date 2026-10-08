@@ -431,6 +431,10 @@ def quaternion_from_approach(approach_direction, tool_roll=0.0):
     """
     local_z = _normalized(approach_direction)
     local_y = _gripper_opening_axis(local_z)
+    # The D1 wrist approaches with local +Z along the target direction, while
+    # the jaw opening stays in the horizontal local +Y axis. The local +X axis
+    # remains in the tool’s vertical reference plane and is therefore the
+    # cross-product complement of the approach direction and the opening axis.
     local_x = _normalized(_cross(local_y, local_z))
 
     cosine = math.cos(float(tool_roll))
