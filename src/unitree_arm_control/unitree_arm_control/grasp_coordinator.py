@@ -80,6 +80,7 @@ class D1GraspCoordinator(Node):
         self._declare_parameters()
         self._load_parameters()
         self._validate_parameters()
+        self._tool_tip_offset = (0.00038, 0.0, 0.1256)
 
         latched_qos = QoSProfile(
             depth=1,
@@ -1191,6 +1192,11 @@ class D1GraspCoordinator(Node):
             )
         return None
 
+    def _wrist_point_for_line_check(self, tip_point, orientation):
+        return grasping.wrist_point_from_tip(
+            tip_point, orientation, self._tool_tip_offset,
+        )
+
     def _band_pointing_problem(self, candidate, orientation):
         if candidate['band_width'] is None:
             return None
@@ -1740,12 +1746,19 @@ class D1GraspCoordinator(Node):
                 'could not read the reached pre-grasp position: {}'.format(error)
             )
             return
-        # Compare the live tool center, not the nominal earlier goal. MoveIt
-        # may satisfy a pre-grasp goal a short distance below the band; using
-        # the nominal goal hid that deviation and caused a rising final path.
+        # Compare the wrist center, not the tool-center arc. The TCP sits a
+        # fixed 125.6 mm from the wrist, so wrist rotation changes the tip
+        # position by design and must not be mistaken for a band-line error.
         try:
+            achieved_orientation = self._current_tip_orientation()
+            actual_wrist = self._wrist_point_for_line_check(
+                actual_pregrasp, achieved_orientation,
+            )
+            target_wrist = self._wrist_point_for_line_check(
+                new_pregrasp, candidate['orientation'],
+            )
             lateral_correction = grasping.approach_line_error(
-                actual_pregrasp, new_pregrasp,
+                actual_wrist, target_wrist,
                 candidate['approach_direction'],
             )
         except ValueError:
@@ -1760,15 +1773,6 @@ class D1GraspCoordinator(Node):
         # orientation tolerance, so retaining the generated quaternion here
         # would turn the final approach into a translation plus a rotation and
         # can make an otherwise valid straight approach return a low fraction.
-        try:
-            achieved_orientation = self._current_tip_orientation()
-        except Exception as error:
-            self.get_logger().warning(
-                'Could not read the achieved pre-grasp orientation: {}'.format(
-                    error
-                )
-            )
-            return
         candidate = dict(candidate)
         candidate['orientation'] = achieved_orientation
 
@@ -2418,8 +2422,14 @@ class D1GraspCoordinator(Node):
             candidate = dict(self._active['candidate'])
             if candidate['band_width'] is not None:
                 try:
+                    actual_wrist = self._wrist_point_for_line_check(
+                        actual_pregrasp, achieved_orientation,
+                    )
+                    target_wrist = self._wrist_point_for_line_check(
+                        candidate['pregrasp_point'], candidate['orientation'],
+                    )
                     line_error = grasping.approach_line_error(
-                        actual_pregrasp, candidate['pregrasp_point'],
+                        actual_wrist, target_wrist,
                         candidate['approach_direction'],
                     )
                 except ValueError as error:
@@ -2467,8 +2477,14 @@ class D1GraspCoordinator(Node):
                     tip_transform.transform.translation
                 )
                 candidate = self._active['candidate']
+                actual_wrist = self._wrist_point_for_line_check(
+                    actual_pregrasp, achieved_orientation,
+                )
+                target_wrist = self._wrist_point_for_line_check(
+                    candidate['pregrasp_point'], candidate['orientation'],
+                )
                 line_error = grasping.approach_line_error(
-                    actual_pregrasp, candidate['pregrasp_point'],
+                    actual_wrist, target_wrist,
                     candidate['approach_direction'],
                 )
             except (ValueError, TransformException) as error:

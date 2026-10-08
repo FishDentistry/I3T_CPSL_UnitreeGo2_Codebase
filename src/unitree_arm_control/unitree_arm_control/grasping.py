@@ -297,7 +297,7 @@ def distance_between(first, second):
 
 
 def approach_line_error(actual_point, pregrasp_point, approach_direction):
-    """Distance from the reached tool center to a planned approach line."""
+    """Distance from a point to a planned approach line."""
     axis = _normalized(approach_direction)
     offset = tuple(
         float(target) - float(actual)
@@ -308,6 +308,15 @@ def approach_line_error(actual_point, pregrasp_point, approach_direction):
         (delta - along * direction) ** 2
         for delta, direction in zip(offset, axis)
     ))
+
+
+def wrist_point_from_tip(tip_point, orientation, offset=(0.00038, 0.0, 0.1256)):
+    """Recover the wrist center from the tool-center point and fixed tool offset."""
+    rotated_offset = rotate_vector(offset, orientation)
+    return tuple(
+        float(tip_value) - float(offset_value)
+        for tip_value, offset_value in zip(tip_point, rotated_offset)
+    )
 
 
 def approach_axis_error(orientation, approach_direction):

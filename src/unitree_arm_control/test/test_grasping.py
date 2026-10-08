@@ -316,6 +316,20 @@ class GraspingTest(unittest.TestCase):
         self.assertAlmostEqual(updated['pregrasp_point'][2], 0.09)
         self.assertAlmostEqual(updated['grasp_point'][2], 0.09)
 
+    def test_wrist_point_from_tip_removes_fixed_tool_offset(self):
+        wrist = (0.50, 0.0, 0.08)
+        orientation = grasping.quaternion_from_approach((1.0, 0.0, 0.0))
+        offset = (0.00038, 0.0, 0.1256)
+        tip = tuple(
+            wrist_value + rotated_value
+            for wrist_value, rotated_value in zip(
+                wrist, grasping.rotate_vector(offset, orientation),
+            )
+        )
+        recovered = grasping.wrist_point_from_tip(tip, orientation, offset)
+        for actual, expected in zip(recovered, wrist):
+            self.assertAlmostEqual(actual, expected)
+
     def test_approach_axis_error_uses_forward_axis_only(self):
         quaternion = grasping.quaternion_from_approach((1.0, 0.0, 0.0))
         self.assertAlmostEqual(
