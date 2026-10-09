@@ -139,6 +139,14 @@ class TrajectoryTest(unittest.TestCase):
             ((-1.0, 1.0),),
         )
 
+    def test_position_validation_allows_tiny_numeric_overshoot(self):
+        trajectory.validate_position_limits(
+            ((1.0 + 1.0e-7,),),
+            (1.0,),
+            ('joint_0',),
+            ((-1.0, 1.0),),
+        )
+
     def test_position_validation_rejects_outside_start_moving_farther(self):
         with self.assertRaisesRegex(
                 trajectory.TrajectoryError, 'position limit'):

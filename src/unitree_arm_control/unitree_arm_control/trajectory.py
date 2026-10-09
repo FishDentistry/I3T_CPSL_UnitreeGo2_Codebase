@@ -3,6 +3,9 @@
 import math
 
 
+_POSITION_LIMIT_EPSILON = 1.0e-6
+
+
 class TrajectoryError(ValueError):
     """Raised when a trajectory cannot be executed safely."""
 
@@ -171,25 +174,28 @@ def validate_position_limits(
 
     A measured starting position can be marginally outside a published limit.
     Such a joint may remain at that position or move toward the valid range,
-    but it may not move farther outside the range.
+    but it may not move farther outside the range. Tiny floating-point
+    overshoots at the boundary are treated as numerical noise rather than a real
+    limit violation.
     """
     if len(joint_names) != len(start_positions):
         raise TrajectoryError('joint and start position counts must match')
     if len(position_limits) != len(joint_names):
         raise TrajectoryError('joint and position limit counts must match')
 
+    epsilon = _POSITION_LIMIT_EPSILON
     for point_index, positions in enumerate(waypoint_positions):
         for joint_index, (value, start, limits) in enumerate(zip(
                 positions, start_positions, position_limits)):
             if limits is None:
                 continue
             lower, upper = limits
-            if lower <= value <= upper:
+            if lower - epsilon <= value <= upper + epsilon:
                 continue
             moving_toward_range = (
-                start < lower and start <= value <= lower
+                start < lower and start <= value <= lower + epsilon
             ) or (
-                start > upper and upper <= value <= start
+                start > upper and upper - epsilon <= value <= start
             )
             if not moving_toward_range:
                 raise TrajectoryError(
