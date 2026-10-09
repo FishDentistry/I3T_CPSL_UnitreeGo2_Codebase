@@ -1876,12 +1876,18 @@ class D1GraspCoordinator(Node):
         self._active['cartesian_best_fraction'] = 0.0
         self._request_cartesian_path(pose, purpose, stage, message)
 
-    def _intermediate_cartesian_waypoints(self, pose):
+    def _intermediate_cartesian_waypoints(self, pose, purpose=None):
         start_pose = self._active.get('pregrasp_pose')
         if start_pose is None or pose is None:
             return [copy.deepcopy(pose.pose)] if pose is not None else []
         start = copy.deepcopy(start_pose.pose)
         target = copy.deepcopy(pose.pose)
+        if purpose in {'align_pregrasp', 'alignment_preflight'}:
+            # A dedicated wrist roll must actually rotate the gripper instead of
+            # holding the previous orientation fixed. The old logic kept the
+            # start pose's orientation for the entire path, which left the jaws
+            # vertical and parallel to the cup during the alignment step.
+            return [start, target]
         start_position = (
             float(start.position.x), float(start.position.y),
             float(start.position.z),
@@ -1934,7 +1940,7 @@ class D1GraspCoordinator(Node):
             request.start_state = copy.deepcopy(start_state)
         request.group_name = self._planning_group
         request.link_name = self._tip_link
-        waypoints = self._intermediate_cartesian_waypoints(pose)
+        waypoints = self._intermediate_cartesian_waypoints(pose, purpose)
         if not waypoints:
             waypoints = [copy.deepcopy(pose.pose)]
         request.waypoints = waypoints
