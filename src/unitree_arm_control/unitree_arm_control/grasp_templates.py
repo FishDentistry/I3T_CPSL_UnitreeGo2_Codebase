@@ -101,12 +101,15 @@ def validate_template(template):
         target - start for start, target in zip(pre_point, contact_point)
     )
     distance = grasping.distance_from_origin(delta)
-    if not 0.02 <= distance <= 0.25 or delta[0] <= 0.01:
-        raise ValueError(
-            'contact must be 2-25 cm ahead of pre-grasp toward the object'
-        )
-    if math.hypot(delta[1], delta[2]) > 0.03:
-        raise ValueError('demonstrated contact must be a nearly straight approach')
+    if not 0.02 <= distance <= 0.25:
+        raise ValueError('contact must be 2-25 cm from pre-grasp')
+    # The approach may come from the side, at an angle, or from above, but it
+    # must close on the object and must not reach back toward the arm mount.
+    if (grasping.distance_from_origin(pre_point)
+            - grasping.distance_from_origin(contact_point)) < 0.01:
+        raise ValueError('the approach must move toward the object center')
+    if delta[0] < -0.01:
+        raise ValueError('the approach must not move back toward the arm')
     if grasping.approach_axis_error(pre['orientation'], delta) > 0.35:
         raise ValueError('gripper forward axis must face the contact point')
     if grasping.quaternion_angular_distance(
@@ -117,6 +120,54 @@ def validate_template(template):
         raise ValueError('recorded gripper opening must be positive and finite')
     if not isinstance(template.get('enabled', True), bool):
         raise ValueError('template enabled must be boolean')
+
+
+MINIMUM_STANDOFF_M = 0.02
+MAXIMUM_STANDOFF_M = 0.25
+
+
+def straight_pregrasp(contact, standoff=None, demonstrated_pregrasp=None):
+    """Derive a pre-grasp on the gripper's forward axis behind ``contact``.
+
+    Only the contact pose has to be taught precisely. The pre-grasp keeps the
+    contact wrist orientation and is backed off along the gripper's forward
+    (+Z tool) axis, so the taught approach is straight by construction. When a
+    rough pre-grasp was demonstrated, only its distance behind the contact is
+    used; its sideways error and wrist orientation are discarded.
+    """
+    contact_point = _finite_tuple(contact['position'], 3, 'contact position')
+    orientation = _unit_quaternion(contact['orientation'])
+    forward = grasping.rotate_vector((0.0, 0.0, 1.0), orientation)
+    if demonstrated_pregrasp is not None:
+        pre_point = _finite_tuple(
+            demonstrated_pregrasp['position'], 3, 'pregrasp position'
+        )
+        standoff = sum(
+            (end - start) * axis
+            for start, end, axis in zip(pre_point, contact_point, forward)
+        )
+        if standoff < MINIMUM_STANDOFF_M:
+            raise ValueError(
+                'the captured pre-grasp is only {:.1f} cm behind the contact '
+                'along the gripper axis; it must be at least {:.0f} cm back '
+                '(recapture pregrasp further away, or skip it to use the '
+                'default standoff)'.format(
+                    100.0 * standoff, 100.0 * MINIMUM_STANDOFF_M
+                )
+            )
+        standoff = min(standoff, MAXIMUM_STANDOFF_M)
+    if standoff is None:
+        raise ValueError('a standoff or demonstrated pre-grasp is required')
+    standoff = float(standoff)
+    if not MINIMUM_STANDOFF_M <= standoff <= MAXIMUM_STANDOFF_M:
+        raise ValueError('pre-grasp standoff must be 2-25 cm')
+    return {
+        'position': [
+            value - standoff * axis
+            for value, axis in zip(contact_point, forward)
+        ],
+        'orientation': list(orientation),
+    }, standoff
 
 
 def candidate_from_template(template, reference):

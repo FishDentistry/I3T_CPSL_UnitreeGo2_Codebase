@@ -22,6 +22,9 @@ d1_grasp_coordinator:
     # Demonstrations are saved in a writable per-user library, not install/.
     grasp_templates_path: ~/.local/share/unitree_arm_control/grasp_templates.yaml
     taught_orientation_tolerance_rad: 0.10
+    # Teaching: pre-grasp distance behind the taught contact, along the
+    # gripper axis, when no pregrasp is captured (0.02-0.25 m).
+    taught_pregrasp_standoff_m: 0.10
     planner_id: ""
     # Execution only: leave a near laid-down pose before MoveIt planning.
     lay_down_raise_enabled: true

@@ -21,7 +21,11 @@ def _parser():
     )
     start.add_argument('object_class')
     start.add_argument('--object-id', default='')
-    capture = commands.add_parser('capture', help='record achieved gripper TF')
+    capture = commands.add_parser(
+        'capture',
+        help='record achieved gripper TF; contact is required, pregrasp is '
+             'optional and only sets how far back the approach starts',
+    )
     capture.add_argument('stage', choices=('pregrasp', 'contact'))
     save = commands.add_parser('save', help='persist a verified demonstration')
     save.add_argument('name')

@@ -610,22 +610,34 @@ ros2 run unitree_arm_control d1_grasp_teach start cup \
 Starting a new session replaces an unfinished one. The service response reports
 the selected object ID and the frozen object-center reference.
 
-Move the arm with the existing D1 control interface to an open-jaw staging
-pose, then capture it. Move the gripper straight toward the intended contact
-point without changing its wrist orientation, and capture contact before
+Only the contact pose has to be taught precisely. Move the arm (with the D1
+control interface, or by hand after releasing the joints) so the open jaws
+surround the intended contact point, hold it still, and capture it before
 closing the jaws:
 
 ```bash
-ros2 run unitree_arm_control d1_grasp_teach capture pregrasp
 ros2 run unitree_arm_control d1_grasp_teach capture contact
 ```
 
-The captured approach must advance 2–25 cm toward the object center, deviate no more
-than 3 cm laterally or vertically, and change wrist orientation by no more
-than 0.10 rad. The gripper forward axis must face the contact point within
-0.35 rad. The contact pose must be within 15 cm of the object center.
-An invalid capture is rejected without saving. After manually
-closing the gripper and confirming a successful hold, save the demonstration:
+The pre-grasp is derived automatically: it keeps the contact wrist orientation
+and is backed off along the gripper's forward axis by
+`taught_pregrasp_standoff_m` (default 0.10 m). The approach is therefore
+straight by construction. To choose a different standoff for one grasp,
+capture a rough pre-grasp first; only its distance behind the contact along
+the gripper axis is used (2–25 cm), and its sideways error and wrist
+orientation are discarded:
+
+```bash
+ros2 run unitree_arm_control d1_grasp_teach capture pregrasp   # optional
+ros2 run unitree_arm_control d1_grasp_teach capture contact
+```
+
+The contact must be within 15 cm of the object center, and the derived
+approach must close on the object center and must not move back toward the
+arm mount. Side, angled and top-down approaches are all accepted. Capturing a
+new pregrasp clears an earlier contact. An invalid capture is rejected without
+saving. After manually closing the gripper and confirming a successful hold,
+save the demonstration:
 
 ```bash
 ros2 run unitree_arm_control d1_grasp_teach save side_grasp --confirmed

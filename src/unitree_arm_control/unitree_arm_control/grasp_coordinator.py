@@ -275,6 +275,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('grasp_orientation_tolerance_rad', 0.35)
         self.declare_parameter('band_alignment_tolerance_rad', 0.10)
         self.declare_parameter('taught_orientation_tolerance_rad', 0.10)
+        self.declare_parameter('taught_pregrasp_standoff_m', 0.10)
 
         self.declare_parameter('planning_time_sec', 5.0)
         self.declare_parameter('planning_attempts', 5)
@@ -352,6 +353,7 @@ class D1GraspCoordinator(Node):
             'grasp_orientation_tolerance_rad',
             'band_alignment_tolerance_rad',
             'taught_orientation_tolerance_rad',
+            'taught_pregrasp_standoff_m',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
             'maximum_grasp_band_width_m',
@@ -476,6 +478,10 @@ class D1GraspCoordinator(Node):
             raise RuntimeError(
                 'taught_orientation_tolerance_rad must be in (0, pi/2]'
             )
+        if not (grasp_templates.MINIMUM_STANDOFF_M
+                <= self._taught_pregrasp_standoff_m
+                <= grasp_templates.MAXIMUM_STANDOFF_M):
+            raise RuntimeError('taught_pregrasp_standoff_m must be in [0.02, 0.25]')
         if self._planning_time <= 0.0 or self._planning_attempts < 1:
             raise RuntimeError('planning limits are invalid')
         for name in ('velocity_scaling', 'acceleration_scaling'):
@@ -711,12 +717,13 @@ class D1GraspCoordinator(Node):
             'object_id': selected.object_id,
             'reference': reference,
             'poses': {},
+            'demonstrated_pregrasp': None,
             'open_angle': None,
         }
         response.success = True
         response.message = (
-            'object-center reference frozen; capture pregrasp, then contact, then '
-            'save after verifying the grasp'
+            'object-center reference frozen; capture contact with the jaws '
+            'open (pregrasp is optional), then save after verifying the grasp'
         )
         response.selected_object_id = selected.object_id
         response.reference_pose = self._target_pose(*reference)
@@ -729,9 +736,6 @@ class D1GraspCoordinator(Node):
         stage = request.stage.strip().lower()
         if stage not in ('pregrasp', 'contact'):
             response.message = 'stage must be pregrasp or contact'
-            return response
-        if stage == 'contact' and 'pregrasp' not in self._teaching['poses']:
-            response.message = 'capture pregrasp before contact'
             return response
         if (self._latest_gripper_angle is None
                 or self._now_seconds() - self._latest_gripper_receipt > 2.0):
@@ -749,24 +753,51 @@ class D1GraspCoordinator(Node):
             recorded = grasp_templates.relative_pose(
                 self._teaching['reference'], point, quaternion
             )
+            detail = ''
             if stage == 'contact':
+                # Only the contact pose must be accurate. The pre-grasp is
+                # rebuilt on the contact gripper axis, so the approach is
+                # straight by construction; a captured pregrasp contributes
+                # only its standoff distance.
+                demonstrated = self._teaching.get('demonstrated_pregrasp')
+                pregrasp, standoff = grasp_templates.straight_pregrasp(
+                    recorded, self._taught_pregrasp_standoff_m, demonstrated
+                )
+                open_angle = (
+                    self._teaching['open_angle']
+                    if demonstrated is not None
+                    else self._latest_gripper_angle
+                )
                 grasp_templates.validate_template({
                     'name': 'capture',
                     'reference': 'target_object_center',
-                    'pregrasp': self._teaching['poses']['pregrasp'],
+                    'pregrasp': pregrasp,
                     'contact': recorded,
-                    'gripper_open_degrees': self._teaching['open_angle'],
+                    'gripper_open_degrees': open_angle,
                     'enabled': True,
                 })
+                detail = (
+                    '; straight approach derived with pre-grasp {:.1f} cm '
+                    'behind contact along the gripper axis'.format(
+                        100.0 * standoff
+                    )
+                )
         except Exception as error:
             response.message = 'could not capture {}: {}'.format(stage, error)
             return response
-        self._teaching['poses'][stage] = recorded
         if stage == 'pregrasp':
+            self._teaching['demonstrated_pregrasp'] = recorded
+            self._teaching['poses'].pop('pregrasp', None)
             self._teaching['poses'].pop('contact', None)
             self._teaching['open_angle'] = self._latest_gripper_angle
+        else:
+            self._teaching['poses']['pregrasp'] = pregrasp
+            self._teaching['poses']['contact'] = recorded
+            self._teaching['open_angle'] = open_angle
         response.success = True
-        response.message = '{} recorded from achieved gripper TF'.format(stage)
+        response.message = '{} recorded from achieved gripper TF{}'.format(
+            stage, detail
+        )
         response.achieved_pose = self._target_pose(point, quaternion)
         return response
 
@@ -779,7 +810,7 @@ class D1GraspCoordinator(Node):
             return response
         poses = self._teaching['poses']
         if 'pregrasp' not in poses or 'contact' not in poses:
-            response.message = 'both pregrasp and contact must be captured'
+            response.message = 'capture contact before saving'
             return response
         template = {
             'name': request.name.strip(),
