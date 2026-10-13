@@ -335,6 +335,34 @@ class GraspingTest(unittest.TestCase):
         self.assertAlmostEqual(opening_axis[0], 0.0)
         self.assertAlmostEqual(opening_axis[1], 1.0)
 
+    def test_opening_level_error_is_independent_of_approach_heading(self):
+        heading = 0.151
+        orientation = grasping.quaternion_from_approach(
+            (math.cos(heading), math.sin(heading), 0.0)
+        )
+        self.assertAlmostEqual(
+            grasping.gripper_opening_level_error(orientation), 0.0
+        )
+        self.assertAlmostEqual(
+            grasping.approach_axis_error(orientation, (1.0, 0.0, 0.0)),
+            heading,
+        )
+
+    def test_opening_level_error_checks_roll_modulo_jaw_symmetry(self):
+        orientation = grasping.quaternion_from_approach((1.0, 0.0, 0.0))
+        rolled = grasping.multiply_quaternions(
+            orientation, grasping.quaternion_from_rpy(0.0, 0.0, 0.2)
+        )
+        half_turned = grasping.multiply_quaternions(
+            orientation, grasping.quaternion_from_rpy(0.0, 0.0, math.pi)
+        )
+        self.assertAlmostEqual(
+            grasping.gripper_opening_level_error(rolled), 0.2
+        )
+        self.assertAlmostEqual(
+            grasping.gripper_opening_level_error(half_turned), 0.0
+        )
+
     def test_grasp_center_offset_uses_gripper_opening_axis(self):
         corrected = grasping._corrected_grasp_point(
             (0.5, 0.0, 0.08),
@@ -357,7 +385,7 @@ class GraspingTest(unittest.TestCase):
             math.pi / 2.0,
         )
 
-    def test_banded_approach_still_tries_local_orientation_variants(self):
+    def test_orientation_candidate_helper_includes_reference(self):
         orientation = grasping.quaternion_from_approach((1.0, 0.0, 0.0))
         candidates = grasping.approach_orientation_candidates(
             orientation, 0.35

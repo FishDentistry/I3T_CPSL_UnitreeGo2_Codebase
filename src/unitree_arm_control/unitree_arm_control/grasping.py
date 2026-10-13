@@ -374,6 +374,19 @@ def _gripper_opening_axis(approach_direction):
     return _normalized(lateral)
 
 
+def gripper_opening_level_error(orientation):
+    """Return jaw-roll error about the achieved tool-forward axis.
+
+    The two opposite jaw-opening directions describe the same horizontal
+    opening, so a half-turn about the tool axis has zero leveling error.
+    """
+    forward = rotate_vector((0.0, 0.0, 1.0), orientation)
+    expected = _gripper_opening_axis(forward)
+    actual = rotate_vector((0.0, 1.0, 0.0), orientation)
+    cosine = abs(_dot(actual, expected))
+    return math.acos(max(-1.0, min(1.0, cosine)))
+
+
 def _dot(first, second):
     return sum(left * right for left, right in zip(first, second))
 

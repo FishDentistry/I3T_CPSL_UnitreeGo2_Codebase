@@ -552,10 +552,12 @@ of imposing a full orientation constraint on the long transit plan. If the
 predicted or reached jaw opening differs from level by more than
 `band_alignment_tolerance_rad` (default `0.10` radians), a separate
 collision-checked roll about the current tool-forward axis is validated at
-pre-grasp. The nearer of the two equivalent horizontal-jaw orientations is
-used. The final approach is revalidated from the reached aligned pose.
-Band-based contact motion holds that orientation; no wrist adjustment is
-attempted during contact.
+pre-grasp. Jaw level is measured relative to that achieved forward axis;
+deviation from the planned approach direction is checked separately. The
+nearer of the two equivalent horizontal-jaw orientations is used. The final
+approach is revalidated from the reached aligned pose, then interpolated to a
+single grasp waypoint while holding that orientation. No wrist adjustment is
+attempted during band-based contact motion.
 `minimum_cartesian_fraction` is fixed at `1.0` so a partial contact path cannot
 be accepted during either pre-grasp screening or final revalidation.
 `approach_corridor_radius_m` defines the half-width of the constrained MoveIt

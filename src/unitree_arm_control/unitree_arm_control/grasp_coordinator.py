@@ -1185,21 +1185,14 @@ class D1GraspCoordinator(Node):
     def _band_alignment_problem(self, candidate, orientation):
         if candidate['band_width'] is None:
             return None
-        expected_opening = grasping._gripper_opening_axis(
-            candidate['approach_direction']
-        )
-        actual_opening = grasping.rotate_vector((0.0, 1.0, 0.0), orientation)
-        cosine = max(
-            -1.0,
-            min(1.0, grasping._dot(actual_opening, expected_opening)),
-        )
-        error = math.acos(cosine)
+        error = grasping.gripper_opening_level_error(orientation)
         if error <= self._band_alignment_tolerance_rad:
             return None
         return (
-            'measured-band gripper opening is {:.3f} rad off the horizontal '
-            'approach axis; a short in-place alignment is required before '
-            'contact motion'.format(error)
+            'measured-band gripper opening is {:.3f} rad from level about '
+            'the achieved tool-forward axis (limit {:.3f} rad)'.format(
+                error, self._band_alignment_tolerance_rad
+            )
         )
 
     def _wrist_point_for_line_check(self, tip_point, orientation):
@@ -1210,12 +1203,16 @@ class D1GraspCoordinator(Node):
     def _band_pointing_problem(self, candidate, orientation):
         if candidate['band_width'] is None:
             return None
-        # Band grasping is a contact-region constraint, not an exact single-axis
-        # pose constraint. The tool can be validly placed on the measured band
-        # while the local wrist rotates about the band normal by a small amount,
-        # and that variation does not change the actual contact geometry. A
-        # strict forward-axis equality check here rejects valid plans and is the
-        # reason the arm succeeds in execution but fails the post-check.
+        error = grasping.approach_axis_error(
+            orientation, candidate['approach_direction']
+        )
+        if error > self._grasp_orientation_tolerance_rad:
+            return (
+                'gripper forward axis is {:.3f} rad from the measured-band '
+                'approach (limit {:.3f} rad)'.format(
+                    error, self._grasp_orientation_tolerance_rad
+                )
+            )
         return None
 
     def _start_next_pregrasp_candidate(self):
@@ -1552,16 +1549,12 @@ class D1GraspCoordinator(Node):
         candidate['orientation'] = tuple(value / norm for value in values)
         self._active['candidate'] = candidate
         self._active['pregrasp_pose'] = predicted_pose
-        if candidate['band_width'] is None:
-            # Center-target grasps must already point at the approach. Banded
-            # candidates intentionally defer that check to the dedicated wrist
-            # alignment step, which is where the final approach is corrected.
-            pointing_problem = self._band_pointing_problem(
-                candidate, candidate['orientation']
-            )
-            if pointing_problem is not None:
-                self._preflight_failure(pointing_problem)
-                return
+        pointing_problem = self._band_pointing_problem(
+            candidate, candidate['orientation']
+        )
+        if pointing_problem is not None:
+            self._preflight_failure(pointing_problem)
+            return
         alignment_problem = self._band_alignment_problem(
             candidate, candidate['orientation']
         )
@@ -1830,6 +1823,12 @@ class D1GraspCoordinator(Node):
                 pointing_problem + '; no contact motion was executed'
             )
             return
+        if candidate['band_width'] is not None:
+            # The reached pose, not the nominal pre-grasp goal, starts both
+            # the in-place wrist adjustment and band-contact approach.
+            self._active['pregrasp_pose'] = self._target_pose(
+                actual_pregrasp, achieved_orientation
+            )
         alignment_problem = self._band_alignment_problem(
             candidate, achieved_orientation
         )
@@ -1863,12 +1862,10 @@ class D1GraspCoordinator(Node):
         achieved_orientation = (
             orientation.x, orientation.y, orientation.z, orientation.w
         )
-        # Banded targets must still allow a small, bounded wrist-orientation
-        # search. A single exact pose is often kinematically infeasible near
-        # the object even when nearby orientations are valid; rejecting them
-        # early causes the exact failure pattern seen in the logs.
         self._active['cartesian_orientations'] = (
-            grasping.approach_orientation_candidates(
+            (achieved_orientation,)
+            if self._active['grasp_band_width'] is not None
+            else grasping.approach_orientation_candidates(
                 achieved_orientation, self._grasp_orientation_tolerance_rad
             )
         )
@@ -1877,6 +1874,12 @@ class D1GraspCoordinator(Node):
         self._request_cartesian_path(pose, purpose, stage, message)
 
     def _intermediate_cartesian_waypoints(self, pose, purpose=None):
+        if (purpose in {'preflight', 'approach'}
+                and self._active['grasp_band_width'] is not None):
+            # MoveIt interpolates from request.start_state to this one pose.
+            # Do not insert the stored pre-alignment pose or replace the
+            # reached orientation during the straight band-contact motion.
+            return [copy.deepcopy(pose.pose)]
         start_pose = self._active.get('pregrasp_pose')
         if start_pose is None or pose is None:
             return [copy.deepcopy(pose.pose)] if pose is not None else []
@@ -2526,7 +2529,7 @@ class D1GraspCoordinator(Node):
             )
             if alignment_problem is not None:
                 self._finish_failure(
-                    'wrist alignment did not reach the band orientation: '
+                    'wrist alignment did not level the jaw opening: '
                     + alignment_problem
                 )
                 return
