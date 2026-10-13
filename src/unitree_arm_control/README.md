@@ -703,7 +703,13 @@ the horizontal position, and the log reports how far it differed. Straight
 moves (final approach, wrist alignment) are retimed by the coordinator at
 `cartesian_velocity_scaling` because Foxy's Cartesian service times them at
 full joint speed. When the approach finishes, the log reports the gripper's
-distance from the grasp target.
+distance from the grasp target. If that is more than
+`approach_correction_threshold_m` (4 mm), the coordinator corrects for servo
+sag before closing: it re-sends the approach endpoint offset by the measured
+joint error (at most `approach_correction_max_offset_rad` per joint, up to
+`approach_correction_attempts` times, with goal tolerances widened by the
+offset so the D1 controller does not re-hold the sagged pose), then measures
+again. Set `approach_correction_enabled: false` to disable it.
 
 List or remove taught grasps (the running coordinator reloads the file before
 its next request, so no restart is needed):

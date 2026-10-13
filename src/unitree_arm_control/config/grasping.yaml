@@ -96,6 +96,14 @@ d1_grasp_coordinator:
     # a faster approach; lower if the gripper sags below the line on the way in.
     cartesian_velocity_scaling: 0.05
     cartesian_acceleration_scaling: 0.05
+    # After the final approach, the servos settle short of the target (mostly
+    # low, under gravity) by up to the controller's goal tolerance. If the
+    # gripper is farther than the threshold, re-send the approach endpoint
+    # offset by the measured joint error (each joint at most max_offset).
+    approach_correction_enabled: true
+    approach_correction_threshold_m: 0.004
+    approach_correction_max_offset_rad: 0.02
+    approach_correction_attempts: 2
 
     # Recheck the target after the pre-grasp before planning the final motion.
     fresh_detection_age_sec: 5.0

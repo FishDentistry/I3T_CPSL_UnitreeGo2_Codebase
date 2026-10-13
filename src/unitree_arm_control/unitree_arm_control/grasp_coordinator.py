@@ -8,6 +8,7 @@ import time
 
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
+from control_msgs.msg import JointTolerance
 from geometry_msgs.msg import Pose
 from geometry_msgs.msg import PoseStamped
 from intel_realsense_interfaces.msg import GroundedDetectionArray
@@ -313,6 +314,16 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('taught_min_pregrasp_standoff_m', 0.06)
         self.declare_parameter('taught_joint_goal_tolerance_rad', 0.01)
         self.declare_parameter('taught_search_timeout_sec', 30.0)
+        # After the final approach, the D1 servos settle up to the controller's
+        # goal tolerance short of the target (mostly downward, under gravity).
+        # Re-send the approach endpoint offset by the measured joint error
+        # until the gripper is within the threshold, with a bounded offset.
+        self.declare_parameter('approach_correction_enabled', True)
+        self.declare_parameter('approach_correction_threshold_m', 0.004)
+        self.declare_parameter('approach_correction_max_offset_rad', 0.02)
+        self.declare_parameter('approach_correction_attempts', 2)
+        self.declare_parameter('approach_correction_move_sec', 1.0)
+        self.declare_parameter('approach_correction_settle_sec', 0.4)
 
         self.declare_parameter('planning_time_sec', 5.0)
         self.declare_parameter('planning_attempts', 5)
@@ -369,6 +380,7 @@ class D1GraspCoordinator(Node):
 
         bool_names = (
             'execution_enabled', 'require_grasp_obstruction',
+            'approach_correction_enabled',
             'use_grasp_band',
             'lay_down_raise_enabled',
         )
@@ -395,6 +407,9 @@ class D1GraspCoordinator(Node):
             'taught_ik_timeout_sec', 'taught_joint_goal_tolerance_rad',
             'taught_min_pregrasp_standoff_m',
             'taught_search_timeout_sec',
+            'approach_correction_threshold_m',
+            'approach_correction_max_offset_rad',
+            'approach_correction_move_sec', 'approach_correction_settle_sec',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
             'maximum_grasp_band_width_m',
@@ -420,6 +435,9 @@ class D1GraspCoordinator(Node):
             self._parameter('minimum_observations')
         )
         self._planning_attempts = int(self._parameter('planning_attempts'))
+        self._approach_correction_attempts = int(
+            self._parameter('approach_correction_attempts')
+        )
         self._gripper_joint_id = int(self._parameter('gripper_joint_id'))
         self._approach_yaw_offsets = tuple(
             float(value)
@@ -544,6 +562,15 @@ class D1GraspCoordinator(Node):
             raise RuntimeError('taught_joint_goal_tolerance_rad must be positive')
         if self._taught_search_timeout_sec <= 0.0:
             raise RuntimeError('taught_search_timeout_sec must be positive')
+        if (self._approach_correction_threshold_m <= 0.0
+                or not 0.0 < self._approach_correction_max_offset_rad <= 0.05
+                or self._approach_correction_attempts < 0
+                or self._approach_correction_move_sec <= 0.0
+                or self._approach_correction_settle_sec < 0.0):
+            raise RuntimeError(
+                'approach correction parameters are invalid (max offset must '
+                'be in (0, 0.05] rad)'
+            )
         if self._planning_time <= 0.0 or self._planning_attempts < 1:
             raise RuntimeError('planning limits are invalid')
         for name in ('velocity_scaling', 'acceleration_scaling'):
@@ -3128,6 +3155,11 @@ class D1GraspCoordinator(Node):
             # Retreat later returns to exactly where the approach starts,
             # a configuration the arm has just occupied without collision.
             self._active['retreat_joints'] = self._arm_joint_radians()
+            self._active['approach_final_joints'] = self._trajectory_endpoint(
+                trajectory
+            )
+            self._active['correction_offset'] = [0.0] * len(D1_ARM_JOINT_NAMES)
+            self._active['correction_attempts'] = 0
         candidate = self._active.get('candidate')
         self._grasp_log('ARM MOVING ({}) with {}'.format(
             purpose.replace('_', ' '),
@@ -3194,13 +3226,8 @@ class D1GraspCoordinator(Node):
         elif purpose in ('reposition_pregrasp', 'align_pregrasp'):
             self._begin_pose_verification(purpose)
         elif purpose == 'approach':
-            self._log_approach_accuracy()
-            self._command_gripper(
-                self._gripper_closed_degrees,
-                'wait_close',
-                GraspStatus.STAGE_CLOSING,
-                'final approach complete; closing the gripper',
-            )
+            # Measure only after feedback from the finished move has arrived.
+            self._settle_correction()
         else:
             self._finish_success(
                 GraspStatus.STAGE_RELEASED,
@@ -3208,8 +3235,20 @@ class D1GraspCoordinator(Node):
                 'was attempted',
             )
 
-    def _log_approach_accuracy(self):
-        """Report where the gripper ended up relative to the grasp target."""
+    @staticmethod
+    def _trajectory_endpoint(robot_trajectory):
+        """Final arm joint positions of a planned trajectory, or None."""
+        try:
+            joint_path = robot_trajectory.joint_trajectory
+            by_name = dict(zip(
+                joint_path.joint_names, joint_path.points[-1].positions
+            ))
+            return [float(by_name[name]) for name in D1_ARM_JOINT_NAMES]
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            return None
+
+    def _approach_error(self):
+        """Gripper position minus grasp target in the planning frame."""
         try:
             transform = self._lookup_transform(
                 self._planning_frame, self._tip_link
@@ -3220,17 +3259,156 @@ class D1GraspCoordinator(Node):
             )
             target = self._point_tuple(self._active['grasp_pose'].pose.position)
         except Exception as error:
-            self._grasp_log('approach finished; could not read the gripper '
-                            'position: {}'.format(error))
-            return
-        delta = tuple(a - t for a, t in zip(actual, target))
-        self._grasp_log(
-            'approach finished {:.1f} cm from the grasp target (dx {:+.1f} '
-            'dy {:+.1f} dz {:+.1f} cm, {}); closing the gripper'.format(
-                100.0 * grasping.distance_from_origin(delta),
-                100.0 * delta[0], 100.0 * delta[1], 100.0 * delta[2],
-                self._planning_frame,
+            self._grasp_log('could not read the gripper position after the '
+                            'approach: {}'.format(error))
+            return None
+        return tuple(a - t for a, t in zip(actual, target))
+
+    def _finish_approach_or_correct(self):
+        """Close the gripper, after correcting servo sag if needed."""
+        delta = self._approach_error()
+        attempts = self._active.get('correction_attempts', 0)
+        if delta is not None:
+            error = grasping.distance_from_origin(delta)
+            self._grasp_log(
+                '{} {:.1f} cm from the grasp target (dx {:+.1f} dy {:+.1f} '
+                'dz {:+.1f} cm, {})'.format(
+                    'approach finished' if attempts == 0 else
+                    'after correction {}:'.format(attempts),
+                    100.0 * error, 100.0 * delta[0], 100.0 * delta[1],
+                    100.0 * delta[2], self._planning_frame,
+                )
             )
+        else:
+            error = 0.0
+        skip = None
+        if not self._approach_correction_enabled:
+            skip = 'disabled'
+        elif error <= self._approach_correction_threshold_m:
+            skip = 'within threshold'
+        elif attempts >= self._approach_correction_attempts:
+            skip = 'no correction attempts left'
+        elif self._active.get('approach_final_joints') is None:
+            skip = 'approach endpoint unknown'
+        elif (self._arm_joint_radians() is None
+              or self._latest_arm_receipt
+              <= self._active.get('measure_after', 0.0)):
+            skip = 'joint feedback is stale'
+        elif not self._arm_trajectory.wait_for_server(timeout_sec=0.0):
+            skip = 'D1 trajectory action is unavailable'
+        if skip is None and self._start_approach_correction():
+            return
+        if skip not in (None, 'disabled', 'within threshold'):
+            self._grasp_log('closing without further correction ({})'.format(
+                skip
+            ))
+        self._command_gripper(
+            self._gripper_closed_degrees,
+            'wait_close',
+            GraspStatus.STAGE_CLOSING,
+            'final approach complete; closing the gripper',
+        )
+
+    def _start_approach_correction(self):
+        final = self._active['approach_final_joints']
+        measured = self._arm_joint_radians()
+        limit = self._approach_correction_max_offset_rad
+        offset = []
+        for previous, commanded, actual in zip(
+                self._active['correction_offset'], final, measured):
+            value = previous + (commanded - actual)
+            offset.append(max(-limit, min(limit, value)))
+        target = [commanded + extra for commanded, extra in zip(final, offset)]
+        for index, (value, limits) in enumerate(
+                zip(target, protocol.JOINT_LIMITS_DEGREES)):
+            if limits is not None and not (
+                    math.radians(limits[0]) <= value
+                    <= math.radians(limits[1])):
+                self._grasp_log('closing without correction (corrected J{} '
+                                'would exceed its limit)'.format(index))
+                return False
+        self._active['correction_offset'] = offset
+        self._active['correction_attempts'] += 1
+        self._active['phase'] = 'correcting_approach'
+        self._active['deadline'] = (
+            self._now_seconds() + self._approach_correction_move_sec + 5.0
+        )
+        self._grasp_log(
+            'correcting servo sag, attempt {}: offsetting the approach '
+            'endpoint by [{}] deg'.format(
+                self._active['correction_attempts'],
+                ', '.join('{:+.2f}'.format(math.degrees(v)) for v in offset),
+            )
+        )
+        self._publish_active_stage(
+            GraspStatus.STAGE_APPROACHING,
+            'correcting the final gripper position before closing',
+        )
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory.joint_names = list(D1_ARM_JOINT_NAMES)
+        point = JointTrajectoryPoint()
+        point.positions = [float(value) for value in target]
+        duration = self._approach_correction_move_sec
+        point.time_from_start = Duration(
+            sec=int(duration), nanosec=int((duration % 1.0) * 1e9)
+        )
+        goal.trajectory.points = [point]
+        goal.goal_time_tolerance = Duration(sec=3)
+        # The arm is expected to settle short of the offset target by about
+        # the offset itself (that is the sag being cancelled). Widen each
+        # joint's goal tolerance by its offset so the D1 controller reports
+        # success there instead of timing out and re-holding the sagged pose.
+        for name, extra in zip(D1_ARM_JOINT_NAMES, offset):
+            tolerance = JointTolerance()
+            tolerance.name = name
+            tolerance.position = 0.01 + abs(extra)
+            goal.goal_tolerance.append(tolerance)
+        token = self._active['token']
+        self._arm_trajectory.send_goal_async(goal).add_done_callback(
+            lambda done, token=token: self._correction_goal_sent(done, token)
+        )
+        return True
+
+    def _correction_goal_sent(self, future, token):
+        if (not self._active_token_valid(token)
+                or self._active['phase'] != 'correcting_approach'):
+            return
+        try:
+            handle = future.result()
+        except Exception as error:
+            handle = None
+            self._grasp_log('correction could not be sent: {}'.format(error))
+        if handle is None or not handle.accepted:
+            self._settle_correction()
+            return
+        handle.get_result_async().add_done_callback(
+            lambda done, token=token: self._correction_result(done, token)
+        )
+
+    def _correction_result(self, future, token):
+        if (not self._active_token_valid(token)
+                or self._active['phase'] != 'correcting_approach'):
+            return
+        try:
+            result = future.result().result
+            if result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
+                # The measured position decides what happens next.
+                self._grasp_log('correction move ended early: {}'.format(
+                    result.error_string
+                ))
+        except Exception as error:
+            self._grasp_log('correction move result unavailable: {}'.format(
+                error
+            ))
+        self._settle_correction()
+
+    def _settle_correction(self):
+        now = self._now_seconds()
+        self._active['phase'] = 'settling_correction'
+        self._active['measure_after'] = now
+        self._active['deadline'] = now + max(
+            self._approach_correction_settle_sec,
+            self._post_execution_pose_settle_sec,
         )
 
     def _begin_pose_verification(self, purpose):
@@ -3388,6 +3566,20 @@ class D1GraspCoordinator(Node):
         if phase == 'waiting_laydown_enable':
             if now >= self._active['deadline']:
                 self._start_laydown_raise()
+            return
+        if phase == 'settling_correction':
+            if now < self._active['deadline']:
+                return
+            if (self._latest_arm_receipt <= self._active['measure_after']
+                    and now < self._active['deadline'] + 2.0):
+                return  # wait for joint feedback newer than the move
+            self._finish_approach_or_correct()
+            return
+        if phase == 'correcting_approach':
+            if now > self._active['deadline']:
+                self._grasp_log('correction move did not report back; '
+                                'measuring where the arm is')
+                self._settle_correction()
             return
         if phase.startswith('searching_taught'):
             if now > self._active['deadline']:
