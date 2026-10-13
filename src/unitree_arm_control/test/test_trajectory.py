@@ -1,5 +1,6 @@
 """Tests for trajectory validation and interpolation."""
 
+import math
 import unittest
 
 from unitree_arm_control import trajectory
@@ -172,6 +173,34 @@ class TrajectoryTest(unittest.TestCase):
                 (-1.1,),
                 ('joint_0',),
                 ((-1.0, 1.0),),
+            )
+
+    def test_position_validation_tolerates_feedback_jitter_at_limit(self):
+        # Laid-down J1 rests on -90 degrees; the planned first point can read
+        # a few tenths of a degree farther out than the latest feedback.
+        lower = math.radians(-90.0)
+        trajectory.validate_position_limits(
+            ((lower - math.radians(0.4),), (lower + 0.1,)),
+            (lower - math.radians(0.1),),
+            ('joint_1',),
+            ((lower, -lower),),
+        )
+        trajectory.validate_position_limits(
+            ((lower - math.radians(0.3),), (lower + 0.1,)),
+            (lower + math.radians(0.05),),
+            ('joint_1',),
+            ((lower, -lower),),
+        )
+
+    def test_position_validation_rejects_beyond_feedback_jitter(self):
+        lower = math.radians(-90.0)
+        with self.assertRaisesRegex(
+                trajectory.TrajectoryError, 'position limit'):
+            trajectory.validate_position_limits(
+                ((lower - math.radians(2.0),),),
+                (lower,),
+                ('joint_1',),
+                ((lower, -lower),),
             )
 
 

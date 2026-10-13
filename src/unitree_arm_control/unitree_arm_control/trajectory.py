@@ -4,6 +4,12 @@ import math
 
 
 _POSITION_LIMIT_EPSILON = 1.0e-6
+# Joint feedback jitters by a fraction of a degree. MoveIt's first trajectory
+# point is the joint state at planning time, while the controller compares it
+# with feedback received just before execution, so a joint resting on a limit
+# (the laid-down J1 sits at exactly -90 degrees) can appear to step slightly
+# farther outside between the two readings.
+_MEASUREMENT_TOLERANCE_RAD = math.radians(1.0)
 
 
 class TrajectoryError(ValueError):
@@ -216,9 +222,10 @@ def validate_position_limits(
 
     A measured starting position can be marginally outside a published limit.
     Such a joint may remain at that position or move toward the valid range,
-    but it may not move farther outside the range. Tiny floating-point
-    overshoots at the boundary are treated as numerical noise rather than a real
-    limit violation.
+    but it may not move farther outside the range than feedback noise
+    (``_MEASUREMENT_TOLERANCE_RAD``) beyond the start or the limit, whichever
+    is farther out. Tiny floating-point overshoots at the boundary are treated
+    as numerical noise rather than a real limit violation.
     """
     if len(joint_names) != len(start_positions):
         raise TrajectoryError('joint and start position counts must match')
@@ -234,12 +241,15 @@ def validate_position_limits(
             lower, upper = limits
             if lower - epsilon <= value <= upper + epsilon:
                 continue
-            moving_toward_range = (
-                start < lower and start <= value <= lower + epsilon
+            noise = _MEASUREMENT_TOLERANCE_RAD
+            within_measured_start = (
+                value < lower
+                and value >= min(start, lower) - noise
             ) or (
-                start > upper and upper - epsilon <= value <= start
+                value > upper
+                and value <= max(start, upper) + noise
             )
-            if not moving_toward_range:
+            if not within_measured_start:
                 raise TrajectoryError(
                     'point {} exceeds the position limit for {}'.format(
                         point_index, joint_names[joint_index]

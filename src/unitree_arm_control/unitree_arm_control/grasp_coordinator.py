@@ -796,10 +796,38 @@ class D1GraspCoordinator(Node):
             self._teaching['open_angle'] = open_angle
         response.success = True
         response.message = '{} recorded from achieved gripper TF{}'.format(
-            stage, detail
+            stage, detail + self._joint_limit_warning()
         )
         response.achieved_pose = self._target_pose(point, quaternion)
         return response
+
+    def _joint_limit_warning(self, margin_degrees=5.0):
+        """Flag taught poses that rest on a joint limit.
+
+        A pose demonstrated with released joints can sit at, or slightly past,
+        a published limit. Planning then cannot reach it on a straight line,
+        which shows up later as a low Cartesian approach fraction.
+        """
+        angles = self._latest_arm_angles
+        if angles is None:
+            return ''
+        close = []
+        for index, (angle, limits) in enumerate(
+                zip(angles, protocol.JOINT_LIMITS_DEGREES)):
+            if limits is None:
+                continue
+            lower, upper = limits
+            if angle <= lower + margin_degrees or angle >= upper - margin_degrees:
+                close.append('J{} at {:.1f} deg (limit {:.0f} to {:.0f})'.format(
+                    index, angle, lower, upper
+                ))
+        if not close:
+            return ''
+        return (
+            '. WARNING: {} within {:.0f} deg of its limit; replay may not '
+            'reach this pose, so consider reteaching it with that joint '
+            'farther from the limit'.format(', '.join(close), margin_degrees)
+        )
 
     def _save_grasp_teaching(self, request, response):
         if self._active is not None or self._teaching is None:
