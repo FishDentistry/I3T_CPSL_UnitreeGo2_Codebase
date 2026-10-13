@@ -117,6 +117,66 @@ def conservative_waypoint_times(
     return tuple(times)
 
 
+def smooth_waypoint_times(waypoint_positions, max_velocity, max_acceleration):
+    """Time a joint path as one smooth move at a bounded joint speed.
+
+    The path is followed at constant speed with a single acceleration ramp at
+    the start and a single deceleration ramp at the end (a trapezoidal profile
+    over path length, measured as the largest joint change per segment), so
+    no joint exceeds ``max_velocity`` or ``max_acceleration``. Positions are
+    unchanged. Unlike ``conservative_waypoint_times`` it does not stop at
+    every waypoint.
+    """
+    if not all(math.isfinite(value) and value > 0.0
+               for value in (max_velocity, max_acceleration)):
+        raise TrajectoryError('retiming limits must be finite and positive')
+    positions = tuple(tuple(float(value) for value in point)
+                      for point in waypoint_positions)
+    if not positions:
+        raise TrajectoryError('cannot retime an empty trajectory')
+    joint_count = len(positions[0])
+    if not joint_count or any(
+            len(point) != joint_count
+            or not all(math.isfinite(value) for value in point)
+            for point in positions):
+        raise TrajectoryError('cannot retime invalid joint positions')
+    cumulative = [0.0]
+    for previous, current in zip(positions, positions[1:]):
+        step = max(abs(end - start) for start, end in zip(previous, current))
+        cumulative.append(cumulative[-1] + step)
+    total = cumulative[-1]
+    ramp = max_velocity * max_velocity / max_acceleration
+    if total >= ramp:
+        peak = max_velocity
+        ramp_time = max_velocity / max_acceleration
+        cruise_time = (total - ramp) / max_velocity
+    else:
+        peak = math.sqrt(max_acceleration * total)
+        ramp_time = peak / max_acceleration
+        cruise_time = 0.0
+    half_ramp = 0.5 * peak * ramp_time
+
+    def time_at(distance):
+        if distance <= half_ramp:
+            return math.sqrt(2.0 * distance / max_acceleration)
+        if distance <= half_ramp + peak * cruise_time:
+            return ramp_time + (distance - half_ramp) / peak
+        remaining = max(0.0, total - distance)
+        return 2.0 * ramp_time + cruise_time - math.sqrt(
+            2.0 * remaining / max_acceleration
+        )
+
+    # Keep times strictly increasing even across zero-length segments; the
+    # first point is the start state, so it takes a small nonzero time.
+    times = []
+    previous = 0.0
+    for distance in cumulative:
+        value = max(time_at(distance), previous + 1.0e-3)
+        times.append(value)
+        previous = value
+    return tuple(times)
+
+
 def expand_positions(
         commanded_joint_names,
         commanded_positions,

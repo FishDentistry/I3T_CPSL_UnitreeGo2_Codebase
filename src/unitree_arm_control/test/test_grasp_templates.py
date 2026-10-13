@@ -213,3 +213,51 @@ def test_optional_contact_joints_are_validated():
     template['contact_joints'] = [0.1, 0.2]
     with pytest.raises(ValueError, match='contact_joints'):
         grasp_templates.validate_template(template)
+
+
+def test_remove_by_name_and_detect_outside_changes(tmp_path):
+    path = tmp_path / 'grasp_templates.yaml'
+    library = grasp_templates.GraspTemplateLibrary(str(path))
+    first = _demonstration()
+    second = dict(_demonstration(), name='other')
+    library.add('cup', first)
+    library.add('cup', second)
+    assert not library.changed_on_disk()
+    other_process = grasp_templates.GraspTemplateLibrary(str(path))
+    removed = other_process.remove('Cup', 'side')
+    assert removed['name'] == 'side'
+    assert library.changed_on_disk()
+    library.load()
+    assert [t['name'] for t in library.templates_for('cup')] == ['other']
+    with pytest.raises(ValueError, match='it has: other'):
+        library.remove('cup', 'side')
+    library.remove('cup', 'other')
+    assert library.classes == {}
+    assert grasp_templates.GraspTemplateLibrary(str(path)).classes == {}
+
+
+def test_cli_lists_and_removes_without_ros(tmp_path):
+    import io
+    import contextlib
+    from unitree_arm_control import grasp_teach
+    path = tmp_path / 'grasp_templates.yaml'
+    library = grasp_templates.GraspTemplateLibrary(str(path))
+    library.add('cup', _demonstration())
+    library.add('mug', dict(_demonstration(), name='handle_side'))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert grasp_teach.main(['list', '--path', str(path)]) == 0
+    text = out.getvalue()
+    assert 'cup:' in text and 'mug:' in text and 'handle_side' in text
+    assert 'approach from 15.0 cm' in text
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert grasp_teach.main(['list', 'mug', '--path', str(path)]) == 0
+    assert 'cup:' not in out.getvalue()
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert grasp_teach.main(['remove', 'cup', 'side', '--path', str(path)]) == 0
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        assert grasp_teach.main(['remove', 'cup', 'side', '--path', str(path)]) == 1
+    assert 'no grasp named side' in err.getvalue()
+    assert list(grasp_templates.GraspTemplateLibrary(str(path)).classes) == ['mug']

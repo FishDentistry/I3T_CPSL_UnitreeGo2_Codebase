@@ -261,17 +261,39 @@ def candidate_from_template(template, reference, yaw_offset=0.0):
     }
 
 
+def disk_signature(path):
+    """Identify a file version (None when absent) to notice outside edits."""
+    try:
+        status = os.stat(os.path.abspath(os.path.expanduser(path)))
+    except FileNotFoundError:
+        return None
+    return (status.st_mtime_ns, status.st_size, status.st_ino)
+
+
+def approach_distance(template):
+    """Pre-grasp to contact distance of a template, in metres."""
+    return grasping.distance_between(
+        template['pregrasp']['position'], template['contact']['position']
+    )
+
+
 class GraspTemplateLibrary:
     """A versioned YAML library with atomic writes to a user-selected path."""
 
     def __init__(self, path):
         self.path = os.path.abspath(os.path.expanduser(path))
         self.classes = {}
+        self.signature = None
         self.load()
 
+    def changed_on_disk(self):
+        return disk_signature(self.path) != self.signature
+
     def load(self):
-        if not os.path.exists(self.path):
+        signature = disk_signature(self.path)
+        if signature is None:
             self.classes = {}
+            self.signature = None
             return
         try:
             with open(self.path, 'r', encoding='utf-8') as stream:
@@ -286,6 +308,8 @@ class GraspTemplateLibrary:
                 )
             raise ValueError('grasp template file must have version: 2')
         classes = document.get('classes', {})
+        if classes is None:
+            classes = {}
         if not isinstance(classes, dict):
             raise ValueError('grasp template classes must be a mapping')
         checked = {}
@@ -301,6 +325,7 @@ class GraspTemplateLibrary:
                 names.add(template['name'])
             checked[key] = templates
         self.classes = checked
+        self.signature = signature
 
     def templates_for(self, object_class):
         return tuple(
@@ -319,6 +344,30 @@ class GraspTemplateLibrary:
             raise ValueError('template name already exists for ' + key)
         updated = {label: list(items) for label, items in self.classes.items()}
         updated.setdefault(key, []).append(template)
+        self._write(updated)
+
+    def remove(self, object_class, name):
+        """Delete one named template from a class and return it."""
+        key = grasping.normalize_label(object_class)
+        templates = self.classes.get(key, [])
+        kept = [item for item in templates if item['name'] != name]
+        if len(kept) == len(templates):
+            available = ', '.join(item['name'] for item in templates)
+            raise ValueError('no grasp named {} under {}{}'.format(
+                name, key or '<empty class>',
+                '; it has: ' + available if available else
+                '; that class has no taught grasps',
+            ))
+        removed = next(item for item in templates if item['name'] == name)
+        updated = {label: list(items) for label, items in self.classes.items()}
+        if kept:
+            updated[key] = kept
+        else:
+            del updated[key]
+        self._write(updated)
+        return removed
+
+    def _write(self, updated):
         parent = os.path.dirname(self.path)
         os.makedirs(parent, exist_ok=True)
         temporary = None
@@ -338,3 +387,4 @@ class GraspTemplateLibrary:
             if temporary is not None and os.path.exists(temporary):
                 os.unlink(temporary)
         self.classes = updated
+        self.signature = disk_signature(self.path)

@@ -90,6 +90,12 @@ d1_grasp_coordinator:
     acceleration_scaling: 0.10
     # Reject incomplete wrist alignment and final contact paths.
     minimum_cartesian_fraction: 1.0
+    # Speed of straight-line moves (final approach, wrist alignment) as a
+    # fraction of the slowest joint limits. Foxy's Cartesian service ignores
+    # speed scaling, so the coordinator retimes these paths itself. Raise for
+    # a faster approach; lower if the gripper sags below the line on the way in.
+    cartesian_velocity_scaling: 0.05
+    cartesian_acceleration_scaling: 0.05
 
     # Recheck the target after the pre-grasp before planning the final motion.
     fresh_detection_age_sec: 5.0

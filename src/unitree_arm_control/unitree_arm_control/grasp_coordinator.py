@@ -99,6 +99,7 @@ class D1GraspCoordinator(Node):
         self._load_parameters()
         self._validate_parameters()
         self._template_library_error = None
+        self._template_library_failed_signature = None
         try:
             self._template_library = grasp_templates.GraspTemplateLibrary(
                 self._grasp_templates_path
@@ -108,6 +109,9 @@ class D1GraspCoordinator(Node):
             # generated-grasp path. Do not overwrite that file on save.
             self._template_library = None
             self._template_library_error = str(error)
+            self._template_library_failed_signature = (
+                grasp_templates.disk_signature(self._grasp_templates_path)
+            )
             self.get_logger().error(
                 'Taught grasps unavailable; generated grasps remain active: '
                 + str(error)
@@ -186,6 +190,13 @@ class D1GraspCoordinator(Node):
         self._inverse_kinematics = self.create_client(
             GetPositionIK, self._ik_service
         )
+        # Foxy's GetCartesianPath has no speed-scaling fields and move_group
+        # times every Cartesian path at full joint speed, which ignores
+        # cartesian_velocity_scaling. Retime those paths here instead.
+        self._cartesian_request_has_scaling = hasattr(
+            GetCartesianPath.Request(), 'max_velocity_scaling_factor'
+        )
+        self._cartesian_retime_logged = False
         self._set_joint = self.create_client(
             SetJoint, self._gripper_service
         )
@@ -702,7 +713,40 @@ class D1GraspCoordinator(Node):
             command, GraspStatus.STAGE_REJECTED, True, False, message
         )
 
+    def _refresh_template_library(self):
+        """Reload taught grasps if the file changed (CLI remove, hand edit)."""
+        signature = grasp_templates.disk_signature(self._grasp_templates_path)
+        if self._template_library is not None:
+            if not self._template_library.changed_on_disk():
+                return
+        elif signature == self._template_library_failed_signature:
+            return
+        try:
+            library = grasp_templates.GraspTemplateLibrary(
+                self._grasp_templates_path
+            )
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self._template_library = None
+            self._template_library_error = str(error)
+            self._template_library_failed_signature = signature
+            self._grasp_log(
+                'taught grasp file changed but is invalid; taught grasps are '
+                'disabled until it is fixed: {}'.format(error), 'error',
+                request_id='library',
+            )
+            return
+        self._template_library = library
+        self._template_library_error = None
+        self._template_library_failed_signature = None
+        count = sum(len(items) for items in library.classes.values())
+        self._grasp_log(
+            'reloaded taught grasps from {} ({} grasp(s) in {} class(es))'.format(
+                library.path, count, len(library.classes)
+            ), request_id='library',
+        )
+
     def _start_grasp_teaching(self, request, response):
+        self._refresh_template_library()
         if self._active is not None:
             response.message = 'a grasp request is active'
             return response
@@ -956,6 +1000,15 @@ class D1GraspCoordinator(Node):
                 )
             )
             return response
+        # Pick up removals or edits made while teaching, so saving does not
+        # write back a grasp that was deleted from the file.
+        self._refresh_template_library()
+        if self._template_library is None:
+            response.message = (
+                'grasp template library is unavailable: '
+                + str(self._template_library_error)
+            )
+            return response
         template = {
             'name': request.name.strip(),
             'reference': 'target_object_center',
@@ -1062,6 +1115,7 @@ class D1GraspCoordinator(Node):
                     self._reject(command, 'D1 arm trajectory action is unavailable')
                     return
 
+        self._refresh_template_library()
         objects = grasping.eligible_objects(
             self._latest_map.objects, object_class, command.object_id,
             self._now_seconds(), self._minimum_confidence,
@@ -1102,6 +1156,9 @@ class D1GraspCoordinator(Node):
                 object_class in self._horizontal_forward_depth_classes
             ),
             'object_point': object_point,
+            # Semantic-map height of the object; taught grasps were taught
+            # against this estimate and keep it after a fresh detection.
+            'reference_height': float(object_point[2]),
             'target_point': target_point,
             'grasp_band_width': None if band is None else band[1],
             'approach_origin': approach_origin,
@@ -2257,6 +2314,21 @@ class D1GraspCoordinator(Node):
                 )
             )
             return
+        if self._active['candidate'].get('taught'):
+            mapped = self._active['object_point']
+            self._grasp_log(
+                'fresh detection differs from the mapped object center by '
+                'dx {:+.1f} dy {:+.1f} dz {:+.1f} cm; taught grasp keeps the '
+                'mapped height and corrects only the horizontal position'.format(
+                    100.0 * (object_point[0] - mapped[0]),
+                    100.0 * (object_point[1] - mapped[1]),
+                    100.0 * (object_point[2] - mapped[2]),
+                )
+            )
+            object_point = (
+                object_point[0], object_point[1],
+                self._active['reference_height'],
+            )
         bands = ()
         if self._active['grasp_band_width'] is not None:
             try:
@@ -2557,9 +2629,50 @@ class D1GraspCoordinator(Node):
                 self._cartesian_path_result(done, token)
         )
 
+    def _retime_cartesian_smoothly(self, joint_path, purpose):
+        if set(joint_path.joint_names) != set(D1_ARM_JOINT_NAMES):
+            raise trajectory.TrajectoryError(
+                'Cartesian trajectory must contain exactly the six arm joints'
+            )
+        velocity = D1_ARM_MIN_VELOCITY_LIMIT * self._cartesian_velocity_scaling
+        acceleration = (
+            D1_ARM_MIN_ACCELERATION_LIMIT * self._cartesian_acceleration_scaling
+        )
+        times = trajectory.smooth_waypoint_times(
+            (point.positions for point in joint_path.points),
+            velocity, acceleration,
+        )
+        for point, seconds in zip(joint_path.points, times):
+            nanoseconds = round(seconds * 1e9)
+            point.time_from_start = Duration(
+                sec=nanoseconds // 1000000000,
+                nanosec=nanoseconds % 1000000000,
+            )
+            point.velocities = []
+            point.accelerations = []
+        trajectory.validate_trajectory(
+            joint_path.joint_names, joint_path.points, D1_ARM_JOINT_NAMES
+        )
+        if not self._cartesian_retime_logged:
+            self._cartesian_retime_logged = True
+            self.get_logger().info(
+                'Retiming straight-line paths at {:.3f} rad/s, {:.3f} '
+                'rad/s^2 (cartesian_velocity/acceleration_scaling); this '
+                "MoveIt's Cartesian service has no speed scaling".format(
+                    velocity, acceleration
+                )
+            )
+        if purpose in ('approach', 'align_pregrasp'):
+            self._grasp_log('straight {} timed at {:.1f}s'.format(
+                purpose.replace('_', ' '), times[-1]
+            ))
+
     def _prepare_cartesian_solution(self, solution, purpose):
         """Keep a complete Cartesian path executable by the D1 controller."""
         joint_path = solution.joint_trajectory
+        if not self._cartesian_request_has_scaling and joint_path.points:
+            self._retime_cartesian_smoothly(joint_path, purpose)
+            return
         try:
             trajectory.validate_trajectory(
                 joint_path.joint_names, joint_path.points, D1_ARM_JOINT_NAMES
@@ -3081,6 +3194,7 @@ class D1GraspCoordinator(Node):
         elif purpose in ('reposition_pregrasp', 'align_pregrasp'):
             self._begin_pose_verification(purpose)
         elif purpose == 'approach':
+            self._log_approach_accuracy()
             self._command_gripper(
                 self._gripper_closed_degrees,
                 'wait_close',
@@ -3093,6 +3207,31 @@ class D1GraspCoordinator(Node):
                 'object released and the arm retreated to pre-grasp; no lift '
                 'was attempted',
             )
+
+    def _log_approach_accuracy(self):
+        """Report where the gripper ended up relative to the grasp target."""
+        try:
+            transform = self._lookup_transform(
+                self._planning_frame, self._tip_link
+            )
+            actual = (
+                (0.0, 0.0, 0.0) if transform is None
+                else self._point_tuple(transform.transform.translation)
+            )
+            target = self._point_tuple(self._active['grasp_pose'].pose.position)
+        except Exception as error:
+            self._grasp_log('approach finished; could not read the gripper '
+                            'position: {}'.format(error))
+            return
+        delta = tuple(a - t for a, t in zip(actual, target))
+        self._grasp_log(
+            'approach finished {:.1f} cm from the grasp target (dx {:+.1f} '
+            'dy {:+.1f} dz {:+.1f} cm, {}); closing the gripper'.format(
+                100.0 * grasping.distance_from_origin(delta),
+                100.0 * delta[0], 100.0 * delta[1], 100.0 * delta[2],
+                self._planning_frame,
+            )
+        )
 
     def _begin_pose_verification(self, purpose):
         now = self._now_seconds()

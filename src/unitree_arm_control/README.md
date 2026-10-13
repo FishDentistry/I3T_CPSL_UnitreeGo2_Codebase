@@ -697,6 +697,26 @@ opening angle is recorded as metadata because no calibrated jaw-angle-to-gap
 model is available. Generated candidates and their optional band handling are
 unchanged.
 
+Taught grasps keep the object height from the semantic map (the estimate
+they were taught against); the fresh detection after pre-grasp corrects only
+the horizontal position, and the log reports how far it differed. Straight
+moves (final approach, wrist alignment) are retimed by the coordinator at
+`cartesian_velocity_scaling` because Foxy's Cartesian service times them at
+full joint speed. When the approach finishes, the log reports the gripper's
+distance from the grasp target.
+
+List or remove taught grasps (the running coordinator reloads the file before
+its next request, so no restart is needed):
+
+```bash
+ros2 run unitree_arm_control d1_grasp_teach list
+ros2 run unitree_arm_control d1_grasp_teach list cup
+ros2 run unitree_arm_control d1_grasp_teach remove cup cup_second_grasp
+```
+
+Both default to the standard library path; add `--path FILE` if the
+coordinator was launched with a different `grasp_templates_path`.
+
 Capturing contact now also runs this check for the captured grasp, and `save`
 refuses until it passes ("still checking" for a moment, or the reason it
 failed). Saved grasps record the contact joint angles (`contact_joints`);

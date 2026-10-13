@@ -206,3 +206,24 @@ class TrajectoryTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SmoothTimingTest(unittest.TestCase):
+    def test_smooth_times_respect_speed_and_do_not_stop_midway(self):
+        steps = 21
+        positions = [(0.02 * index, -0.01 * index, 0.0) for index in range(steps)]
+        times = trajectory.smooth_waypoint_times(positions, 0.05, 0.025)
+        self.assertEqual(len(times), steps)
+        self.assertTrue(all(b > a for a, b in zip(times, times[1:])))
+        for (p0, p1), (t0, t1) in zip(zip(positions, positions[1:]),
+                                       zip(times, times[1:])):
+            speed = max(abs(b - a) for a, b in zip(p0, p1)) / (t1 - t0)
+            self.assertLessEqual(speed, 0.05 * 1.001)
+        # 0.4 rad at 0.05 rad/s with 2 s ramps: 8 s cruise-equivalent + 2 s.
+        self.assertAlmostEqual(times[-1], 0.4 / 0.05 + 0.05 / 0.025, places=2)
+        middle = [t1 - t0 for t0, t1 in zip(times[8:12], times[9:13])]
+        self.assertAlmostEqual(max(middle), min(middle), places=6)
+
+    def test_smooth_times_short_path_uses_triangle_profile(self):
+        times = trajectory.smooth_waypoint_times([(0.0,), (0.001,)], 1.0, 1.0)
+        self.assertAlmostEqual(times[-1], 2.0 * math.sqrt(0.001), places=6)
