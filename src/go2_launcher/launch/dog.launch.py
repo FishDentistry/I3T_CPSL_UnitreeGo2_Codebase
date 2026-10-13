@@ -35,6 +35,7 @@ def generate_launch_description():
     grasp_execution_enabled = LaunchConfiguration(
         'grasp_execution_enabled'
     )
+    grasp_templates_path = LaunchConfiguration('grasp_templates_path')
 
     arm_launch_file = os.path.join(
         get_package_share_directory('unitree_arm_control'),
@@ -97,6 +98,14 @@ def generate_launch_description():
                 'Allow semantic grasp commands to execute the guarded '
                 'grasp, hold, release, and retreat sequence without lifting.'
             )
+        ),
+
+        DeclareLaunchArgument(
+            'grasp_templates_path',
+            default_value=(
+                '~/.local/share/unitree_arm_control/grasp_templates.yaml'
+            ),
+            description='Writable YAML path for taught class grasps.'
         ),
 
         DeclareLaunchArgument(
@@ -170,6 +179,7 @@ def generate_launch_description():
                 'use_rviz': 'false',
                 'allow_trajectory_execution': 'true',
                 'grasp_execution_enabled': grasp_execution_enabled,
+                'grasp_templates_path': grasp_templates_path,
             }.items()
         ),
         Node(

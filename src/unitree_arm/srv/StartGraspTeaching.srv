@@ -1,0 +1,9 @@
+string object_class
+string object_id
+uint32 band_index
+---
+bool success
+string message
+string selected_object_id
+float64 band_width_m
+geometry_msgs/PoseStamped reference_pose

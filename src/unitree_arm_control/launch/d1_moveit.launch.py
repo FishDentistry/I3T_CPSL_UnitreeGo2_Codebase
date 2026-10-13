@@ -132,7 +132,12 @@ def generate_launch_description():
         output='screen',
         parameters=[
             os.path.join(config_directory, 'grasping.yaml'),
-            {'execution_enabled': grasp_execution},
+            {
+                'execution_enabled': grasp_execution,
+                'grasp_templates_path': LaunchConfiguration(
+                    'grasp_templates_path'
+                ),
+            },
         ],
         condition=IfCondition(
             LaunchConfiguration('start_grasp_coordinator')
@@ -191,6 +196,13 @@ def generate_launch_description():
                 'Allow semantic grasp commands to execute pre-grasp, close, '
                 'hold, release, and retreat without lifting.'
             ),
+        ),
+        DeclareLaunchArgument(
+            'grasp_templates_path',
+            default_value=(
+                '~/.local/share/unitree_arm_control/grasp_templates.yaml'
+            ),
+            description='Writable YAML path for taught class grasps.',
         ),
         move_group,
         grasp_coordinator,

@@ -35,9 +35,14 @@ from unitree_arm.msg import GraspStatus
 from unitree_arm.msg import JointAngles
 from unitree_arm.srv import SetJoint
 from unitree_arm.srv import SetArmEnabled
+from unitree_arm.srv import StartGraspTeaching
+from unitree_arm.srv import CaptureGraspPose
+from unitree_arm.srv import SaveGraspTeaching
+from unitree_arm.srv import CancelGraspTeaching
 from trajectory_msgs.msg import JointTrajectoryPoint
 
 from unitree_arm_control import grasping
+from unitree_arm_control import grasp_templates
 from unitree_arm_control import protocol
 from unitree_arm_control import trajectory
 
@@ -90,6 +95,21 @@ class D1GraspCoordinator(Node):
         self._load_parameters()
         self._validate_parameters()
         self._tool_tip_offset = (0.00038, 0.0, 0.1256)
+        self._template_library_error = None
+        try:
+            self._template_library = grasp_templates.GraspTemplateLibrary(
+                self._grasp_templates_path
+            )
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            # A damaged optional library must not disable the existing
+            # generated-grasp path. Do not overwrite that file on save.
+            self._template_library = None
+            self._template_library_error = str(error)
+            self.get_logger().error(
+                'Taught grasps unavailable; generated grasps remain active: '
+                + str(error)
+            )
+        self._teaching = None
 
         latched_qos = QoSProfile(
             depth=1,
@@ -128,6 +148,22 @@ class D1GraspCoordinator(Node):
             self._joint_angles_topic,
             self._joint_angles_callback,
             10,
+        )
+        self.create_service(
+            StartGraspTeaching, '/d1_grasp/teach/start',
+            self._start_grasp_teaching,
+        )
+        self.create_service(
+            CaptureGraspPose, '/d1_grasp/teach/capture',
+            self._capture_grasp_pose,
+        )
+        self.create_service(
+            SaveGraspTeaching, '/d1_grasp/teach/save',
+            self._save_grasp_teaching,
+        )
+        self.create_service(
+            CancelGraspTeaching, '/d1_grasp/teach/cancel',
+            self._cancel_grasp_teaching,
         )
 
         self._tf_buffer = Buffer()
@@ -201,6 +237,9 @@ class D1GraspCoordinator(Node):
             'reach_reference_frame': 'd1_base_link',
             'tip_link': 'd1_gripper_center',
             'planner_id': '',
+            'grasp_templates_path': (
+                '~/.local/share/unitree_arm_control/grasp_templates.yaml'
+            ),
         }
         for name, default in string_parameters.items():
             self.declare_parameter(name, default)
@@ -236,6 +275,9 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('band_pregrasp_position_tolerance_m', 0.01)
         self.declare_parameter('grasp_orientation_tolerance_rad', 0.35)
         self.declare_parameter('band_alignment_tolerance_rad', 0.10)
+        self.declare_parameter('taught_orientation_tolerance_rad', 0.10)
+        self.declare_parameter('taught_minimum_width_ratio', 0.75)
+        self.declare_parameter('taught_maximum_width_ratio', 1.25)
 
         self.declare_parameter('planning_time_sec', 5.0)
         self.declare_parameter('planning_attempts', 5)
@@ -283,6 +325,7 @@ class D1GraspCoordinator(Node):
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'camera_frame',
             'reach_reference_frame', 'tip_link', 'planner_id',
+            'grasp_templates_path',
         )
         for name in string_names:
             setattr(self, '_' + name, str(self._parameter(name)).strip())
@@ -309,6 +352,9 @@ class D1GraspCoordinator(Node):
             'lay_down_raise_duration_sec',
             'grasp_orientation_tolerance_rad',
             'band_alignment_tolerance_rad',
+            'taught_orientation_tolerance_rad',
+            'taught_minimum_width_ratio',
+            'taught_maximum_width_ratio',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
             'maximum_grasp_band_width_m',
@@ -375,6 +421,7 @@ class D1GraspCoordinator(Node):
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'camera_frame',
             'reach_reference_frame', 'tip_link',
+            'grasp_templates_path',
         )
         for name in required_strings:
             if not getattr(self, '_' + name):
@@ -426,6 +473,13 @@ class D1GraspCoordinator(Node):
             raise RuntimeError(
                 'band_alignment_tolerance_rad must be in (0, pi]'
             )
+        if not 0.0 < self._taught_orientation_tolerance_rad <= math.pi / 2.0:
+            raise RuntimeError(
+                'taught_orientation_tolerance_rad must be in (0, pi/2]'
+            )
+        if not (0.0 < self._taught_minimum_width_ratio <= 1.0
+                <= self._taught_maximum_width_ratio):
+            raise RuntimeError('taught band width ratios are invalid')
         if self._planning_time <= 0.0 or self._planning_attempts < 1:
             raise RuntimeError('planning limits are invalid')
         for name in ('velocity_scaling', 'acceleration_scaling'):
@@ -587,9 +641,186 @@ class D1GraspCoordinator(Node):
             command, GraspStatus.STAGE_REJECTED, True, False, message
         )
 
+    def _start_grasp_teaching(self, request, response):
+        if self._active is not None:
+            response.message = 'a grasp request is active'
+            return response
+        if self._template_library is None:
+            response.message = (
+                'grasp template library is unavailable: '
+                + self._template_library_error
+            )
+            return response
+        object_class = grasping.normalize_label(request.object_class)
+        if not object_class or self._latest_map is None:
+            response.message = 'object class or semantic map is unavailable'
+            return response
+        objects = grasping.eligible_objects(
+            self._latest_map.objects, object_class, request.object_id,
+            self._now_seconds(), self._minimum_confidence,
+            self._minimum_observations, self._maximum_object_age,
+            SemanticObject.STATUS_ACTIVE,
+        )
+        if not objects:
+            response.message = 'no fresh ACTIVE object matches the class and ID'
+            return response
+        try:
+            frame = self._latest_map.header.frame_id.strip()
+            if not frame:
+                raise ValueError('semantic map frame is empty')
+            map_transform = self._lookup_transform(self._planning_frame, frame)
+            arm_transform = self._lookup_transform(
+                self._planning_frame, self._reach_reference_frame
+            )
+            arm_origin = (
+                (0.0, 0.0, 0.0) if arm_transform is None
+                else self._point_tuple(arm_transform.transform.translation)
+            )
+            choices = []
+            for item in objects:
+                object_point = self._transform_point(
+                    self._point_tuple(item.position), map_transform
+                )
+                bands = self._initial_grasp_bands(object_point, object_class)
+                index = int(request.band_index)
+                if not bands or index > len(bands):
+                    continue
+                band = bands[0 if index == 0 else index - 1]
+                if self._target_problem(band[0], 'teaching band') is not None:
+                    continue
+                reference = grasp_templates.band_reference(band[0], arm_origin)
+                choices.append((
+                    grasping.distance_between(object_point, arm_origin),
+                    item, band, reference,
+                ))
+            if not choices:
+                raise ValueError(
+                    'no fresh, width-compatible measured band has the '
+                    'requested index'
+                )
+            _, selected, band, reference = min(
+                choices, key=lambda item: item[0]
+            )
+        except Exception as error:
+            response.message = 'could not start teaching: {}'.format(error)
+            return response
+        self._teaching = {
+            'object_class': object_class,
+            'object_id': selected.object_id,
+            'band_width': band[1],
+            'reference': reference,
+            'poses': {},
+            'open_angle': None,
+        }
+        response.success = True
+        response.message = (
+            'band reference frozen; capture pregrasp, then contact, then '
+            'save after verifying the grasp'
+        )
+        response.selected_object_id = selected.object_id
+        response.band_width_m = band[1]
+        response.reference_pose = self._target_pose(*reference)
+        return response
+
+    def _capture_grasp_pose(self, request, response):
+        if self._active is not None or self._teaching is None:
+            response.message = 'teaching is not active or a grasp is running'
+            return response
+        stage = request.stage.strip().lower()
+        if stage not in ('pregrasp', 'contact'):
+            response.message = 'stage must be pregrasp or contact'
+            return response
+        if stage == 'contact' and 'pregrasp' not in self._teaching['poses']:
+            response.message = 'capture pregrasp before contact'
+            return response
+        if (self._latest_gripper_angle is None
+                or self._now_seconds() - self._latest_gripper_receipt > 2.0):
+            response.message = 'fresh gripper feedback is unavailable'
+            return response
+        try:
+            transform = self._tf_buffer.lookup_transform(
+                self._planning_frame, self._tip_link, Time()
+            )
+            point = self._point_tuple(transform.transform.translation)
+            orientation = transform.transform.rotation
+            quaternion = (
+                orientation.x, orientation.y, orientation.z, orientation.w
+            )
+            recorded = grasp_templates.relative_pose(
+                self._teaching['reference'], point, quaternion
+            )
+            if stage == 'contact':
+                grasp_templates.validate_template({
+                    'name': 'capture',
+                    'reference': 'selected_grasp_band',
+                    'taught_band_width_m': self._teaching['band_width'],
+                    'pregrasp': self._teaching['poses']['pregrasp'],
+                    'contact': recorded,
+                    'gripper_open_degrees': self._teaching['open_angle'],
+                    'enabled': True,
+                })
+        except Exception as error:
+            response.message = 'could not capture {}: {}'.format(stage, error)
+            return response
+        self._teaching['poses'][stage] = recorded
+        if stage == 'pregrasp':
+            self._teaching['poses'].pop('contact', None)
+            self._teaching['open_angle'] = self._latest_gripper_angle
+        response.success = True
+        response.message = '{} recorded from achieved gripper TF'.format(stage)
+        response.achieved_pose = self._target_pose(point, quaternion)
+        return response
+
+    def _save_grasp_teaching(self, request, response):
+        if self._active is not None or self._teaching is None:
+            response.message = 'teaching is not active or a grasp is running'
+            return response
+        if not request.grasp_succeeded:
+            response.message = 'grasp_succeeded must be true to save a template'
+            return response
+        poses = self._teaching['poses']
+        if 'pregrasp' not in poses or 'contact' not in poses:
+            response.message = 'both pregrasp and contact must be captured'
+            return response
+        template = {
+            'name': request.name.strip(),
+            'reference': 'selected_grasp_band',
+            'pregrasp': poses['pregrasp'],
+            'contact': poses['contact'],
+            'taught_band_width_m': self._teaching['band_width'],
+            'gripper_open_degrees': self._teaching['open_angle'],
+            'enabled': True,
+        }
+        try:
+            self._template_library.add(
+                self._teaching['object_class'], template
+            )
+        except (ValueError, OSError) as error:
+            response.message = 'could not save grasp: {}'.format(error)
+            return response
+        response.success = True
+        response.message = 'saved {} under {} in {}'.format(
+            template['name'], self._teaching['object_class'],
+            self._template_library.path,
+        )
+        self._teaching = None
+        return response
+
+    def _cancel_grasp_teaching(self, request, response):
+        if self._teaching is None:
+            response.message = 'no teaching session is active'
+            return response
+        self._teaching = None
+        response.success = True
+        response.message = 'teaching session discarded without saving'
+        return response
+
     def _command_callback(self, command):
         request_id = command.request_id.strip()
         object_class = grasping.normalize_label(command.object_class)
+        if self._teaching is not None:
+            self._reject(command, 'finish or restart the active teaching session first')
+            return
         if not request_id:
             self._reject(command, 'request_id must not be empty')
             return
@@ -1060,6 +1291,43 @@ class D1GraspCoordinator(Node):
             except ValueError as error:
                 failures.append(str(error))
                 continue
+            taught_candidates = []
+            for band_index, band in enumerate(bands):
+                try:
+                    reference = grasp_templates.band_reference(
+                        band[0], approach_origin
+                    )
+                except ValueError as error:
+                    failures.append(str(error))
+                    continue
+                templates = (
+                    () if self._template_library is None
+                    else self._template_library.templates_for(object_class)
+                )
+                for template in templates:
+                    try:
+                        candidate = grasp_templates.candidate_from_template(
+                            template, reference, band[1],
+                            self._taught_minimum_width_ratio,
+                            self._taught_maximum_width_ratio,
+                        )
+                    except ValueError as error:
+                        failures.append(str(error))
+                        continue
+                    if candidate is None:
+                        continue
+                    candidate['band_index'] = band_index + 1
+                    candidate['band_count'] = len(bands)
+                    problem = self._candidate_problem(candidate)
+                    if problem is None:
+                        taught_candidates.append(candidate)
+                    else:
+                        failures.append(problem)
+            taught_candidates.sort(key=lambda candidate: (
+                abs(candidate['band_width'] /
+                    float(candidate['template']['taught_band_width_m']) - 1.0),
+                candidate['band_index'],
+            ))
             usable_candidates = []
             for band_index, band in enumerate(bands or (None,)):
                 target_point = object_point if band is None else band[0]
@@ -1099,7 +1367,7 @@ class D1GraspCoordinator(Node):
                     candidate['band_count'] = len(bands)
                     usable_candidates.append(candidate)
             # Try another band at the same yaw before more oblique yaw angles.
-            ordered = sorted(
+            ordered = taught_candidates + sorted(
                 usable_candidates,
                 key=lambda candidate: (
                     abs(candidate['yaw_offset']), candidate['band_index']
@@ -1227,6 +1495,10 @@ class D1GraspCoordinator(Node):
     def _band_alignment_target(self, candidate, orientation):
         if candidate['band_width'] is None:
             return None
+        if candidate.get('taught'):
+            if self._taught_orientation_problem(candidate, orientation):
+                return candidate['taught_orientation']
+            return None
         if self._band_pointing_problem(candidate, orientation) is not None:
             # Position-only transit may reach the band with an arbitrary tool
             # heading. Rotate at pre-grasp to the measured approach direction,
@@ -1247,6 +1519,21 @@ class D1GraspCoordinator(Node):
             )
         if self._band_alignment_problem(candidate, orientation) is not None:
             return grasping.level_gripper_opening(orientation)
+        return None
+
+    def _taught_orientation_problem(self, candidate, orientation):
+        if not candidate.get('taught'):
+            return None
+        error = grasping.quaternion_angular_distance(
+            candidate['taught_orientation'], orientation
+        )
+        if error > self._taught_orientation_tolerance_rad:
+            return (
+                'gripper is {:.3f} rad from taught wrist orientation '
+                '(limit {:.3f} rad)'.format(
+                    error, self._taught_orientation_tolerance_rad
+                )
+            )
         return None
 
     def _start_next_pregrasp_candidate(self):
@@ -1284,8 +1571,10 @@ class D1GraspCoordinator(Node):
             'at [{:.3f}, {:.3f}, {:.3f}] m '
             '(yaw offset {:.3f} rad; {})'.format(
                 index + 1, len(candidates),
-                ('a position goal' if candidate['band_width'] is not None
-                 else 'orientation tolerance'),
+                ('taught grasp ' + candidate['template_name']
+                 if candidate.get('taught') else
+                 ('a position goal' if candidate['band_width'] is not None
+                  else 'orientation tolerance')),
                 candidate['pregrasp_point'][0],
                 candidate['pregrasp_point'][1],
                 candidate['pregrasp_point'][2],
@@ -1302,8 +1591,11 @@ class D1GraspCoordinator(Node):
                     if candidate['band_width'] is not None else None
                 ),
                 orientation_tolerance=(
-                    None if candidate['band_width'] is not None
-                    else self._grasp_orientation_tolerance_rad
+                    self._taught_orientation_tolerance_rad
+                    if candidate.get('taught') else (
+                        None if candidate['band_width'] is not None
+                        else self._grasp_orientation_tolerance_rad
+                    )
                 ),
             ),
             feedback_callback=lambda message, token=self._active['token']:
@@ -1644,6 +1936,10 @@ class D1GraspCoordinator(Node):
             'band {}'.format(candidate['band_index'])
             if candidate['band_width'] is not None else 'center target'
         )
+        if candidate.get('taught'):
+            band_label = 'taught {} {}'.format(
+                candidate['template_name'], band_label
+            )
         self._active.setdefault('candidate_failures', []).append(
             '{} ({}): {}'.format(
                 self._active['candidate_index'] + 1, band_label, reason
@@ -1747,14 +2043,37 @@ class D1GraspCoordinator(Node):
             value - origin
             for value, origin in zip(target_point, camera_origin)
         )
-        candidate = grasping.retarget_approach_candidate(
-            selected, target_point, self._approach_distance,
-            self._grasp_center_offset,
-            self._active['forward_grasp_depth_offset'],
-            depth_direction,
-            target_height_offset,
-            self._active['horizontal_depth'] or band is not None,
-        )
+        if selected.get('taught'):
+            if band is None:
+                return
+            try:
+                reference = grasp_templates.band_reference(
+                    band[0], self._active['approach_origin']
+                )
+                candidate = grasp_templates.candidate_from_template(
+                    selected['template'], reference, band[1],
+                    self._taught_minimum_width_ratio,
+                    self._taught_maximum_width_ratio,
+                )
+            except ValueError as error:
+                self._finish_failure('fresh taught grasp is invalid: ' + str(error))
+                return
+            if candidate is None:
+                self._finish_failure(
+                    'fresh band width is outside the taught template range'
+                )
+                return
+            candidate['band_index'] = selected['band_index']
+            candidate['band_count'] = selected['band_count']
+        else:
+            candidate = grasping.retarget_approach_candidate(
+                selected, target_point, self._approach_distance,
+                self._grasp_center_offset,
+                self._active['forward_grasp_depth_offset'],
+                depth_direction,
+                target_height_offset,
+                self._active['horizontal_depth'] or band is not None,
+            )
         problem = self._candidate_problem(candidate)
         if problem is not None:
             self._finish_failure('reacquired target is unsafe: ' + problem)
@@ -2596,24 +2915,35 @@ class D1GraspCoordinator(Node):
                     )
                 )
                 return
-            pointing_problem = self._band_pointing_problem(
-                candidate, achieved_orientation
-            )
-            if pointing_problem is not None:
-                self._finish_failure(
-                    'wrist alignment did not reach the band approach: '
-                    + pointing_problem + '; no contact motion was executed'
+            if candidate.get('taught'):
+                orientation_problem = self._taught_orientation_problem(
+                    candidate, achieved_orientation
                 )
-                return
-            alignment_problem = self._band_alignment_problem(
-                candidate, achieved_orientation
-            )
-            if alignment_problem is not None:
-                self._finish_failure(
-                    'wrist alignment did not level the jaw opening: '
-                    + alignment_problem
+                if orientation_problem is not None:
+                    self._finish_failure(
+                        'wrist alignment did not reach the taught pose: '
+                        + orientation_problem + '; no contact motion was executed'
+                    )
+                    return
+            else:
+                pointing_problem = self._band_pointing_problem(
+                    candidate, achieved_orientation
                 )
-                return
+                if pointing_problem is not None:
+                    self._finish_failure(
+                        'wrist alignment did not reach the band approach: '
+                        + pointing_problem + '; no contact motion was executed'
+                    )
+                    return
+                alignment_problem = self._band_alignment_problem(
+                    candidate, achieved_orientation
+                )
+                if alignment_problem is not None:
+                    self._finish_failure(
+                        'wrist alignment did not level the jaw opening: '
+                        + alignment_problem
+                    )
+                    return
             self._align_or_approach_from_pregrasp(
                 actual_pregrasp, achieved_orientation,
                 'open gripper aligned; computing the straight Cartesian '

@@ -394,6 +394,11 @@ grasp-and-release sequence. It subscribes to stable identities on
 `/d1_grasp/command`, and uses fresh results from
 `/grounding_dino/detection_array` before making contact.
 
+Applicable class-level taught grasps are screened before the generated grasp
+candidates. If no template applies, or every taught candidate fails planning or
+Cartesian preflight, the existing generated candidates are tried unchanged.
+Classes without templates therefore retain the original behavior.
+
 A command contains a required semantic class and an optional stable object ID.
 When the ID is empty, the closest eligible active object of that class is
 selected. Before planning, the object must be active, have at least three
@@ -410,18 +415,15 @@ The coordinator performs the following sequence when execution is enabled:
    Open the gripper and confirm its feedback position. If the first opening
    command after the raise produces no feedback progress, send it once more;
    planning remains blocked until the opening position is reported.
-2. Generate three-dimensional pre-grasp points from the D1 mount toward the
-   object. This keeps the target approach independent of the arm's initial
-   posture. For measured grasp bands, the pre-grasp and grasp tool centers
-   are at the same measured band height, so the contact segment advances
-   level rather than rising or falling through the object. Configured yaw
-   fallbacks are ordered by smallest yaw change.
+2. Adapt applicable taught pre-grasp and contact poses to the detected band.
+   Generate the original three-dimensional candidates after them. Generated
+   grasp-band approaches keep their pre-grasp and contact tool centers at the
+   same measured band height; yaw fallbacks remain ordered by smallest change.
 3. Plan, without executing, a MoveIt trajectory to each candidate pre-grasp.
-   Measured-band transit uses a position goal; the gripper orientation is
-   aligned separately at pre-grasp. Compute the predicted gripper pose at the
-   trajectory's final joint state. Reject a band candidate if the gripper's
-   forward axis does not point toward the object. Validate any jaw-opening
-   roll adjustment there before checking the collision-aware
+   Generated measured-band transit uses a position goal; a taught grasp uses
+   its demonstrated wrist orientation as a full-pose goal. Compute the
+   predicted gripper pose at the trajectory's final joint state. Validate any
+   needed in-place wrist correction there before checking the collision-aware
    straight Cartesian path to the grasp waypoint. Reject candidates with an
    incomplete approach and select the first fully validated candidate. When a
    grasp band is available, distinct depth-supported bands are interleaved at
@@ -547,14 +549,13 @@ RealSense and NumPy dependencies; no segmentation package is required.
 lateral-reposition planning and bounds wrist adjustments tested for legacy
 Cartesian contact. It also limits the angular difference between the
 gripper's forward axis and a measured-band approach direction. Its default is
-`0.35` radians. A measured-band initial pre-grasp uses a position goal instead
-of imposing a full orientation constraint on the long transit plan. If the
-predicted or reached jaw opening differs from level by more than
-`band_alignment_tolerance_rad` (default `0.10` radians), a separate
-collision-checked roll about the current tool-forward axis is validated at
-pre-grasp. Jaw level is measured relative to that achieved forward axis;
-deviation from the planned approach direction is checked separately. The
-nearer of the two equivalent horizontal-jaw orientations is used. The final
+`0.35` radians. A generated measured-band initial pre-grasp uses a position
+goal instead of imposing a full orientation constraint on the long transit
+plan. When the predicted tool-forward axis differs from the approach, a
+collision-checked in-place correction is attempted at pre-grasp. A separate
+jaw-level correction is attempted when only the jaw opening is misaligned.
+Taught pre-grasps instead use `taught_orientation_tolerance_rad` (default
+`0.10` radians) and preserve the demonstrated wrist orientation. The final
 approach is revalidated from the reached aligned pose, then interpolated to a
 single grasp waypoint while holding that orientation. No wrist adjustment is
 attempted during band-based contact motion.
@@ -582,6 +583,89 @@ width, support surfaces, or neighboring-object geometry. It also has gripper
 position feedback but no contact-force sensor.
 Physical testing therefore requires a clear workspace and conservative
 objects until segmented geometry and grasp-pose estimation are added.
+
+### Teaching class-level grasps
+
+Teaching records the achieved `d1_gripper_center` pose from TF. It does not
+move the arm. An active semantic-map object and a fresh, width-compatible
+Grounding DINO grasp band are required. The reference frame is fixed at the
+selected band center: X points horizontally from `d1_base_link` toward the
+band, Z is vertical in `base_link`, and Y completes the right-handed frame.
+Pre-grasp and contact poses are saved relative to this frame, rather than as
+joint angles or fixed robot-frame coordinates. The template can consequently
+be placed at another detected band location and approach azimuth.
+
+With the camera, detector, semantic mapper, D1 controller, and grasp
+coordinator running, start a teaching session for one mapped object:
+
+```bash
+ros2 run unitree_arm_control d1_grasp_teach start cup \
+  --object-id object_000001
+```
+
+`--band-index 1` selects a particular detected band using one-based indexing;
+the default `0` selects the first ranked band. Starting a new session replaces
+an unfinished one. The service response reports the selected object ID and
+measured band width.
+
+Move the arm with the existing D1 control interface to an open-jaw staging
+pose, then capture it. Move the gripper straight toward the intended contact
+point without changing its wrist orientation, and capture contact before
+closing the jaws:
+
+```bash
+ros2 run unitree_arm_control d1_grasp_teach capture pregrasp
+ros2 run unitree_arm_control d1_grasp_teach capture contact
+```
+
+The captured approach must advance 2–25 cm toward the band, deviate no more
+than 3 cm laterally or vertically, and change wrist orientation by no more
+than 0.10 rad. The gripper forward axis must face the contact point within
+0.35 rad. The contact pose must be within 15 cm of the measured band center.
+An invalid capture is rejected without saving. After manually
+closing the gripper and confirming a successful hold, save the demonstration:
+
+```bash
+ros2 run unitree_arm_control d1_grasp_teach save side_grasp --confirmed
+```
+
+`--confirmed` records operator verification; the D1 has no contact-force
+sensor to prove acquisition automatically. `d1_grasp_teach cancel` discards
+an unfinished session. Equivalent ROS services are
+`/d1_grasp/teach/start`, `/d1_grasp/teach/capture`,
+`/d1_grasp/teach/save`, and `/d1_grasp/teach/cancel` in `unitree_arm/srv`.
+
+Templates are stored in the writable
+`~/.local/share/unitree_arm_control/grasp_templates.yaml` by default. The path
+can be changed with `grasp_templates_path:=/absolute/path/grasp_templates.yaml`
+on `dog.launch.py` or `d1_moveit.launch.py`. The repository's
+`config/grasp_templates.yaml` is an empty schema example, not the runtime
+write target. Multiple named grasps can be stored under each normalized class
+label. New templates are available to the running coordinator immediately. An
+invalid library file disables taught grasps and teaching, but leaves generated
+grasp planning available; the coordinator reports the file error at startup.
+
+At execution, taught poses are relocated using the current band reference.
+The contact pose remains object-relative; a wider band increases pre-grasp
+clearance. Widths outside 75–125% of the demonstrated width, or above the
+global jaw-width safeguard, are not used. The existing configured 49-degree
+opening and closure sequence remains authoritative; the demonstrated opening
+angle is recorded as metadata because no calibrated jaw-angle-to-gap model is
+available. A taught candidate must pass full-pose pre-grasp planning and a
+complete collision-checked Cartesian approach before execution. After reaching
+pre-grasp, a fresh detection relocates the taught pose and the final approach
+is recomputed from the actual arm state. If all taught candidates are rejected
+before movement, generated grasp candidates remain available. This band-based
+reference does not encode a cup-handle direction or a complete object pose.
+
+No additional Python or system package is required beyond the existing ROS 2
+dependencies. The new `unitree_arm/srv` interfaces require rebuilding
+`unitree_arm` and `unitree_arm_control` and sourcing the rebuilt workspace.
+
+```bash
+colcon build --packages-up-to unitree_arm_control
+source install/setup.bash
+```
 
 ### Plan-only command
 

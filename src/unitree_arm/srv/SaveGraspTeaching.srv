@@ -1,0 +1,5 @@
+string name
+bool grasp_succeeded
+---
+bool success
+string message

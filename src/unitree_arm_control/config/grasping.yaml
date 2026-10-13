@@ -19,6 +19,11 @@ d1_grasp_coordinator:
     camera_frame: camera_link
     reach_reference_frame: d1_base_link
     tip_link: d1_gripper_center
+    # Demonstrations are saved in a writable per-user library, not install/.
+    grasp_templates_path: ~/.local/share/unitree_arm_control/grasp_templates.yaml
+    taught_orientation_tolerance_rad: 0.10
+    taught_minimum_width_ratio: 0.75
+    taught_maximum_width_ratio: 1.25
     planner_id: ""
     # Execution only: leave a near laid-down pose before MoveIt planning.
     lay_down_raise_enabled: true

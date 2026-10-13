@@ -22,6 +22,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetJointEnabled.srv"
   "srv/SetPower.srv"
   "srv/ZeroArm.srv"
+  "srv/StartGraspTeaching.srv"
+  "srv/CaptureGraspPose.srv"
+  "srv/SaveGraspTeaching.srv"
+  "srv/CancelGraspTeaching.srv"
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs
 )
 
