@@ -107,6 +107,12 @@ d1_grasp_coordinator:
     approach_correction_threshold_m: 0.004
     approach_correction_max_offset_rad: 0.02
     approach_correction_attempts: 2
+    # The D1 joints also show backlash: their error depends on the direction
+    # they last moved, so an offset measured at pre-grasp is not right for the
+    # approach. Stop this far before contact (outside the object), correct
+    # onto the line there, then make the last leg with the offset measured
+    # while moving inward. 0 disables the split.
+    approach_checkpoint_m: 0.05
 
     # Recheck the target after the pre-grasp before planning the final motion.
     fresh_detection_age_sec: 5.0

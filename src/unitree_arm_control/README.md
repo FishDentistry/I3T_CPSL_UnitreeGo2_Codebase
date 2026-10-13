@@ -708,7 +708,13 @@ pre-grasp the coordinator measures each joint's shortfall from its commanded
 angle, plans the straight approach from the intended (sag-free) pre-grasp, and
 adds that shortfall to every point of the approach, after a short lead-in that
 lifts the gripper onto the line. Otherwise the approach would start low and sag
-again on the way in. If the final distance is still more than
+again on the way in. Because the D1 joints also show backlash (their error
+depends on the direction they last moved), the validated straight path is
+split `approach_checkpoint_m` (5 cm) before contact: the arm stops there,
+outside the object, is corrected onto the line, and makes the last leg with
+the offset measured while moving inward. Correction moves request no end
+tolerance from the D1 controller, so it never times out and re-holds the
+uncorrected pose; the coordinator measures the result itself. If the final distance is still more than
 `approach_correction_threshold_m` (4 mm), the coordinator corrects for servo
 sag before closing: it re-sends the approach endpoint offset by the measured
 joint error (at most `approach_correction_max_offset_rad` per joint, up to
