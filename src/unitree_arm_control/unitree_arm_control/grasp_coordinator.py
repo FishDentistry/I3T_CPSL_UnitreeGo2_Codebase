@@ -3262,8 +3262,14 @@ class D1GraspCoordinator(Node):
             )
         line = '[GRASP] {} | {}'.format(request_id or '<empty>', text)
         logger = self.get_logger()
-        {'warn': logger.warning, 'error': logger.error}.get(
-            level, logger.info)(line)
+        # Foxy rclpy ties each logging call site to one severity and
+        # raises if it changes, so every severity needs its own line.
+        if level == 'error':
+            logger.error(line)
+        elif level == 'warn':
+            logger.warning(line)
+        else:
+            logger.info(line)
         if not self._grasp_log_path:
             return
         try:
