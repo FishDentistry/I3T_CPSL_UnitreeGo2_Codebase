@@ -3,6 +3,8 @@
 from collections import deque
 import copy
 import math
+import os
+import time
 
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
@@ -239,6 +241,8 @@ class D1GraspCoordinator(Node):
             'grasp_templates_path': (
                 '~/.local/share/unitree_arm_control/grasp_templates.yaml'
             ),
+            # Compact per-request grasp log; empty disables the file.
+            'grasp_log_path': '~/.ros/d1_grasp_attempts.log',
         }
         for name, default in string_parameters.items():
             self.declare_parameter(name, default)
@@ -325,7 +329,7 @@ class D1GraspCoordinator(Node):
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'camera_frame',
             'reach_reference_frame', 'tip_link', 'planner_id',
-            'grasp_templates_path',
+            'grasp_templates_path', 'grasp_log_path',
         )
         for name in string_names:
             setattr(self, '_' + name, str(self._parameter(name)).strip())
@@ -643,10 +647,9 @@ class D1GraspCoordinator(Node):
         )
 
     def _reject(self, command, message):
-        self.get_logger().warning(
-            'Rejected grasp request {}: {}'.format(
-                command.request_id.strip() or '<empty>', message
-            )
+        self._grasp_log(
+            'REQUEST REJECTED before any grasp was tried: ' + message,
+            'warn', request_id=command.request_id.strip(),
         )
         self._publish_status(
             command, GraspStatus.STAGE_REJECTED, True, False, message
@@ -1010,6 +1013,21 @@ class D1GraspCoordinator(Node):
             'gripper_open_command_receipt': None,
             'raise_from_laydown': raise_from_laydown,
         }
+        taught_names = [
+            candidate['template_name'] for candidate in candidates
+            if candidate.get('taught')
+        ]
+        heuristic_count = len(candidates) - len(taught_names)
+        self._grasp_log(
+            'NEW REQUEST for {} ({}): {} TAUGHT{} + {} HEURISTIC '
+            'candidate(s); {}'.format(
+                object_class, selected.object_id, len(taught_names),
+                ' [' + ', '.join(taught_names) + ']' if taught_names else '',
+                heuristic_count,
+                'TAUGHT grasps are tried first' if taught_names else
+                'no usable taught grasp for this class, HEURISTIC only',
+            )
+        )
         self._publish_active_stage(
             GraspStatus.STAGE_ACCEPTED,
             'selected {} with {} safeguard-compatible approach candidate(s); '
@@ -1613,6 +1631,10 @@ class D1GraspCoordinator(Node):
         candidate = candidates[index]
         pose = self._candidate_pose(candidate, 'pregrasp_point')
         self._active['candidate'] = candidate
+        self._grasp_log('TRYING candidate {}/{}: {} (planning only, arm '
+                        'not moving yet)'.format(
+                            index + 1, len(candidates),
+                            self._grasp_kind(candidate)))
         self._active['target_point'] = candidate['band_target_point']
         self._active['grasp_band_width'] = candidate['band_width']
         self._active['pregrasp_pose'] = pose
@@ -2037,10 +2059,13 @@ class D1GraspCoordinator(Node):
                 self._active['candidate_index'] + 1, band_label, reason
             )
         )
-        self.get_logger().warning(
-            'Approach candidate {} ({}) failed: {}'.format(
-                self._active['candidate_index'] + 1, band_label, reason
-            )
+        self._grasp_log(
+            'REJECTED candidate {}/{}: {}: {}'.format(
+                self._active['candidate_index'] + 1,
+                len(self._active['candidates']),
+                self._grasp_kind(candidate), reason,
+            ),
+            'warn',
         )
         self._publish_active_stage(
             GraspStatus.STAGE_PLANNING,
@@ -2831,6 +2856,11 @@ class D1GraspCoordinator(Node):
             return
         self._active['phase'] = 'executing_' + purpose
         self._active['trajectory_purpose'] = purpose
+        candidate = self._active.get('candidate')
+        self._grasp_log('ARM MOVING ({}) with {}'.format(
+            purpose.replace('_', ' '),
+            self._grasp_kind(candidate) if candidate else 'no grasp selected',
+        ))
         self._publish_active_stage(stage, message, target_pose)
         goal = ExecuteTrajectory.Goal()
         goal.trajectory = trajectory
@@ -3207,10 +3237,55 @@ class D1GraspCoordinator(Node):
             'object released; planning a position-only retreat to pre-grasp',
         )
 
+    @staticmethod
+    def _grasp_kind(candidate):
+        if not candidate:
+            return 'no candidate started'
+        if candidate.get('taught'):
+            return "TAUGHT grasp '{}'".format(candidate.get('template_name'))
+        if candidate.get('band_width') is not None:
+            where = 'band {} of {}'.format(
+                candidate.get('band_index'), candidate.get('band_count')
+            )
+        else:
+            where = 'object center'
+        return 'HEURISTIC grasp ({}, yaw {:+.2f} rad)'.format(
+            where, float(candidate.get('yaw_offset', 0.0))
+        )
+
+    def _grasp_log(self, text, level='info', request_id=None):
+        """One consistent, greppable line per grasp event: [GRASP] ..."""
+        if request_id is None:
+            request_id = (
+                self._active['command'].request_id.strip()
+                if self._active is not None else '-'
+            )
+        line = '[GRASP] {} | {}'.format(request_id or '<empty>', text)
+        logger = self.get_logger()
+        {'warn': logger.warning, 'error': logger.error}.get(
+            level, logger.info)(line)
+        if not self._grasp_log_path:
+            return
+        try:
+            path = os.path.expanduser(self._grasp_log_path)
+            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+            with open(path, 'a', encoding='utf-8') as stream:
+                stream.write('{} {:<5} {}\n'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S'), level.upper(), line
+                ))
+        except OSError as error:
+            logger.warning('could not write grasp log {}: {}'.format(
+                self._grasp_log_path, error
+            ))
+            self._grasp_log_path = ''
+
     def _finish_success(self, stage, message):
         if self._active is None:
             return
         command = self._active['command']
+        self._grasp_log('RESULT: SUCCESS with {}: {}'.format(
+            self._grasp_kind(self._active.get('candidate')), message
+        ))
         self._publish_status(
             command, stage, True, True, message,
             self._active['object_id'], self._active['target_pose'],
@@ -3226,11 +3301,9 @@ class D1GraspCoordinator(Node):
         if self._active is None:
             return
         active = self._active
-        self.get_logger().error(
-            'Grasp request {} failed: {}'.format(
-                active['command'].request_id, message
-            )
-        )
+        self._grasp_log('RESULT: FAILED with {}: {}'.format(
+            self._grasp_kind(active.get('candidate')), message
+        ), 'error')
         self._publish_status(
             active['command'], GraspStatus.STAGE_FAILED, True, False,
             message, active['object_id'], active.get('target_pose'),

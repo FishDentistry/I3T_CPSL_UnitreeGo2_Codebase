@@ -662,6 +662,16 @@ Version 1 libraries used band-relative templates and are intentionally not
 migrated because changing their reference silently would move physical grasp
 targets. Move the old file aside and reteach; new libraries use `version: 2`.
 
+Every grasp event is logged on one line prefixed `[GRASP] <request_id> |`,
+stating whether a TAUGHT or HEURISTIC grasp is being tried, rejected (with the
+reason), moving the arm, or finished. The same lines are appended to
+`~/.ros/d1_grasp_attempts.log` (`grasp_log_path`, empty disables), so they
+can be followed without the rest of the launch output:
+
+```bash
+tail -f ~/.ros/d1_grasp_attempts.log
+```
+
 At execution, taught poses are relocated using the current object center and
 are tried before generated candidates. They are not filtered or repositioned
 by grasp-band width. The existing configured 49-degree opening and closure
