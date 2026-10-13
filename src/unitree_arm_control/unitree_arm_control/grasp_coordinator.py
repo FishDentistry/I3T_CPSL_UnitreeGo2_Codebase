@@ -94,7 +94,6 @@ class D1GraspCoordinator(Node):
         self._declare_parameters()
         self._load_parameters()
         self._validate_parameters()
-        self._tool_tip_offset = (0.00038, 0.0, 0.1256)
         self._template_library_error = None
         try:
             self._template_library = grasp_templates.GraspTemplateLibrary(
@@ -276,8 +275,6 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('grasp_orientation_tolerance_rad', 0.35)
         self.declare_parameter('band_alignment_tolerance_rad', 0.10)
         self.declare_parameter('taught_orientation_tolerance_rad', 0.10)
-        self.declare_parameter('taught_minimum_width_ratio', 0.75)
-        self.declare_parameter('taught_maximum_width_ratio', 1.25)
 
         self.declare_parameter('planning_time_sec', 5.0)
         self.declare_parameter('planning_attempts', 5)
@@ -292,6 +289,8 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('maximum_final_lateral_correction_m', 0.015)
         self.declare_parameter('maximum_alignment_lateral_correction_m', 0.025)
         self.declare_parameter('approach_corridor_radius_m', 0.015)
+        self.declare_parameter('post_execution_pose_settle_sec', 0.20)
+        self.declare_parameter('post_execution_pose_timeout_sec', 2.0)
 
         # The final contact motion is a single short Cartesian segment.
         self.declare_parameter('cartesian_step_m', 0.005)
@@ -353,8 +352,6 @@ class D1GraspCoordinator(Node):
             'grasp_orientation_tolerance_rad',
             'band_alignment_tolerance_rad',
             'taught_orientation_tolerance_rad',
-            'taught_minimum_width_ratio',
-            'taught_maximum_width_ratio',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
             'maximum_grasp_band_width_m',
@@ -363,6 +360,8 @@ class D1GraspCoordinator(Node):
             'maximum_final_lateral_correction_m',
             'maximum_alignment_lateral_correction_m',
             'approach_corridor_radius_m',
+            'post_execution_pose_settle_sec',
+            'post_execution_pose_timeout_sec',
             'cartesian_step_m', 'minimum_cartesian_fraction',
             'cartesian_jump_threshold', 'cartesian_velocity_scaling',
             'cartesian_acceleration_scaling', 'gripper_open_degrees',
@@ -477,9 +476,6 @@ class D1GraspCoordinator(Node):
             raise RuntimeError(
                 'taught_orientation_tolerance_rad must be in (0, pi/2]'
             )
-        if not (0.0 < self._taught_minimum_width_ratio <= 1.0
-                <= self._taught_maximum_width_ratio):
-            raise RuntimeError('taught band width ratios are invalid')
         if self._planning_time <= 0.0 or self._planning_attempts < 1:
             raise RuntimeError('planning limits are invalid')
         for name in ('velocity_scaling', 'acceleration_scaling'):
@@ -511,6 +507,15 @@ class D1GraspCoordinator(Node):
             )
         if self._approach_corridor_radius_m <= 0.0:
             raise RuntimeError('approach_corridor_radius_m must be positive')
+        if self._post_execution_pose_settle_sec < 0.0:
+            raise RuntimeError(
+                'post_execution_pose_settle_sec must not be negative'
+            )
+        if (self._post_execution_pose_timeout_sec
+                <= self._post_execution_pose_settle_sec):
+            raise RuntimeError(
+                'post_execution_pose_timeout_sec must exceed the settle time'
+            )
         if self._cartesian_step_m <= 0.0:
             raise RuntimeError('cartesian_step_m must be positive')
         if not 0.0 < self._minimum_cartesian_fraction <= 1.0:
@@ -681,24 +686,21 @@ class D1GraspCoordinator(Node):
                 object_point = self._transform_point(
                     self._point_tuple(item.position), map_transform
                 )
-                bands = self._initial_grasp_bands(object_point, object_class)
-                index = int(request.band_index)
-                if not bands or index > len(bands):
+                if self._target_problem(
+                        object_point, 'teaching object center') is not None:
                     continue
-                band = bands[0 if index == 0 else index - 1]
-                if self._target_problem(band[0], 'teaching band') is not None:
-                    continue
-                reference = grasp_templates.band_reference(band[0], arm_origin)
+                reference = grasp_templates.object_reference(
+                    object_point, arm_origin
+                )
                 choices.append((
                     grasping.distance_between(object_point, arm_origin),
-                    item, band, reference,
+                    item, reference,
                 ))
             if not choices:
                 raise ValueError(
-                    'no fresh, width-compatible measured band has the '
-                    'requested index'
+                    'no fresh reachable object center matches the request'
                 )
-            _, selected, band, reference = min(
+            _, selected, reference = min(
                 choices, key=lambda item: item[0]
             )
         except Exception as error:
@@ -707,18 +709,16 @@ class D1GraspCoordinator(Node):
         self._teaching = {
             'object_class': object_class,
             'object_id': selected.object_id,
-            'band_width': band[1],
             'reference': reference,
             'poses': {},
             'open_angle': None,
         }
         response.success = True
         response.message = (
-            'band reference frozen; capture pregrasp, then contact, then '
+            'object-center reference frozen; capture pregrasp, then contact, then '
             'save after verifying the grasp'
         )
         response.selected_object_id = selected.object_id
-        response.band_width_m = band[1]
         response.reference_pose = self._target_pose(*reference)
         return response
 
@@ -752,8 +752,7 @@ class D1GraspCoordinator(Node):
             if stage == 'contact':
                 grasp_templates.validate_template({
                     'name': 'capture',
-                    'reference': 'selected_grasp_band',
-                    'taught_band_width_m': self._teaching['band_width'],
+                    'reference': 'target_object_center',
                     'pregrasp': self._teaching['poses']['pregrasp'],
                     'contact': recorded,
                     'gripper_open_degrees': self._teaching['open_angle'],
@@ -784,10 +783,9 @@ class D1GraspCoordinator(Node):
             return response
         template = {
             'name': request.name.strip(),
-            'reference': 'selected_grasp_band',
+            'reference': 'target_object_center',
             'pregrasp': poses['pregrasp'],
             'contact': poses['contact'],
-            'taught_band_width_m': self._teaching['band_width'],
             'gripper_open_degrees': self._teaching['open_angle'],
             'enabled': True,
         }
@@ -965,7 +963,11 @@ class D1GraspCoordinator(Node):
                     self._class_forward_grasp_depth_offsets,
                 ),
                 ('narrow band width {:.3f} m'.format(band[1])
-                 if band is not None else 'using legacy center target'),
+                 if band is not None else (
+                     'using taught object-center target'
+                     if candidates[0].get('taught') else
+                     'using generated center target'
+                 )),
             ),
             first_pose,
         )
@@ -1286,20 +1288,14 @@ class D1GraspCoordinator(Node):
             )
             if not all(math.isfinite(value) for value in object_point):
                 continue
+            taught_candidates = []
             try:
-                bands = self._initial_grasp_bands(object_point, object_class)
+                reference = grasp_templates.object_reference(
+                    object_point, approach_origin
+                )
             except ValueError as error:
                 failures.append(str(error))
-                continue
-            taught_candidates = []
-            for band_index, band in enumerate(bands):
-                try:
-                    reference = grasp_templates.band_reference(
-                        band[0], approach_origin
-                    )
-                except ValueError as error:
-                    failures.append(str(error))
-                    continue
+            else:
                 templates = (
                     () if self._template_library is None
                     else self._template_library.templates_for(object_class)
@@ -1307,29 +1303,32 @@ class D1GraspCoordinator(Node):
                 for template in templates:
                     try:
                         candidate = grasp_templates.candidate_from_template(
-                            template, reference, band[1],
-                            self._taught_minimum_width_ratio,
-                            self._taught_maximum_width_ratio,
+                            template, reference
                         )
                     except ValueError as error:
                         failures.append(str(error))
                         continue
-                    if candidate is None:
-                        continue
-                    candidate['band_index'] = band_index + 1
-                    candidate['band_count'] = len(bands)
+                    candidate['band_index'] = 0
+                    candidate['band_count'] = 0
                     problem = self._candidate_problem(candidate)
                     if problem is None:
                         taught_candidates.append(candidate)
                     else:
                         failures.append(problem)
-            taught_candidates.sort(key=lambda candidate: (
-                abs(candidate['band_width'] /
-                    float(candidate['template']['taught_band_width_m']) - 1.0),
-                candidate['band_index'],
-            ))
+            taught_candidates.sort(
+                key=lambda candidate: candidate['template_name']
+            )
+
+            band_error = False
+            try:
+                bands = self._initial_grasp_bands(object_point, object_class)
+            except (ValueError, TransformException) as error:
+                failures.append(str(error))
+                bands = ()
+                band_error = True
             usable_candidates = []
-            for band_index, band in enumerate(bands or (None,)):
+            band_choices = () if band_error else (bands or (None,))
+            for band_index, band in enumerate(band_choices):
                 target_point = object_point if band is None else band[0]
                 target_height_offset = (
                     grasp_height_offset if band is None else 0.0
@@ -1472,9 +1471,10 @@ class D1GraspCoordinator(Node):
             )
         )
 
-    def _wrist_point_for_line_check(self, tip_point, orientation):
-        return grasping.wrist_point_from_tip(
-            tip_point, orientation, self._tool_tip_offset,
+    @staticmethod
+    def _fixed_approach(candidate):
+        return bool(
+            candidate.get('taught') or candidate['band_width'] is not None
         )
 
     def _band_pointing_problem(self, candidate, orientation):
@@ -1493,11 +1493,11 @@ class D1GraspCoordinator(Node):
         return None
 
     def _band_alignment_target(self, candidate, orientation):
-        if candidate['band_width'] is None:
-            return None
         if candidate.get('taught'):
             if self._taught_orientation_problem(candidate, orientation):
                 return candidate['taught_orientation']
+            return None
+        if candidate['band_width'] is None:
             return None
         if self._band_pointing_problem(candidate, orientation) is not None:
             # Position-only transit may reach the band with an arbitrary tool
@@ -1588,7 +1588,7 @@ class D1GraspCoordinator(Node):
                 pose,
                 position_tolerance=(
                     self._band_pregrasp_position_tolerance_m
-                    if candidate['band_width'] is not None else None
+                    if self._fixed_approach(candidate) else None
                 ),
                 orientation_tolerance=(
                     self._taught_orientation_tolerance_rad
@@ -1997,11 +1997,13 @@ class D1GraspCoordinator(Node):
                 )
             )
             return
-        try:
-            bands = self._grasp_band_points(message, detection)
-        except (ValueError, TransformException) as error:
-            self._finish_failure(str(error))
-            return
+        bands = ()
+        if self._active['grasp_band_width'] is not None:
+            try:
+                bands = self._grasp_band_points(message, detection)
+            except (ValueError, TransformException) as error:
+                self._finish_failure(str(error))
+                return
         band = None
         if self._active['grasp_band_width'] is not None:
             if not bands:
@@ -2044,24 +2046,15 @@ class D1GraspCoordinator(Node):
             for value, origin in zip(target_point, camera_origin)
         )
         if selected.get('taught'):
-            if band is None:
-                return
             try:
-                reference = grasp_templates.band_reference(
-                    band[0], self._active['approach_origin']
+                reference = grasp_templates.object_reference(
+                    object_point, self._active['approach_origin']
                 )
                 candidate = grasp_templates.candidate_from_template(
-                    selected['template'], reference, band[1],
-                    self._taught_minimum_width_ratio,
-                    self._taught_maximum_width_ratio,
+                    selected['template'], reference
                 )
             except ValueError as error:
                 self._finish_failure('fresh taught grasp is invalid: ' + str(error))
-                return
-            if candidate is None:
-                self._finish_failure(
-                    'fresh band width is outside the taught template range'
-                )
                 return
             candidate['band_index'] = selected['band_index']
             candidate['band_count'] = selected['band_count']
@@ -2093,19 +2086,10 @@ class D1GraspCoordinator(Node):
                 'could not read the reached pre-grasp position: {}'.format(error)
             )
             return
-        # Compare the wrist center, not the tool-center arc. The TCP sits a
-        # fixed 125.6 mm from the wrist, so wrist rotation changes the tip
-        # position by design and must not be mistaken for a band-line error.
         try:
             achieved_orientation = self._current_tip_orientation()
-            actual_wrist = self._wrist_point_for_line_check(
-                actual_pregrasp, achieved_orientation,
-            )
-            target_wrist = self._wrist_point_for_line_check(
-                new_pregrasp, candidate['orientation'],
-            )
             lateral_correction = grasping.approach_line_error(
-                actual_wrist, target_wrist,
+                actual_pregrasp, new_pregrasp,
                 candidate['approach_direction'],
             )
         except ValueError:
@@ -2159,9 +2143,9 @@ class D1GraspCoordinator(Node):
     def _align_or_approach_from_pregrasp(
             self, actual_pregrasp, achieved_orientation, message):
         candidate = self._active['candidate']
-        if candidate['band_width'] is not None:
+        if self._fixed_approach(candidate):
             # The reached pose, not the nominal pre-grasp goal, starts both
-            # the in-place wrist adjustment and band-contact approach.
+            # the in-place wrist adjustment and fixed-orientation approach.
             self._active['pregrasp_pose'] = self._target_pose(
                 actual_pregrasp, achieved_orientation
             )
@@ -2177,8 +2161,11 @@ class D1GraspCoordinator(Node):
             self._request_cartesian_path(
                 alignment_pose, 'align_pregrasp',
                 GraspStatus.STAGE_APPROACHING,
-                'aligning the open gripper with the measured band at '
-                'pre-grasp before the straight approach',
+                ('aligning the open gripper with the taught pose at '
+                 'pre-grasp before the straight approach'
+                 if candidate.get('taught') else
+                 'aligning the open gripper with the measured band at '
+                 'pre-grasp before the straight approach'),
             )
             return
         candidate = dict(candidate)
@@ -2199,7 +2186,7 @@ class D1GraspCoordinator(Node):
         )
         self._active['cartesian_orientations'] = (
             (achieved_orientation,)
-            if self._active['grasp_band_width'] is not None
+            if self._fixed_approach(self._active['candidate'])
             else grasping.approach_orientation_candidates(
                 achieved_orientation, self._grasp_orientation_tolerance_rad
             )
@@ -2210,10 +2197,10 @@ class D1GraspCoordinator(Node):
 
     def _intermediate_cartesian_waypoints(self, pose, purpose=None):
         if (purpose in {'preflight', 'approach'}
-                and self._active['grasp_band_width'] is not None):
+                and self._fixed_approach(self._active['candidate'])):
             # MoveIt interpolates from request.start_state to this one pose.
             # Do not insert the stored pre-alignment pose or replace the
-            # reached orientation during the straight band-contact motion.
+            # reached orientation during the straight contact motion.
             return [copy.deepcopy(pose.pose)]
         start_pose = self._active.get('pregrasp_pose')
         if start_pose is None or pose is None:
@@ -2251,10 +2238,7 @@ class D1GraspCoordinator(Node):
         mid_pose.position.x = mid_point[0]
         mid_pose.position.y = mid_point[1]
         mid_pose.position.z = mid_point[2]
-        # For a banded grasp, the translational Cartesian move should keep the
-        # wrist orientation fixed. Rotating the tool while translating is what
-        # causes the low-fraction failures; the band orientation is validated
-        # separately at the reached pre-grasp.
+        # Fixed-reference grasps keep wrist orientation constant while moving.
         mid_pose.orientation = copy.deepcopy(start.orientation)
         target.orientation = copy.deepcopy(start.orientation)
         return [start, mid_pose, target]
@@ -2554,11 +2538,11 @@ class D1GraspCoordinator(Node):
         if purpose == 'approach':
             if self._try_next_cartesian_orientation(description):
                 return
-            if self._active['grasp_band_width'] is not None:
+            if self._fixed_approach(self._active['candidate']):
                 self._finish_failure(
                     '{}; no complete straight Cartesian approach to the '
-                    'measured grasp band. A corridor plan could move the '
-                    'gripper above or below that band, so no contact motion '
+                    'fixed grasp target. A corridor plan could move the '
+                    'gripper off that line, so no contact motion '
                     'was executed'.format(description)
                 )
                 return
@@ -2631,7 +2615,7 @@ class D1GraspCoordinator(Node):
             self._grasp_position_tolerance_m
             if purpose == 'approach' or (
                 purpose == 'reposition_pregrasp'
-                and self._active['grasp_band_width'] is not None
+                and self._fixed_approach(self._active['candidate'])
             )
             else self._position_tolerance_m
         )
@@ -2807,148 +2791,8 @@ class D1GraspCoordinator(Node):
             return
         if purpose == 'pregrasp':
             self._begin_reacquisition()
-        elif purpose == 'reposition_pregrasp':
-            try:
-                achieved_orientation = self._current_tip_orientation()
-                tip_transform = self._lookup_transform(
-                    self._planning_frame, self._tip_link
-                )
-                actual_pregrasp = self._point_tuple(
-                    tip_transform.transform.translation
-                )
-            except Exception as error:
-                self._finish_failure(
-                    'could not read corrected pre-grasp pose: {}'.format(
-                        error
-                    )
-                )
-                return
-            candidate = dict(self._active['candidate'])
-            if candidate['band_width'] is not None:
-                try:
-                    actual_wrist = self._wrist_point_for_line_check(
-                        actual_pregrasp, achieved_orientation,
-                    )
-                    target_wrist = self._wrist_point_for_line_check(
-                        candidate['pregrasp_point'], candidate['orientation'],
-                    )
-                    line_error = grasping.approach_line_error(
-                        actual_wrist, target_wrist,
-                        candidate['approach_direction'],
-                    )
-                except ValueError as error:
-                    self._finish_failure(
-                        'corrected pre-grasp has invalid approach: {}'.format(
-                            error
-                        )
-                    )
-                    return
-                if line_error > self._maximum_final_lateral_correction_m:
-                    self._finish_failure(
-                        'corrected pre-grasp stopped {:.3f} m off the '
-                        'measured band approach line (limit {:.3f} m; '
-                        'vertical error {:.3f} m); no contact motion was '
-                        'executed'.format(
-                            line_error,
-                            self._maximum_final_lateral_correction_m,
-                            candidate['pregrasp_point'][2]
-                            - actual_pregrasp[2],
-                        )
-                    )
-                    return
-            candidate['orientation'] = achieved_orientation
-            self._active['candidate'] = candidate
-            self._active['grasp_pose'] = self._candidate_pose(
-                candidate, 'grasp_point'
-            )
-            self._active['retreat_pose'] = self._candidate_pose(
-                candidate, 'pregrasp_point'
-            )
-            self._active['pregrasp_pose'] = self._active['retreat_pose']
-            self._grasp_publisher.publish(self._active['grasp_pose'])
-            self._align_or_approach_from_pregrasp(
-                actual_pregrasp, achieved_orientation,
-                'corrected pre-grasp reached; computing the straight '
-                'Cartesian final approach',
-            )
-        elif purpose == 'align_pregrasp':
-            try:
-                achieved_orientation = self._current_tip_orientation()
-                tip_transform = self._lookup_transform(
-                    self._planning_frame, self._tip_link
-                )
-                actual_pregrasp = self._point_tuple(
-                    tip_transform.transform.translation
-                )
-                candidate = self._active['candidate']
-                actual_wrist = self._wrist_point_for_line_check(
-                    actual_pregrasp, achieved_orientation,
-                )
-                alignment_orientation = (
-                    self._active['cartesian_probe_pose'].pose.orientation
-                )
-                target_wrist = self._wrist_point_for_line_check(
-                    candidate['pregrasp_point'], (
-                        alignment_orientation.x, alignment_orientation.y,
-                        alignment_orientation.z, alignment_orientation.w,
-                    ),
-                )
-                line_error = grasping.approach_line_error(
-                    actual_wrist, target_wrist,
-                    candidate['approach_direction'],
-                )
-            except (ValueError, TransformException) as error:
-                self._finish_failure(
-                    'could not verify aligned pre-grasp: {}'.format(error)
-                )
-                return
-            alignment_limit = max(
-                self._maximum_final_lateral_correction_m,
-                self._maximum_alignment_lateral_correction_m,
-            )
-            if line_error > alignment_limit:
-                self._finish_failure(
-                    'wrist alignment moved the gripper {:.3f} m off the '
-                    'measured-band approach line (limit {:.3f} m); no '
-                    'contact motion was executed'.format(
-                        line_error, alignment_limit
-                    )
-                )
-                return
-            if candidate.get('taught'):
-                orientation_problem = self._taught_orientation_problem(
-                    candidate, achieved_orientation
-                )
-                if orientation_problem is not None:
-                    self._finish_failure(
-                        'wrist alignment did not reach the taught pose: '
-                        + orientation_problem + '; no contact motion was executed'
-                    )
-                    return
-            else:
-                pointing_problem = self._band_pointing_problem(
-                    candidate, achieved_orientation
-                )
-                if pointing_problem is not None:
-                    self._finish_failure(
-                        'wrist alignment did not reach the band approach: '
-                        + pointing_problem + '; no contact motion was executed'
-                    )
-                    return
-                alignment_problem = self._band_alignment_problem(
-                    candidate, achieved_orientation
-                )
-                if alignment_problem is not None:
-                    self._finish_failure(
-                        'wrist alignment did not level the jaw opening: '
-                        + alignment_problem
-                    )
-                    return
-            self._align_or_approach_from_pregrasp(
-                actual_pregrasp, achieved_orientation,
-                'open gripper aligned; computing the straight Cartesian '
-                'final approach',
-            )
+        elif purpose in ('reposition_pregrasp', 'align_pregrasp'):
+            self._begin_pose_verification(purpose)
         elif purpose == 'approach':
             self._command_gripper(
                 self._gripper_closed_degrees,
@@ -2962,6 +2806,103 @@ class D1GraspCoordinator(Node):
                 'object released and the arm retreated to pre-grasp; no lift '
                 'was attempted',
             )
+
+    def _begin_pose_verification(self, purpose):
+        now = self._now_seconds()
+        self._active['phase'] = 'verifying_' + purpose
+        self._active['pose_verification_purpose'] = purpose
+        self._active['pose_verification_not_before'] = (
+            now + self._post_execution_pose_settle_sec
+        )
+        self._active['deadline'] = (
+            now + self._post_execution_pose_timeout_sec
+        )
+        self._active['pose_verification_error'] = None
+        self._publish_active_stage(
+            GraspStatus.STAGE_APPROACHING,
+            'motion complete; waiting for the achieved arm pose to update',
+        )
+
+    def _verify_completed_pregrasp(self, purpose):
+        try:
+            transform = self._lookup_transform(
+                self._planning_frame, self._tip_link
+            )
+            actual_pregrasp = self._point_tuple(
+                transform.transform.translation
+            )
+            rotation = transform.transform.rotation
+            achieved_orientation = (
+                rotation.x, rotation.y, rotation.z, rotation.w
+            )
+            candidate = dict(self._active['candidate'])
+            if self._fixed_approach(candidate):
+                line_error = grasping.approach_line_error(
+                    actual_pregrasp, candidate['pregrasp_point'],
+                    candidate['approach_direction'],
+                )
+                limit = self._maximum_final_lateral_correction_m
+                if purpose == 'align_pregrasp':
+                    limit = max(
+                        limit,
+                        self._maximum_alignment_lateral_correction_m,
+                    )
+                if line_error > limit:
+                    return (
+                        'reached tool center is {:.3f} m off the fixed '
+                        'approach line (limit {:.3f} m); no contact motion '
+                        'was executed'.format(line_error, limit)
+                    )
+            if purpose == 'align_pregrasp':
+                if candidate.get('taught'):
+                    orientation_problem = self._taught_orientation_problem(
+                        candidate, achieved_orientation
+                    )
+                    if orientation_problem is not None:
+                        return (
+                            'wrist alignment did not reach the taught pose: '
+                            + orientation_problem
+                            + '; no contact motion was executed'
+                        )
+                else:
+                    pointing_problem = self._band_pointing_problem(
+                        candidate, achieved_orientation
+                    )
+                    if pointing_problem is not None:
+                        return (
+                            'wrist alignment did not reach the band approach: '
+                            + pointing_problem
+                            + '; no contact motion was executed'
+                        )
+                    alignment_problem = self._band_alignment_problem(
+                        candidate, achieved_orientation
+                    )
+                    if alignment_problem is not None:
+                        return (
+                            'wrist alignment did not level the jaw opening: '
+                            + alignment_problem
+                        )
+        except (ValueError, TransformException) as error:
+            return 'could not verify reached pre-grasp pose: {}'.format(error)
+
+        candidate['orientation'] = achieved_orientation
+        self._active['candidate'] = candidate
+        self._active['grasp_pose'] = self._candidate_pose(
+            candidate, 'grasp_point'
+        )
+        self._active['retreat_pose'] = self._candidate_pose(
+            candidate, 'pregrasp_point'
+        )
+        self._active['pregrasp_pose'] = self._active['retreat_pose']
+        self._grasp_publisher.publish(self._active['grasp_pose'])
+        self._align_or_approach_from_pregrasp(
+            actual_pregrasp, achieved_orientation,
+            ('corrected pre-grasp reached; computing the straight Cartesian '
+             'final approach' if purpose == 'reposition_pregrasp' else
+             'open gripper aligned; computing the straight Cartesian final '
+             'approach'),
+        )
+        return None
 
     def _command_gripper(self, angle, next_phase, stage, message):
         if self._active is None:
@@ -3029,6 +2970,18 @@ class D1GraspCoordinator(Node):
                         self._reacquire_timeout_sec
                     )
                 )
+            return
+        if phase.startswith('verifying_'):
+            if now < self._active['pose_verification_not_before']:
+                return
+            failure = self._verify_completed_pregrasp(
+                self._active['pose_verification_purpose']
+            )
+            if failure is None:
+                return
+            self._active['pose_verification_error'] = failure
+            if now >= self._active['deadline']:
+                self._finish_failure(failure)
             return
         if phase in (
                 'wait_open_before_pregrasp', 'wait_close',

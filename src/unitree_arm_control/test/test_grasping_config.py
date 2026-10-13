@@ -43,7 +43,7 @@ class GraspingConfigTest(unittest.TestCase):
         ).read_text()
         self.assertIn('reach_reference_frame: d1_base_link', config)
         self.assertIn("'reach_reference_frame': 'd1_base_link'", coordinator)
-        self.assertIn('maximum_reach_m: 0.8', config)
+        self.assertIn('maximum_reach_m: 0.67', config)
         self.assertIn("self.declare_parameter('maximum_reach_m', 0.67)", coordinator)
 
     def test_grasp_candidate_age_default_is_twenty_seconds(self):
@@ -154,9 +154,24 @@ class GraspingConfigTest(unittest.TestCase):
             coordinator,
         )
         self.assertIn(
-            'line_error > self._maximum_final_lateral_correction_m',
+            'line_error > limit',
             coordinator,
         )
+
+    def test_taught_grasps_use_object_center_and_wait_for_pose_updates(self):
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        service = (
+            INTERFACE_ROOT / 'srv' / 'StartGraspTeaching.srv'
+        ).read_text()
+        self.assertIn('grasp_templates.object_reference(', coordinator)
+        self.assertIn("'reference': 'target_object_center'", coordinator)
+        self.assertNotIn('band_index', service)
+        self.assertNotIn('band_width_m', service)
+        self.assertIn('post_execution_pose_settle_sec: 0.20', config)
+        self.assertIn("'verifying_' + purpose", coordinator)
 
     def test_gripper_midline_offset_keeps_band_centered(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()

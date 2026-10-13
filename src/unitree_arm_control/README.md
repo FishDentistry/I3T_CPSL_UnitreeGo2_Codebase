@@ -452,10 +452,12 @@ The coordinator performs the following sequence when execution is enabled:
    correction, the corrected pre-grasp and its complete remaining approach
    are validated before the repositioning trajectory is executed. The final
    approach is revalidated from the actual pose after repositioning. For a
-   measured band, execution also checks that the reached tool center is within
-   0.005 m of the corrected approach line; otherwise contact motion is stopped.
-   For a measured band, an orientation adjustment is planned at pre-grasp if
-   the reached opening is not aligned with the band. Its predicted endpoint
+   measured band or taught grasp, execution also checks that the reached tool
+   center is within 0.015 m of the corrected approach line; otherwise contact
+   motion is stopped. Completed pre-grasp motions get a short transform-update
+   window before this check, avoiding false failures from stale TF data. An
+   orientation adjustment is planned at pre-grasp when a taught pose has not
+   been reached or the reached opening is not aligned with a band. Its endpoint
    and complete approach are checked before the adjustment is executed. The
    final approach holds the reached orientation and accepts only a complete
    Cartesian path; it does not rotate the wrist during contact. If that path
@@ -587,13 +589,15 @@ objects until segmented geometry and grasp-pose estimation are added.
 ### Teaching class-level grasps
 
 Teaching records the achieved `d1_gripper_center` pose from TF. It does not
-move the arm. An active semantic-map object and a fresh, width-compatible
-Grounding DINO grasp band are required. The reference frame is fixed at the
-selected band center: X points horizontally from `d1_base_link` toward the
-band, Z is vertical in `base_link`, and Y completes the right-handed frame.
+move the arm. An active semantic-map object is required; grasp bands are not
+used for teaching or replay. The reference frame is fixed at the detected
+object center: X points horizontally from `d1_base_link` toward the center, Z
+is vertical in `base_link`, and Y completes the right-handed frame.
 Pre-grasp and contact poses are saved relative to this frame, rather than as
 joint angles or fixed robot-frame coordinates. The template can consequently
-be placed at another detected band location and approach azimuth.
+be placed at another detected object center and approach azimuth. Because the
+detector supplies a center point rather than a full object pose, rotation about
+the object itself is not learned.
 
 With the camera, detector, semantic mapper, D1 controller, and grasp
 coordinator running, start a teaching session for one mapped object:
@@ -603,10 +607,8 @@ ros2 run unitree_arm_control d1_grasp_teach start cup \
   --object-id object_000001
 ```
 
-`--band-index 1` selects a particular detected band using one-based indexing;
-the default `0` selects the first ranked band. Starting a new session replaces
-an unfinished one. The service response reports the selected object ID and
-measured band width.
+Starting a new session replaces an unfinished one. The service response reports
+the selected object ID and the frozen object-center reference.
 
 Move the arm with the existing D1 control interface to an open-jaw staging
 pose, then capture it. Move the gripper straight toward the intended contact
@@ -618,10 +620,10 @@ ros2 run unitree_arm_control d1_grasp_teach capture pregrasp
 ros2 run unitree_arm_control d1_grasp_teach capture contact
 ```
 
-The captured approach must advance 2–25 cm toward the band, deviate no more
+The captured approach must advance 2–25 cm toward the object center, deviate no more
 than 3 cm laterally or vertically, and change wrist orientation by no more
 than 0.10 rad. The gripper forward axis must face the contact point within
-0.35 rad. The contact pose must be within 15 cm of the measured band center.
+0.35 rad. The contact pose must be within 15 cm of the object center.
 An invalid capture is rejected without saving. After manually
 closing the gripper and confirming a successful hold, save the demonstration:
 
@@ -644,19 +646,21 @@ write target. Multiple named grasps can be stored under each normalized class
 label. New templates are available to the running coordinator immediately. An
 invalid library file disables taught grasps and teaching, but leaves generated
 grasp planning available; the coordinator reports the file error at startup.
+Version 1 libraries used band-relative templates and are intentionally not
+migrated because changing their reference silently would move physical grasp
+targets. Move the old file aside and reteach; new libraries use `version: 2`.
 
-At execution, taught poses are relocated using the current band reference.
-The contact pose remains object-relative; a wider band increases pre-grasp
-clearance. Widths outside 75–125% of the demonstrated width, or above the
-global jaw-width safeguard, are not used. The existing configured 49-degree
-opening and closure sequence remains authoritative; the demonstrated opening
-angle is recorded as metadata because no calibrated jaw-angle-to-gap model is
-available. A taught candidate must pass full-pose pre-grasp planning and a
-complete collision-checked Cartesian approach before execution. After reaching
+At execution, taught poses are relocated using the current object center and
+are tried before generated candidates. They are not filtered or repositioned
+by grasp-band width. The existing configured 49-degree opening and closure
+sequence remains authoritative; the demonstrated opening angle is recorded as
+metadata because no calibrated jaw-angle-to-gap model is available. A taught
+candidate must pass full-pose pre-grasp planning and a complete
+collision-checked Cartesian approach before execution. After reaching
 pre-grasp, a fresh detection relocates the taught pose and the final approach
 is recomputed from the actual arm state. If all taught candidates are rejected
-before movement, generated grasp candidates remain available. This band-based
-reference does not encode a cup-handle direction or a complete object pose.
+before movement, generated grasp candidates remain available. Their optional
+band handling is unchanged.
 
 No additional Python or system package is required beyond the existing ROS 2
 dependencies. The new `unitree_arm/srv` interfaces require rebuilding

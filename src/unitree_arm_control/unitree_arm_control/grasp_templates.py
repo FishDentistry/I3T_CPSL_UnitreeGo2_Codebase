@@ -1,8 +1,9 @@
 """Object-relative grasp demonstrations and their persistent library.
 
-The reference frame is anchored at a measured grasp band. Its X axis points
-from the fixed arm mount toward the band in the horizontal plane, Z is up,
-and Y completes the right-handed frame. It is not an object-pose estimate.
+The reference frame is anchored at the detected object center. Its X axis
+points from the fixed arm mount toward the center in the horizontal plane, Z
+is up, and Y completes the right-handed frame. It is not an object-pose
+estimate, so it intentionally does not encode an object's rotation.
 """
 
 import math
@@ -39,13 +40,13 @@ def _conjugate(quaternion):
     return (-quaternion[0], -quaternion[1], -quaternion[2], quaternion[3])
 
 
-def band_reference(band_point, arm_origin):
-    """Return the band origin and its yaw-only base-frame orientation."""
-    origin = _finite_tuple(band_point, 3, 'band point')
+def object_reference(object_point, arm_origin):
+    """Return the object-center origin and yaw-only base-frame orientation."""
+    origin = _finite_tuple(object_point, 3, 'object center')
     arm = _finite_tuple(arm_origin, 3, 'arm origin')
     dx, dy = origin[0] - arm[0], origin[1] - arm[1]
     if math.hypot(dx, dy) <= 1.0e-6:
-        raise ValueError('band is too close to the arm origin in XY')
+        raise ValueError('object center is too close to the arm origin in XY')
     half_yaw = 0.5 * math.atan2(dy, dx)
     return origin, (0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw))
 
@@ -81,11 +82,8 @@ def validate_template(template):
     if (not isinstance(template.get('name'), str)
             or not _NAME.fullmatch(template['name'])):
         raise ValueError('template name must be 1-64 letters, digits, _ or -')
-    if template.get('reference') != 'selected_grasp_band':
-        raise ValueError('template reference must be selected_grasp_band')
-    width = float(template['taught_band_width_m'])
-    if not math.isfinite(width) or width <= 0.0:
-        raise ValueError('taught band width must be positive and finite')
+    if template.get('reference') != 'target_object_center':
+        raise ValueError('template reference must be target_object_center')
     for key in ('pregrasp', 'contact'):
         pose = template[key]
         if not isinstance(pose, dict):
@@ -98,14 +96,14 @@ def validate_template(template):
     contact_point = _finite_tuple(contact['position'], 3, 'contact position')
     if (grasping.distance_from_origin(pre_point) > 0.40
             or grasping.distance_from_origin(contact_point) > 0.15):
-        raise ValueError('demonstrated poses are too far from the band center')
+        raise ValueError('demonstrated poses are too far from the object center')
     delta = tuple(
         target - start for start, target in zip(pre_point, contact_point)
     )
     distance = grasping.distance_from_origin(delta)
     if not 0.02 <= distance <= 0.25 or delta[0] <= 0.01:
         raise ValueError(
-            'contact must be 2-25 cm ahead of pre-grasp toward the band'
+            'contact must be 2-25 cm ahead of pre-grasp toward the object'
         )
     if math.hypot(delta[1], delta[2]) > 0.03:
         raise ValueError('demonstrated contact must be a nearly straight approach')
@@ -121,14 +119,9 @@ def validate_template(template):
         raise ValueError('template enabled must be boolean')
 
 
-def candidate_from_template(template, reference, band_width,
-                            minimum_width_ratio, maximum_width_ratio):
-    """Place a demonstrated, fixed-orientation straight approach at a new band."""
+def candidate_from_template(template, reference):
+    """Place a demonstrated straight approach at a new object center."""
     validate_template(template)
-    width = float(band_width)
-    ratio = width / float(template['taught_band_width_m'])
-    if not minimum_width_ratio <= ratio <= maximum_width_ratio:
-        return None
     pre_point, pre_orientation = absolute_pose(reference, template['pregrasp'])
     contact_point, _ = absolute_pose(reference, template['contact'])
     direction_delta = tuple(
@@ -136,15 +129,6 @@ def candidate_from_template(template, reference, band_width,
     )
     distance = grasping.distance_from_origin(direction_delta)
     direction = tuple(value / distance for value in direction_delta)
-    # A wider object requires at least as much clearance before contact. The
-    # demonstrated contact point stays object-relative; only staging retreats.
-    extra_clearance = max(0.0, 0.5 * (
-        width - float(template['taught_band_width_m'])
-    ))
-    pre_point = tuple(
-        value - extra_clearance * axis
-        for value, axis in zip(pre_point, direction)
-    )
     return {
         'taught': True,
         'template_name': template['name'],
@@ -156,7 +140,7 @@ def candidate_from_template(template, reference, band_width,
         'orientation': pre_orientation,
         'taught_orientation': pre_orientation,
         'band_target_point': reference[0],
-        'band_width': width,
+        'band_width': None,
     }
 
 
@@ -177,8 +161,13 @@ class GraspTemplateLibrary:
                 document = yaml.safe_load(stream) or {}
         except yaml.YAMLError as error:
             raise ValueError('invalid grasp template YAML: {}'.format(error))
-        if not isinstance(document, dict) or document.get('version') != 1:
-            raise ValueError('grasp template file must have version: 1')
+        if not isinstance(document, dict) or document.get('version') != 2:
+            if isinstance(document, dict) and document.get('version') == 1:
+                raise ValueError(
+                    'grasp template file uses obsolete version 1 band '
+                    'references; move it aside and reteach object-center grasps'
+                )
+            raise ValueError('grasp template file must have version: 2')
         classes = document.get('classes', {})
         if not isinstance(classes, dict):
             raise ValueError('grasp template classes must be a mapping')
@@ -222,7 +211,7 @@ class GraspTemplateLibrary:
                     suffix='.yaml', delete=False) as stream:
                 temporary = stream.name
                 yaml.safe_dump(
-                    {'version': 1, 'classes': updated}, stream,
+                    {'version': 2, 'classes': updated}, stream,
                     sort_keys=True, default_flow_style=False,
                 )
                 stream.flush()

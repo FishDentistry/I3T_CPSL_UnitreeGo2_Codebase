@@ -22,8 +22,6 @@ d1_grasp_coordinator:
     # Demonstrations are saved in a writable per-user library, not install/.
     grasp_templates_path: ~/.local/share/unitree_arm_control/grasp_templates.yaml
     taught_orientation_tolerance_rad: 0.10
-    taught_minimum_width_ratio: 0.75
-    taught_maximum_width_ratio: 1.25
     planner_id: ""
     # Execution only: leave a near laid-down pose before MoveIt planning.
     lay_down_raise_enabled: true
@@ -36,7 +34,7 @@ d1_grasp_coordinator:
     minimum_observations: 3
     maximum_object_age_sec: 20.0
     minimum_reach_m: 0.10
-    maximum_reach_m: 0.8
+    maximum_reach_m: 0.67
     minimum_target_z_m: -0.10
     maximum_target_z_m: 0.80
 
@@ -84,6 +82,10 @@ d1_grasp_coordinator:
     maximum_reacquire_correction_m: 0.08
     maximum_final_lateral_correction_m: 0.015
     maximum_alignment_lateral_correction_m: 0.025
+    # Allow robot_state_publisher time to reflect a completed arm trajectory
+    # before validating the reached tool pose.
+    post_execution_pose_settle_sec: 0.20
+    post_execution_pose_timeout_sec: 2.0
     # OMPL fallback corridor used when exact Cartesian orientation becomes
     # kinematically infeasible near the object.
     approach_corridor_radius_m: 0.015
