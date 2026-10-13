@@ -39,6 +39,7 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 
 from unitree_arm_control import grasping
 from unitree_arm_control import protocol
+from unitree_arm_control import trajectory
 
 
 MOVEIT_ERROR_NAMES = {
@@ -71,6 +72,14 @@ MOVEIT_ERROR_NAMES = {
     MoveItErrorCodes.COMMUNICATION_FAILURE: 'communication failure',
     MoveItErrorCodes.NO_IK_SOLUTION: 'no inverse-kinematics solution',
 }
+
+# The slowest arm-joint limits in config/joint_limits.yaml. A Cartesian
+# retiming fallback uses these for every arm joint, so it cannot exceed the
+# configured velocity or acceleration of any one of them.
+D1_ARM_JOINT_NAMES = tuple('d1_joint_{}'.format(index) for index in range(6))
+D1_ARM_MIN_VELOCITY_LIMIT = 1.05
+D1_ARM_MIN_ACCELERATION_LIMIT = 0.5
+
 
 class D1GraspCoordinator(Node):
     """Run a guarded pre-grasp, grasp, hold, release, and retreat sequence."""
@@ -244,7 +253,7 @@ class D1GraspCoordinator(Node):
 
         # The final contact motion is a single short Cartesian segment.
         self.declare_parameter('cartesian_step_m', 0.005)
-        self.declare_parameter('minimum_cartesian_fraction', 0.75)
+        self.declare_parameter('minimum_cartesian_fraction', 1.0)
         self.declare_parameter('cartesian_jump_threshold', 2.0)
         self.declare_parameter('cartesian_velocity_scaling', 0.05)
         self.declare_parameter('cartesian_acceleration_scaling', 0.05)
@@ -1886,11 +1895,10 @@ class D1GraspCoordinator(Node):
         start = copy.deepcopy(start_pose.pose)
         target = copy.deepcopy(pose.pose)
         if purpose in {'align_pregrasp', 'alignment_preflight'}:
-            # A dedicated wrist roll must actually rotate the gripper instead of
-            # holding the previous orientation fixed. The old logic kept the
-            # start pose's orientation for the entire path, which left the jaws
-            # vertical and parallel to the cup during the alignment step.
-            return [start, target]
+            # The request start_state already supplies the current pose. An
+            # explicit start waypoint can produce duplicate zero-time points
+            # when MoveIt time-parameterizes an in-place wrist rotation.
+            return [target]
         start_position = (
             float(start.position.x), float(start.position.y),
             float(start.position.z),
@@ -1971,6 +1979,47 @@ class D1GraspCoordinator(Node):
                 self._cartesian_path_result(done, token)
         )
 
+    def _prepare_cartesian_solution(self, solution, purpose):
+        """Keep a complete Cartesian path executable by the D1 controller."""
+        joint_path = solution.joint_trajectory
+        try:
+            trajectory.validate_trajectory(
+                joint_path.joint_names, joint_path.points, D1_ARM_JOINT_NAMES
+            )
+            return
+        except trajectory.TrajectoryError as error:
+            # Only timing can be repaired without changing the planned path.
+            if ('strictly increasing' not in str(error)
+                    and 'time_from_start' not in str(error)):
+                raise
+
+        if set(joint_path.joint_names) != set(D1_ARM_JOINT_NAMES):
+            raise trajectory.TrajectoryError(
+                'Cartesian trajectory must contain exactly the six arm joints'
+            )
+        times = trajectory.conservative_waypoint_times(
+            (point.positions for point in joint_path.points),
+            D1_ARM_MIN_VELOCITY_LIMIT * self._cartesian_velocity_scaling,
+            D1_ARM_MIN_ACCELERATION_LIMIT
+            * self._cartesian_acceleration_scaling,
+        )
+        for point, seconds in zip(joint_path.points, times):
+            nanoseconds = round(seconds * 1e9)
+            point.time_from_start = Duration(
+                sec=nanoseconds // 1000000000,
+                nanosec=nanoseconds % 1000000000,
+            )
+            # The incoming derivatives describe the old timing, if present.
+            point.velocities = []
+            point.accelerations = []
+        trajectory.validate_trajectory(
+            joint_path.joint_names, joint_path.points, D1_ARM_JOINT_NAMES
+        )
+        self.get_logger().warning(
+            'MoveIt returned non-increasing Cartesian {} timestamps; '
+            'applied conservative joint-limit timing'.format(purpose)
+        )
+
     def _cartesian_path_result(self, future, token):
         if (
                 not self._active_token_valid(token)
@@ -2025,6 +2074,16 @@ class D1GraspCoordinator(Node):
             self._cartesian_path_failure(
                 purpose, 'MoveIt returned an empty Cartesian {} trajectory'.format(
                     purpose
+                )
+            )
+            return
+
+        try:
+            self._prepare_cartesian_solution(response.solution, purpose)
+        except trajectory.TrajectoryError as error:
+            self._cartesian_path_failure(
+                purpose, 'Cartesian {} trajectory cannot be executed: {}'.format(
+                    purpose, error
                 )
             )
             return

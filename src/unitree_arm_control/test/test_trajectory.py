@@ -52,6 +52,23 @@ class TrajectoryTest(unittest.TestCase):
                 self.JOINTS,
             )
 
+    def test_conservative_retiming_preserves_positions_and_increases_time(self):
+        positions = ((0.0, 0.0), (0.0, 0.0), (0.02, -0.01))
+        times = trajectory.conservative_waypoint_times(
+            positions, max_velocity=0.05, max_acceleration=0.025
+        )
+        self.assertEqual(times[0], 0.0)
+        self.assertGreater(times[1], times[0])
+        self.assertGreater(times[2], times[1])
+        self.assertGreaterEqual(times[2] - times[1], 0.02 / 0.05)
+        self.assertEqual(positions[2], (0.02, -0.01))
+
+    def test_conservative_retiming_rejects_invalid_positions(self):
+        with self.assertRaisesRegex(trajectory.TrajectoryError, 'invalid'):
+            trajectory.conservative_waypoint_times(
+                ((0.0,), (float('nan'),)), 0.05, 0.025
+            )
+
     def test_expand_positions_preserves_uncommanded_gripper(self):
         expanded = trajectory.expand_positions(
             self.JOINTS[:6],

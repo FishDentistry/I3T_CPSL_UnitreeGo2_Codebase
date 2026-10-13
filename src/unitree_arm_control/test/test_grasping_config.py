@@ -101,11 +101,12 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn(
             "candidate['orientation'] = achieved_orientation", coordinator
         )
-        self.assertIn('waypoints = []', coordinator)
-        self.assertIn("if self._active.get('pregrasp_pose') is not None:", coordinator)
+        self.assertIn('return [target]', coordinator)
+        self.assertIn("purpose in {'align_pregrasp', 'alignment_preflight'}", coordinator)
         self.assertIn('request.avoid_collisions = True', coordinator)
         self.assertIn('self._minimum_cartesian_fraction', coordinator)
-        self.assertIn('minimum_cartesian_fraction: 0.75', config)
+        self.assertIn('minimum_cartesian_fraction: 1.0', config)
+        self.assertIn('self._prepare_cartesian_solution(', coordinator)
         self.assertIn('request.start_state = copy.deepcopy(start_state)', coordinator)
         self.assertIn('trajectory_endpoint_state(', coordinator)
         self.assertIn("grasp_pose, 'preflight'", coordinator)
@@ -161,12 +162,12 @@ class GraspingConfigTest(unittest.TestCase):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
         self.assertIn('grasp_center_offset_m: 0.005', config)
 
-    def test_banded_grasps_do_not_require_exact_level_roll(self):
+    def test_banded_grasps_check_level_and_pointing_separately(self):
         coordinator = (
             CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
         ).read_text()
-        self.assertIn('band-contact region', coordinator)
-        self.assertIn('return None', coordinator)
+        self.assertIn('grasping.gripper_opening_level_error(orientation)', coordinator)
+        self.assertIn('grasping.approach_axis_error(', coordinator)
 
     def test_pregrasp_fk_callback_captures_request_token(self):
         coordinator = (

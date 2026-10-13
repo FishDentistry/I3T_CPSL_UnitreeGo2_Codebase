@@ -558,8 +558,13 @@ nearer of the two equivalent horizontal-jaw orientations is used. The final
 approach is revalidated from the reached aligned pose, then interpolated to a
 single grasp waypoint while holding that orientation. No wrist adjustment is
 attempted during band-based contact motion.
-`minimum_cartesian_fraction` is fixed at `1.0` so a partial contact path cannot
-be accepted during either pre-grasp screening or final revalidation.
+`minimum_cartesian_fraction` defaults to `1.0`, requiring complete Cartesian
+alignment and contact paths during both pre-grasp screening and final
+revalidation. Alignment requests contain only the target waypoint; MoveIt's
+start state supplies the starting pose. If a returned Cartesian trajectory has
+non-increasing timestamps, the coordinator applies conservative joint-limit
+timing without changing its waypoint positions. Other invalid trajectories are
+rejected before execution.
 `approach_corridor_radius_m` defines the half-width of the constrained MoveIt
 fallback used when that exact Cartesian segment is incomplete. Its default is
 `0.015` metres.

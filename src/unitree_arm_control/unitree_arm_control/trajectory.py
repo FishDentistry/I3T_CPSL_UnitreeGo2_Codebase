@@ -69,6 +69,48 @@ def validate_trajectory(joint_names, points, required_joint_names):
     return tuple(times)
 
 
+def conservative_waypoint_times(
+        waypoint_positions, max_velocity, max_acceleration,
+        minimum_interval=0.1):
+    """Retimestamp a joint path without changing any waypoint positions.
+
+    Each segment is given at least the time needed for a rest-to-rest move
+    under the supplied velocity and acceleration ceilings. This is a slow
+    fallback for Cartesian paths with unusable timestamps, not a replacement
+    for MoveIt's normal time parameterization.
+    """
+    if not all(
+            math.isfinite(value) and value > 0.0
+            for value in (max_velocity, max_acceleration, minimum_interval)):
+        raise TrajectoryError('retiming limits must be finite and positive')
+    positions = tuple(tuple(point) for point in waypoint_positions)
+    if not positions:
+        raise TrajectoryError('cannot retime an empty trajectory')
+    joint_count = len(positions[0])
+    if not joint_count or any(
+            len(point) != joint_count
+            or not all(math.isfinite(value) for value in point)
+            for point in positions):
+        raise TrajectoryError('cannot retime invalid joint positions')
+
+    times = [0.0]
+    transition_distance = max_velocity * max_velocity / max_acceleration
+    for previous, current in zip(positions, positions[1:]):
+        interval = minimum_interval
+        for start, end in zip(previous, current):
+            distance = abs(end - start)
+            if distance <= transition_distance:
+                required = 2.0 * math.sqrt(distance / max_acceleration)
+            else:
+                required = (
+                    distance / max_velocity
+                    + max_velocity / max_acceleration
+                )
+            interval = max(interval, required)
+        times.append(times[-1] + interval)
+    return tuple(times)
+
+
 def expand_positions(
         commanded_joint_names,
         commanded_positions,
