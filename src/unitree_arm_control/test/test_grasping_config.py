@@ -139,9 +139,29 @@ class GraspingConfigTest(unittest.TestCase):
         self.assertIn("result.trajectory_start, trajectory, 'pregrasp'", coordinator)
         self.assertIn('self._active[\'preflight_trajectory\']', coordinator)
         self.assertIn('after full approach validation', coordinator)
-        self.assertNotIn('GetPositionIK', coordinator)
+        # IK is used only by the taught-grasp search (one call site); the
+        # generated-candidate path still plans pose goals without IK screening.
+        self.assertEqual(
+            coordinator.count('self._inverse_kinematics.call_async('), 1
+        )
+        self.assertIn('def _request_taught_ik(', coordinator)
         self.assertNotIn('tool_roll_offsets_rad:', config)
         self.assertNotIn("'validated_candidates': []", coordinator)
+
+    def test_taught_grasps_replay_checked_joint_angles(self):
+        config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()
+        coordinator = (
+            CONTROL_ROOT / 'unitree_arm_control' / 'grasp_coordinator.py'
+        ).read_text()
+        self.assertIn('taught_yaw_step_rad:', config)
+        self.assertIn('taught_class_yaw_ranges_rad:', config)
+        self.assertIn('taught_min_pregrasp_standoff_m: 0.06', config)
+        self.assertIn('ik_service: /compute_ik', config)
+        self.assertIn('joint.tolerance_above', coordinator)
+        self.assertIn("'taught_pregrasp_joints'", coordinator)
+        self.assertIn('self._start_teach_replay_check()', coordinator)
+        self.assertIn("check.get('state') == 'pending'", coordinator)
+        self.assertIn("self._active['retreat_joints']", coordinator)
 
     def test_band_line_validation_uses_final_lateral_tolerance(self):
         config = (CONTROL_ROOT / 'config' / 'grasping.yaml').read_text()

@@ -40,15 +40,73 @@ def _conjugate(quaternion):
     return (-quaternion[0], -quaternion[1], -quaternion[2], quaternion[3])
 
 
-def object_reference(object_point, arm_origin):
-    """Return the object-center origin and yaw-only base-frame orientation."""
+def object_reference(object_point, arm_origin, yaw_offset=0.0):
+    """Return the object-center origin and yaw-only base-frame orientation.
+
+    ``yaw_offset`` turns the frame about the object's vertical axis, which
+    places a taught grasp at a different side of the object.
+    """
     origin = _finite_tuple(object_point, 3, 'object center')
     arm = _finite_tuple(arm_origin, 3, 'arm origin')
     dx, dy = origin[0] - arm[0], origin[1] - arm[1]
     if math.hypot(dx, dy) <= 1.0e-6:
         raise ValueError('object center is too close to the arm origin in XY')
-    half_yaw = 0.5 * math.atan2(dy, dx)
+    half_yaw = 0.5 * (math.atan2(dy, dx) + float(yaw_offset))
     return origin, (0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw))
+
+
+def yaw_offsets(search_range, step):
+    """Return rotations about the object to try, nearest the taught one first.
+
+    The order is 0, +step, -step, +2*step, ... up to ``search_range`` either
+    way. A range of pi or more covers the whole circle once.
+    """
+    search_range = float(search_range)
+    step = float(step)
+    if not math.isfinite(search_range) or search_range < 0.0:
+        raise ValueError('yaw search range must be finite and nonnegative')
+    if not math.isfinite(step) or step <= 0.0:
+        raise ValueError('yaw search step must be positive')
+    full_circle = search_range >= math.pi - 1.0e-9
+    limit = math.pi if full_circle else search_range
+    if full_circle:
+        # Divide the circle evenly so 180 degrees is not skipped by rounding.
+        step = 2.0 * math.pi / max(1, int(round(2.0 * math.pi / step)))
+    offsets = [0.0]
+    index = 1
+    while index * step <= limit + 1.0e-9:
+        value = index * step
+        offsets.append(value)
+        if not (full_circle and abs(value - math.pi) <= 1.0e-9):
+            offsets.append(-value)
+        index += 1
+    return tuple(offsets)
+
+
+def parse_class_yaw_ranges(entries):
+    """Parse ``class=radians`` taught-grasp rotation ranges (0 to pi)."""
+    ranges = {}
+    for entry in entries:
+        if not isinstance(entry, str) or '=' not in entry:
+            raise ValueError('taught yaw range entries must use class=radians')
+        label_text, value_text = entry.rsplit('=', 1)
+        label = grasping.normalize_label(label_text)
+        if not label:
+            raise ValueError('taught yaw range class must not be empty')
+        if label in ranges:
+            raise ValueError('duplicate taught yaw range class: ' + label)
+        try:
+            value = float(value_text.strip())
+        except ValueError:
+            raise ValueError('taught yaw range for {} must be numeric'.format(
+                label
+            ))
+        if not math.isfinite(value) or not 0.0 <= value <= math.pi + 1.0e-3:
+            raise ValueError(
+                'taught yaw range for {} must be in [0, pi]'.format(label)
+            )
+        ranges[label] = min(value, math.pi)
+    return ranges
 
 
 def relative_pose(reference, position, orientation):
@@ -120,6 +178,10 @@ def validate_template(template):
         raise ValueError('recorded gripper opening must be positive and finite')
     if not isinstance(template.get('enabled', True), bool):
         raise ValueError('template enabled must be boolean')
+    if template.get('contact_joints') is not None:
+        # Arm joint angles (radians, J0-J5) recorded at the demonstrated
+        # contact. Optional: older templates do not have them.
+        _finite_tuple(template['contact_joints'], 6, 'contact_joints')
 
 
 MINIMUM_STANDOFF_M = 0.02
@@ -170,8 +232,12 @@ def straight_pregrasp(contact, standoff=None, demonstrated_pregrasp=None):
     }, standoff
 
 
-def candidate_from_template(template, reference):
-    """Place a demonstrated straight approach at a new object center."""
+def candidate_from_template(template, reference, yaw_offset=0.0):
+    """Place a demonstrated straight approach at a new object center.
+
+    ``reference`` must already include ``yaw_offset``; the value is recorded
+    so the same side of the object can be kept after a fresh detection.
+    """
     validate_template(template)
     pre_point, pre_orientation = absolute_pose(reference, template['pregrasp'])
     contact_point, _ = absolute_pose(reference, template['contact'])
@@ -184,7 +250,7 @@ def candidate_from_template(template, reference):
         'taught': True,
         'template_name': template['name'],
         'template': template,
-        'yaw_offset': 0.0,
+        'yaw_offset': float(yaw_offset),
         'approach_direction': direction,
         'pregrasp_point': pre_point,
         'grasp_point': contact_point,

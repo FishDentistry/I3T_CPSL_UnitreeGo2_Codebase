@@ -16,11 +16,13 @@ from intel_realsense_interfaces.msg import SemanticObject
 from moveit_msgs.action import ExecuteTrajectory
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import Constraints
+from moveit_msgs.msg import JointConstraint
 from moveit_msgs.msg import MoveItErrorCodes
 from moveit_msgs.msg import OrientationConstraint
 from moveit_msgs.msg import PositionConstraint
 from moveit_msgs.srv import GetCartesianPath
 from moveit_msgs.srv import GetPositionFK
+from moveit_msgs.srv import GetPositionIK
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -181,6 +183,9 @@ class D1GraspCoordinator(Node):
         self._forward_kinematics = self.create_client(
             GetPositionFK, self._forward_kinematics_service
         )
+        self._inverse_kinematics = self.create_client(
+            GetPositionIK, self._ik_service
+        )
         self._set_joint = self.create_client(
             SetJoint, self._gripper_service
         )
@@ -198,6 +203,7 @@ class D1GraspCoordinator(Node):
         self._latest_arm_angles = None
         self._latest_arm_receipt = 0.0
         self._active = None
+        self._taught_search = None
         self._recent_request_ids = deque(maxlen=100)
         self.create_timer(0.1, self._periodic_update)
 
@@ -243,6 +249,7 @@ class D1GraspCoordinator(Node):
             ),
             # Compact per-request grasp log; empty disables the file.
             'grasp_log_path': '~/.ros/d1_grasp_attempts.log',
+            'ik_service': '/compute_ik',
         }
         for name, default in string_parameters.items():
             self.declare_parameter(name, default)
@@ -280,6 +287,21 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('band_alignment_tolerance_rad', 0.10)
         self.declare_parameter('taught_orientation_tolerance_rad', 0.10)
         self.declare_parameter('taught_pregrasp_standoff_m', 0.10)
+        # Taught replay: rotate a taught grasp about the object's vertical
+        # axis in these steps, up to the class range (default otherwise), and
+        # use the first rotation with collision-free IK and a straight path.
+        self.declare_parameter('taught_yaw_step_rad', 0.2618)
+        self.declare_parameter('taught_default_yaw_range_rad', 0.5236)
+        self.declare_parameter(
+            'taught_class_yaw_ranges_rad', ['cup=3.1416', 'soda can=3.1416']
+        )
+        self.declare_parameter('taught_ik_timeout_sec', 0.1)
+        # If no rotation works from the taught pre-grasp distance, retry with
+        # the approach starting closer, in 2 cm steps, but never closer than
+        # this (the open jaws must start clear of the object).
+        self.declare_parameter('taught_min_pregrasp_standoff_m', 0.06)
+        self.declare_parameter('taught_joint_goal_tolerance_rad', 0.01)
+        self.declare_parameter('taught_search_timeout_sec', 30.0)
 
         self.declare_parameter('planning_time_sec', 5.0)
         self.declare_parameter('planning_attempts', 5)
@@ -329,7 +351,7 @@ class D1GraspCoordinator(Node):
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'camera_frame',
             'reach_reference_frame', 'tip_link', 'planner_id',
-            'grasp_templates_path', 'grasp_log_path',
+            'grasp_templates_path', 'grasp_log_path', 'ik_service',
         )
         for name in string_names:
             setattr(self, '_' + name, str(self._parameter(name)).strip())
@@ -358,6 +380,10 @@ class D1GraspCoordinator(Node):
             'band_alignment_tolerance_rad',
             'taught_orientation_tolerance_rad',
             'taught_pregrasp_standoff_m',
+            'taught_yaw_step_rad', 'taught_default_yaw_range_rad',
+            'taught_ik_timeout_sec', 'taught_joint_goal_tolerance_rad',
+            'taught_min_pregrasp_standoff_m',
+            'taught_search_timeout_sec',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
             'maximum_grasp_band_width_m',
@@ -398,6 +424,11 @@ class D1GraspCoordinator(Node):
                 self._parameter('class_grasp_height_offsets_m')
             )
         )
+        self._taught_class_yaw_ranges = (
+            grasp_templates.parse_class_yaw_ranges(
+                self._parameter('taught_class_yaw_ranges_rad')
+            )
+        )
         self._horizontal_forward_depth_classes = {
             grasping.normalize_label(label)
             for label in self._parameter('horizontal_forward_depth_classes')
@@ -426,7 +457,7 @@ class D1GraspCoordinator(Node):
             'joint_angles_topic', 'planning_group', 'planning_frame',
             'camera_frame',
             'reach_reference_frame', 'tip_link',
-            'grasp_templates_path',
+            'grasp_templates_path', 'ik_service',
         )
         for name in required_strings:
             if not getattr(self, '_' + name):
@@ -486,6 +517,22 @@ class D1GraspCoordinator(Node):
                 <= self._taught_pregrasp_standoff_m
                 <= grasp_templates.MAXIMUM_STANDOFF_M):
             raise RuntimeError('taught_pregrasp_standoff_m must be in [0.02, 0.25]')
+        if not 0.0 < self._taught_yaw_step_rad <= math.pi:
+            raise RuntimeError('taught_yaw_step_rad must be in (0, pi]')
+        if not 0.0 <= self._taught_default_yaw_range_rad <= math.pi + 1.0e-3:
+            raise RuntimeError('taught_default_yaw_range_rad must be in [0, pi]')
+        if not (grasp_templates.MINIMUM_STANDOFF_M
+                <= self._taught_min_pregrasp_standoff_m
+                <= grasp_templates.MAXIMUM_STANDOFF_M):
+            raise RuntimeError(
+                'taught_min_pregrasp_standoff_m must be in [0.02, 0.25]'
+            )
+        if self._taught_ik_timeout_sec <= 0.0:
+            raise RuntimeError('taught_ik_timeout_sec must be positive')
+        if self._taught_joint_goal_tolerance_rad <= 0.0:
+            raise RuntimeError('taught_joint_goal_tolerance_rad must be positive')
+        if self._taught_search_timeout_sec <= 0.0:
+            raise RuntimeError('taught_search_timeout_sec must be positive')
         if self._planning_time <= 0.0 or self._planning_attempts < 1:
             raise RuntimeError('planning limits are invalid')
         for name in ('velocity_scaling', 'acceleration_scaling'):
@@ -722,7 +769,10 @@ class D1GraspCoordinator(Node):
             'poses': {},
             'demonstrated_pregrasp': None,
             'open_angle': None,
+            'contact_joints': None,
+            'replay_check': None,
         }
+        self._taught_search = None
         response.success = True
         response.message = (
             'object-center reference frozen; capture contact with the jaws '
@@ -788,21 +838,69 @@ class D1GraspCoordinator(Node):
         except Exception as error:
             response.message = 'could not capture {}: {}'.format(stage, error)
             return response
+        self._taught_search = None
         if stage == 'pregrasp':
             self._teaching['demonstrated_pregrasp'] = recorded
             self._teaching['poses'].pop('pregrasp', None)
             self._teaching['poses'].pop('contact', None)
             self._teaching['open_angle'] = self._latest_gripper_angle
+            self._teaching['contact_joints'] = None
+            self._teaching['replay_check'] = None
         else:
             self._teaching['poses']['pregrasp'] = pregrasp
             self._teaching['poses']['contact'] = recorded
             self._teaching['open_angle'] = open_angle
+            self._teaching['contact_joints'] = self._arm_joint_radians()
+            self._start_teach_replay_check()
+            detail += ('; now checking that this grasp can be replayed '
+                       '(collision-free IK and a straight approach), run '
+                       'save after a moment')
         response.success = True
         response.message = '{} recorded from achieved gripper TF{}'.format(
             stage, detail + self._joint_limit_warning()
         )
         response.achieved_pose = self._target_pose(point, quaternion)
         return response
+
+    def _start_teach_replay_check(self):
+        """Run the replay check on the grasp just captured."""
+        teaching = self._teaching
+        poses = teaching['poses']
+        template = {
+            'name': 'capture',
+            'reference': 'target_object_center',
+            'pregrasp': poses['pregrasp'],
+            'contact': poses['contact'],
+            'gripper_open_degrees': teaching['open_angle'],
+            'enabled': True,
+        }
+        teaching['replay_check'] = {'state': 'pending'}
+        reference = teaching['reference']
+
+        def done(result, summary, teaching=teaching):
+            if self._teaching is not teaching:
+                return
+            if result is None:
+                teaching['replay_check'] = {
+                    'state': 'failed', 'detail': summary,
+                }
+                self._grasp_log(
+                    'TEACH check FAILED for the captured {} grasp: {}'.format(
+                        teaching['object_class'], summary
+                    ), 'warn', request_id='teach',
+                )
+            else:
+                teaching['replay_check'] = {'state': 'ok', 'detail': summary}
+                self._grasp_log(
+                    'TEACH check passed for the captured {} grasp; it can '
+                    'be saved'.format(teaching['object_class']),
+                    request_id='teach',
+                )
+
+        self._start_taught_search(
+            template, lambda yaw: reference, (0.0,),
+            teaching.get('contact_joints'), done,
+        )
 
     def _joint_limit_warning(self, margin_degrees=5.0):
         """Flag taught poses that rest on a joint limit.
@@ -843,6 +941,21 @@ class D1GraspCoordinator(Node):
         if 'pregrasp' not in poses or 'contact' not in poses:
             response.message = 'capture contact before saving'
             return response
+        check = self._teaching.get('replay_check') or {}
+        if check.get('state') == 'pending':
+            response.message = (
+                'still checking that the captured grasp can be replayed; '
+                'run save again in a moment'
+            )
+            return response
+        if check.get('state') != 'ok':
+            response.message = (
+                'not saved: the captured grasp could not be replayed from '
+                'here ({}). Adjust the arm and capture contact again'.format(
+                    check.get('detail', 'check did not run')
+                )
+            )
+            return response
         template = {
             'name': request.name.strip(),
             'reference': 'target_object_center',
@@ -851,6 +964,10 @@ class D1GraspCoordinator(Node):
             'gripper_open_degrees': self._teaching['open_angle'],
             'enabled': True,
         }
+        if self._teaching.get('contact_joints') is not None:
+            template['contact_joints'] = [
+                float(value) for value in self._teaching['contact_joints']
+            ]
         try:
             self._template_library.add(
                 self._teaching['object_class'], template
@@ -871,6 +988,7 @@ class D1GraspCoordinator(Node):
             response.message = 'no teaching session is active'
             return response
         self._teaching = None
+        self._taught_search = None
         response.success = True
         response.message = 'teaching session discarded without saving'
         return response
@@ -1378,20 +1496,33 @@ class D1GraspCoordinator(Node):
                     else self._template_library.templates_for(object_class)
                 )
                 for template in templates:
-                    try:
-                        candidate = grasp_templates.candidate_from_template(
-                            template, reference
-                        )
-                    except ValueError as error:
-                        failures.append(str(error))
-                        continue
-                    candidate['band_index'] = 0
-                    candidate['band_count'] = 0
-                    problem = self._candidate_problem(candidate)
-                    if problem is None:
-                        taught_candidates.append(candidate)
+                    # Keep a taught grasp if any rotation about the object
+                    # passes the reach safeguards; IK decides later.
+                    first_problem = None
+                    for yaw in self._taught_yaws(object_class):
+                        try:
+                            candidate = grasp_templates.candidate_from_template(
+                                template,
+                                grasp_templates.object_reference(
+                                    object_point, approach_origin, yaw
+                                ),
+                                yaw,
+                            )
+                        except ValueError as error:
+                            first_problem = first_problem or str(error)
+                            continue
+                        problem = self._candidate_problem(candidate)
+                        if problem is None:
+                            candidate['band_index'] = 0
+                            candidate['band_count'] = 0
+                            taught_candidates.append(candidate)
+                            break
+                        first_problem = first_problem or problem
                     else:
-                        failures.append(problem)
+                        failures.append('taught grasp {}: {} at every '
+                                        'rotation tried'.format(
+                                            template.get('name'),
+                                            first_problem))
             taught_candidates.sort(
                 key=lambda candidate: candidate['template_name']
             )
@@ -1635,6 +1766,9 @@ class D1GraspCoordinator(Node):
                         'not moving yet)'.format(
                             index + 1, len(candidates),
                             self._grasp_kind(candidate)))
+        if candidate.get('taught'):
+            self._begin_taught_candidate(candidate)
+            return
         self._active['target_point'] = candidate['band_target_point']
         self._active['grasp_band_width'] = candidate['band_width']
         self._active['pregrasp_pose'] = pose
@@ -1707,7 +1841,7 @@ class D1GraspCoordinator(Node):
     def _move_group_goal(
             self, target_pose, position_tolerance=None,
             orientation_tolerance=None, path_constraints=None,
-            orientation_options=None):
+            orientation_options=None, goal_constraints=None):
         if position_tolerance is None:
             position_tolerance = self._position_tolerance_m
         primitive = SolidPrimitive()
@@ -1735,7 +1869,7 @@ class D1GraspCoordinator(Node):
                 target_pose.pose.orientation.z,
                 target_pose.pose.orientation.w,
             ),)
-        goal_constraints = []
+        goal_constraints_list = []
         # MoveIt treats several goal constraint sets as alternatives.
         for quaternion in quaternions:
             constraints = Constraints()
@@ -1758,11 +1892,14 @@ class D1GraspCoordinator(Node):
                 orientation.absolute_z_axis_tolerance = orientation_tolerance
                 orientation.weight = 1.0
                 constraints.orientation_constraints = [orientation]
-            goal_constraints.append(constraints)
+            goal_constraints_list.append(constraints)
 
         goal = MoveGroup.Goal()
         goal.request.start_state.is_diff = True
-        goal.request.goal_constraints = goal_constraints
+        goal.request.goal_constraints = (
+            goal_constraints_list
+            if goal_constraints is None else list(goal_constraints)
+        )
         goal.request.pipeline_id = ''
         goal.request.planner_id = self._planner_id
         goal.request.group_name = self._planning_group
@@ -2170,11 +2307,12 @@ class D1GraspCoordinator(Node):
         )
         if selected.get('taught'):
             try:
+                yaw = float(selected.get('yaw_offset', 0.0))
                 reference = grasp_templates.object_reference(
-                    object_point, self._active['approach_origin']
+                    object_point, self._active['approach_origin'], yaw
                 )
                 candidate = grasp_templates.candidate_from_template(
-                    selected['template'], reference
+                    selected['template'], reference, yaw
                 )
             except ValueError as error:
                 self._finish_failure('fresh taught grasp is invalid: ' + str(error))
@@ -2242,6 +2380,13 @@ class D1GraspCoordinator(Node):
         self._grasp_publisher.publish(grasp_pose)
 
         lateral_limit = self._maximum_final_lateral_correction_m
+        if lateral_correction > lateral_limit and candidate.get('taught'):
+            self._begin_taught_reposition(
+                'fresh target shifted laterally by {:.3f} m'.format(
+                    lateral_correction
+                )
+            )
+            return
         if lateral_correction > lateral_limit:
             self._pregrasp_publisher.publish(retreat_pose)
             self._request_position_plan(
@@ -2661,6 +2806,14 @@ class D1GraspCoordinator(Node):
         if purpose == 'approach':
             if self._try_next_cartesian_orientation(description):
                 return
+            if (self._active['candidate'].get('taught')
+                    and not self._active.get('taught_retry_used')):
+                self._active['taught_retry_used'] = True
+                self._begin_taught_reposition(
+                    'straight approach from the reached pre-grasp was '
+                    'incomplete ({})'.format(description)
+                )
+                return
             if self._fixed_approach(self._active['candidate']):
                 self._finish_failure(
                     '{}; no complete straight Cartesian approach to the '
@@ -2728,7 +2881,8 @@ class D1GraspCoordinator(Node):
             self._finish_failure(description)
 
     def _request_position_plan(
-            self, pose, purpose, stage, message, path_constraints=None):
+            self, pose, purpose, stage, message, path_constraints=None,
+            goal_constraints=None):
         if self._active is None:
             return
         self._active['phase'] = 'planning_' + purpose
@@ -2752,6 +2906,7 @@ class D1GraspCoordinator(Node):
                 self._grasp_orientation_tolerance_rad
                 if preserve_grasp_orientation else None,
                 path_constraints,
+                goal_constraints=goal_constraints,
             ),
             feedback_callback=lambda feedback, token=self._active['token']:
                 self._move_group_feedback(feedback, token),
@@ -2856,6 +3011,10 @@ class D1GraspCoordinator(Node):
             return
         self._active['phase'] = 'executing_' + purpose
         self._active['trajectory_purpose'] = purpose
+        if purpose == 'approach':
+            # Retreat later returns to exactly where the approach starts,
+            # a configuration the arm has just occupied without collision.
+            self._active['retreat_joints'] = self._arm_joint_radians()
         candidate = self._active.get('candidate')
         self._grasp_log('ARM MOVING ({}) with {}'.format(
             purpose.replace('_', ' '),
@@ -3091,6 +3250,16 @@ class D1GraspCoordinator(Node):
             if now >= self._active['deadline']:
                 self._start_laydown_raise()
             return
+        if phase.startswith('searching_taught'):
+            if now > self._active['deadline']:
+                self._taught_search = None
+                self._finish_failure(
+                    'taught grasp search did not finish within {:.1f}s; '
+                    'is move_group running?'.format(
+                        self._taught_search_timeout_sec
+                    )
+                )
+            return
         if phase == 'reacquiring':
             if now > self._active['deadline']:
                 self._finish_failure(
@@ -3230,6 +3399,17 @@ class D1GraspCoordinator(Node):
         )
 
     def _start_retreat(self):
+        joints = self._active.get('retreat_joints')
+        if joints is not None:
+            self._request_position_plan(
+                self._active['retreat_pose'],
+                'retreat',
+                GraspStatus.STAGE_RETREATING,
+                'object released; planning a retreat to the joint angles '
+                'where the final approach started',
+                goal_constraints=self._joint_goal_constraints(joints),
+            )
+            return
         self._request_position_plan(
             self._active['retreat_pose'],
             'retreat',
@@ -3237,12 +3417,446 @@ class D1GraspCoordinator(Node):
             'object released; planning a position-only retreat to pre-grasp',
         )
 
+    # ------------------------------------------------------------------
+    # Taught-grasp replay
+    #
+    # A taught grasp is a gripper pose relative to the object. To replay it
+    # anywhere the arm can reach, rotate it about the object's vertical axis
+    # (nearest the taught side first) and accept the first rotation where
+    # MoveIt finds collision-free IK for the contact and the pre-grasp, plus
+    # a complete straight path between them. The arm is then planned to
+    # those exact pre-grasp joint angles, so it arrives in the configuration
+    # that was checked instead of wherever a pose-goal plan happens to end.
+    # ------------------------------------------------------------------
+
+    def _taught_yaw_range(self, object_class):
+        return self._taught_class_yaw_ranges.get(
+            grasping.normalize_label(object_class),
+            self._taught_default_yaw_range_rad,
+        )
+
+    def _taught_yaws(self, object_class, around=0.0):
+        """Rotations to try, ordered by distance from ``around``."""
+        offsets = grasp_templates.yaw_offsets(
+            self._taught_yaw_range(object_class), self._taught_yaw_step_rad
+        )
+
+        def separation(value):
+            delta = (value - around + math.pi) % (2.0 * math.pi) - math.pi
+            return abs(delta)
+
+        return tuple(sorted(offsets, key=separation))
+
+    def _taught_attempts(self, template, yaws):
+        """(template variant, yaw) pairs: taught standoff first, then closer."""
+        contact = template['contact']
+        pregrasp = template['pregrasp']
+        taught = grasping.distance_between(
+            pregrasp['position'], contact['position']
+        )
+        variants = [template]
+        standoff = taught - 0.02
+        while standoff >= self._taught_min_pregrasp_standoff_m - 1.0e-9:
+            try:
+                shorter, _ = grasp_templates.straight_pregrasp(
+                    contact, standoff
+                )
+            except ValueError:
+                break
+            variant = dict(template)
+            variant['pregrasp'] = shorter
+            variants.append(variant)
+            standoff -= 0.02
+        return [(variant, yaw) for variant in variants for yaw in yaws]
+
+    def _arm_joint_radians(self):
+        if self._latest_arm_angles is None or (
+                self._now_seconds() - self._latest_arm_receipt > 1.0):
+            return None
+        return [math.radians(value) for value in self._latest_arm_angles]
+
+    @staticmethod
+    def _arm_positions(robot_state):
+        names = list(robot_state.joint_state.name)
+        positions = list(robot_state.joint_state.position)
+        by_name = dict(zip(names, positions))
+        if any(name not in by_name for name in D1_ARM_JOINT_NAMES):
+            raise ValueError('IK solution lacks D1 arm joints')
+        return [float(by_name[name]) for name in D1_ARM_JOINT_NAMES]
+
+    def _joint_goal_constraints(self, joints):
+        constraints = Constraints()
+        constraints.name = 'taught_pregrasp_joints'
+        for name, value in zip(D1_ARM_JOINT_NAMES, joints):
+            joint = JointConstraint()
+            joint.joint_name = name
+            joint.position = float(value)
+            joint.tolerance_above = self._taught_joint_goal_tolerance_rad
+            joint.tolerance_below = self._taught_joint_goal_tolerance_rad
+            joint.weight = 1.0
+            constraints.joint_constraints.append(joint)
+        return [constraints]
+
+    def _start_taught_search(self, template, reference_for_yaw, yaws, seed,
+                             done):
+        """Find the first rotation with IK and a straight approach.
+
+        ``done(result, summary)`` is called once, unless the search is
+        superseded. ``result`` is None when no rotation works.
+        """
+        search = {
+            'reference_for_yaw': reference_for_yaw,
+            'attempts': self._taught_attempts(template, list(yaws)),
+            'rotations': len(list(yaws)),
+            'index': 0,
+            'seed': None if seed is None else [float(v) for v in seed],
+            'done': done,
+            'checked': 0,
+            'counts': {},
+            'best_fraction': 0.0,
+        }
+        self._taught_search = search
+        if not self._inverse_kinematics.wait_for_service(timeout_sec=0.0):
+            self._taught_search = None
+            done(None, 'IK service {} is unavailable'.format(self._ik_service))
+            return
+        if not self._cartesian_path.wait_for_service(timeout_sec=0.0):
+            self._taught_search = None
+            done(None, 'Cartesian path service {} is unavailable'.format(
+                self._cartesian_path_service
+            ))
+            return
+        self._taught_search_next(search)
+
+    def _taught_search_count(self, search, reason):
+        search['counts'][reason] = search['counts'].get(reason, 0) + 1
+
+    def _taught_search_summary(self, search):
+        parts = ['{} {}'.format(count, reason)
+                 for reason, count in sorted(search['counts'].items())]
+        standoffs = len(search['attempts']) // max(1, search['rotations'])
+        text = 'tried {} rotation(s) about the object'.format(
+            search['rotations']
+        )
+        if standoffs > 1:
+            text += ' at {} pre-grasp distances'.format(standoffs)
+        if parts:
+            text += ': ' + ', '.join(parts)
+        if search['best_fraction'] > 0.0:
+            text += ' (best straight approach {:.0f}%)'.format(
+                100.0 * search['best_fraction']
+            )
+        return text
+
+    def _taught_search_finish(self, search, result):
+        if self._taught_search is not search:
+            return
+        self._taught_search = None
+        search['done'](result, self._taught_search_summary(search))
+
+    def _taught_search_next(self, search):
+        if self._taught_search is not search:
+            return
+        while search['index'] < len(search['attempts']):
+            template, yaw = search['attempts'][search['index']]
+            search['index'] += 1
+            try:
+                candidate = grasp_templates.candidate_from_template(
+                    template, search['reference_for_yaw'](yaw), yaw
+                )
+            except ValueError:
+                self._taught_search_count(search, 'invalid geometry')
+                continue
+            try:
+                problem = self._candidate_problem(candidate)
+            except Exception:
+                # A transform lookup failing here must not crash the node.
+                problem = 'reach check failed'
+            if problem is not None:
+                self._taught_search_count(
+                    search,
+                    'reach check failed' if problem == 'reach check failed'
+                    else 'outside reach safeguard',
+                )
+                continue
+            search['candidate'] = candidate
+            search['checked'] += 1
+            self._request_taught_ik(
+                search, candidate['grasp_point'], candidate['orientation'],
+                search['seed'], self._taught_contact_ik_result,
+            )
+            return
+        self._taught_search_finish(search, None)
+
+    def _request_taught_ik(self, search, point, orientation, seed, handler):
+        request = GetPositionIK.Request()
+        ik = request.ik_request
+        ik.group_name = self._planning_group
+        ik.ik_link_name = self._tip_link
+        ik.avoid_collisions = True
+        ik.pose_stamped = self._target_pose(point, orientation)
+        timeout = self._taught_ik_timeout_sec
+        ik.timeout = Duration(
+            sec=int(timeout), nanosec=int((timeout % 1.0) * 1e9)
+        )
+        ik.robot_state.is_diff = True
+        if seed is not None:
+            ik.robot_state.joint_state.name = list(D1_ARM_JOINT_NAMES)
+            ik.robot_state.joint_state.position = [float(v) for v in seed]
+        future = self._inverse_kinematics.call_async(request)
+        future.add_done_callback(
+            lambda done, search=search: handler(done, search)
+        )
+
+    def _taught_ik_solution(self, future):
+        try:
+            response = future.result()
+        except Exception:
+            return None
+        if response is None or (
+                response.error_code.val != MoveItErrorCodes.SUCCESS):
+            return None
+        try:
+            return response.solution, self._arm_positions(response.solution)
+        except ValueError:
+            return None
+
+    def _taught_contact_ik_result(self, future, search):
+        if self._taught_search is not search:
+            return
+        solution = self._taught_ik_solution(future)
+        if solution is None:
+            self._taught_search_count(search, 'no collision-free IK at contact')
+            self._taught_search_next(search)
+            return
+        search['contact_joints'] = solution[1]
+        candidate = search['candidate']
+        # Seed the pre-grasp with the contact solution to stay in the same
+        # arm configuration along the short approach.
+        self._request_taught_ik(
+            search, candidate['pregrasp_point'], candidate['orientation'],
+            solution[1], self._taught_pregrasp_ik_result,
+        )
+
+    def _taught_pregrasp_ik_result(self, future, search):
+        if self._taught_search is not search:
+            return
+        solution = self._taught_ik_solution(future)
+        if solution is None:
+            self._taught_search_count(
+                search, 'no collision-free IK at pre-grasp'
+            )
+            self._taught_search_next(search)
+            return
+        search['pregrasp_state'], search['pregrasp_joints'] = solution
+        candidate = search['candidate']
+        request = GetCartesianPath.Request()
+        request.header.stamp = self.get_clock().now().to_msg()
+        request.header.frame_id = self._planning_frame
+        request.start_state = copy.deepcopy(search['pregrasp_state'])
+        request.start_state.is_diff = True
+        request.group_name = self._planning_group
+        request.link_name = self._tip_link
+        request.waypoints = [copy.deepcopy(
+            self._target_pose(
+                candidate['grasp_point'], candidate['orientation']
+            ).pose
+        )]
+        request.max_step = self._cartesian_step_m
+        if hasattr(request, 'jump_threshold'):
+            request.jump_threshold = self._cartesian_jump_threshold
+        request.avoid_collisions = True
+        future = self._cartesian_path.call_async(request)
+        future.add_done_callback(
+            lambda done, search=search:
+                self._taught_cartesian_result(done, search)
+        )
+
+    def _taught_cartesian_result(self, future, search):
+        if self._taught_search is not search:
+            return
+        try:
+            response = future.result()
+            ok = response.error_code.val == MoveItErrorCodes.SUCCESS
+            fraction = float(response.fraction) if ok else 0.0
+        except Exception:
+            fraction = 0.0
+        if not math.isfinite(fraction):
+            fraction = 0.0
+        search['best_fraction'] = max(search['best_fraction'], fraction)
+        if fraction < self._minimum_cartesian_fraction:
+            self._taught_search_count(search, 'incomplete straight approach')
+            self._taught_search_next(search)
+            return
+        self._taught_search_finish(search, {
+            'candidate': search['candidate'],
+            'pregrasp_joints': search['pregrasp_joints'],
+            'contact_joints': search['contact_joints'],
+            'checked': search['checked'],
+        })
+
+    def _begin_taught_candidate(self, candidate):
+        template = candidate['template']
+        object_point = self._active['object_point']
+        origin = self._active['approach_origin']
+        self._active['phase'] = 'searching_taught'
+        self._active['deadline'] = (
+            self._now_seconds() + self._taught_search_timeout_sec
+        )
+        self._publish_active_stage(
+            GraspStatus.STAGE_PLANNING,
+            'checking taught grasp {} for collision-free IK and a straight '
+            'approach around the object'.format(candidate['template_name']),
+        )
+        token = self._active['token']
+        self._start_taught_search(
+            template,
+            lambda yaw: grasp_templates.object_reference(
+                object_point, origin, yaw
+            ),
+            self._taught_yaws(self._active['object_class']),
+            template.get('contact_joints'),
+            lambda result, summary, token=token:
+                self._taught_candidate_found(result, summary, token),
+        )
+
+    def _taught_candidate_found(self, result, summary, token):
+        if (not self._active_token_valid(token)
+                or self._active['phase'] != 'searching_taught'):
+            return
+        name = self._active['candidate']['template_name']
+        if result is None:
+            self._try_next_candidate(
+                'no reachable rotation of taught grasp {}: {}'.format(
+                    name, summary
+                )
+            )
+            return
+        selected = self._active['candidate']
+        candidate = dict(result['candidate'])
+        candidate['band_index'] = selected.get('band_index', 0)
+        candidate['band_count'] = selected.get('band_count', 0)
+        candidate['taught_pregrasp_joints'] = result['pregrasp_joints']
+        self._active['candidate'] = candidate
+        self._active['target_point'] = candidate['band_target_point']
+        self._active['grasp_band_width'] = None
+        pose = self._candidate_pose(candidate, 'pregrasp_point')
+        self._active['pregrasp_pose'] = pose
+        self._active['phase'] = 'planning_pregrasp'
+        self._pregrasp_publisher.publish(pose)
+        self._grasp_log('FOUND {}: reachable after checking {} option(s); '
+                        'planning to its checked pre-grasp joint angles'.format(
+                            self._grasp_kind(candidate), result['checked']))
+        self._publish_active_stage(
+            GraspStatus.STAGE_PLANNING,
+            'taught grasp {} is reachable (rotated {:+.0f} deg about the '
+            'object); MoveIt is planning to its pre-grasp joint angles'.format(
+                name, math.degrees(candidate['yaw_offset'])
+            ),
+            pose,
+        )
+        future = self._move_group.send_goal_async(
+            self._move_group_goal(
+                pose,
+                goal_constraints=self._joint_goal_constraints(
+                    result['pregrasp_joints']
+                ),
+            ),
+            feedback_callback=lambda message, token=token:
+                self._move_group_feedback(message, token),
+        )
+        future.add_done_callback(
+            lambda done, token=token:
+                self._move_group_goal_response(done, token)
+        )
+
+    def _begin_taught_reposition(self, reason):
+        """Re-check a taught grasp from the reached pose and move to it."""
+        candidate = self._active['candidate']
+        object_point = self._active['object_point']
+        origin = self._active['approach_origin']
+        self._active['phase'] = 'searching_taught_reposition'
+        self._active['deadline'] = (
+            self._now_seconds() + self._taught_search_timeout_sec
+        )
+        self._grasp_log('{}; re-checking {} from the reached pose'.format(
+            reason, self._grasp_kind(candidate)))
+        self._publish_active_stage(
+            GraspStatus.STAGE_APPROACHING,
+            '{}; re-checking the taught grasp from the reached pose'.format(
+                reason
+            ),
+        )
+        token = self._active['token']
+        self._start_taught_search(
+            candidate['template'],
+            lambda yaw: grasp_templates.object_reference(
+                object_point, origin, yaw
+            ),
+            self._taught_yaws(
+                self._active['object_class'],
+                float(candidate.get('yaw_offset', 0.0)),
+            ),
+            self._arm_joint_radians(),
+            lambda result, summary, token=token:
+                self._taught_reposition_found(result, summary, token),
+        )
+
+    def _taught_reposition_found(self, result, summary, token):
+        if (not self._active_token_valid(token)
+                or self._active['phase'] != 'searching_taught_reposition'):
+            return
+        if result is None:
+            self._finish_failure(
+                'taught grasp is no longer reachable from the reached '
+                'pre-grasp: {}; no contact motion was executed'.format(summary)
+            )
+            return
+        previous = self._active['candidate']
+        candidate = dict(result['candidate'])
+        candidate['band_index'] = previous.get('band_index', 0)
+        candidate['band_count'] = previous.get('band_count', 0)
+        candidate['taught_pregrasp_joints'] = result['pregrasp_joints']
+        self._active['candidate'] = candidate
+        self._active['target_point'] = candidate['band_target_point']
+        retreat_pose = self._candidate_pose(candidate, 'pregrasp_point')
+        self._active['pregrasp_pose'] = retreat_pose
+        self._active['retreat_pose'] = retreat_pose
+        self._active['grasp_pose'] = self._candidate_pose(
+            candidate, 'grasp_point'
+        )
+        self._pregrasp_publisher.publish(retreat_pose)
+        self._grasp_publisher.publish(self._active['grasp_pose'])
+        self._request_position_plan(
+            retreat_pose,
+            'reposition_pregrasp',
+            GraspStatus.STAGE_APPROACHING,
+            'moving to the re-checked pre-grasp joint angles of {}'.format(
+                self._grasp_kind(candidate)
+            ),
+            goal_constraints=self._joint_goal_constraints(
+                result['pregrasp_joints']
+            ),
+        )
+
     @staticmethod
     def _grasp_kind(candidate):
         if not candidate:
             return 'no candidate started'
         if candidate.get('taught'):
-            return "TAUGHT grasp '{}'".format(candidate.get('template_name'))
+            yaw = float(candidate.get('yaw_offset', 0.0))
+            details = []
+            if abs(yaw) >= 1.0e-6:
+                details.append('rotated {:+.0f} deg about the object'.format(
+                    math.degrees(yaw)
+                ))
+            standoff = grasping.distance_between(
+                candidate['pregrasp_point'], candidate['grasp_point']
+            )
+            details.append('approach from {:.0f} cm'.format(100.0 * standoff))
+            return "TAUGHT grasp '{}' ({})".format(
+                candidate.get('template_name'), '; '.join(details)
+            )
         if candidate.get('band_width') is not None:
             where = 'band {} of {}'.format(
                 candidate.get('band_index'), candidate.get('band_count')
@@ -3306,6 +3920,7 @@ class D1GraspCoordinator(Node):
     def _finish_failure(self, message):
         if self._active is None:
             return
+        self._taught_search = None
         active = self._active
         self._grasp_log('RESULT: FAILED with {}: {}'.format(
             self._grasp_kind(active.get('candidate')), message

@@ -672,17 +672,35 @@ can be followed without the rest of the launch output:
 tail -f ~/.ros/d1_grasp_attempts.log
 ```
 
-At execution, taught poses are relocated using the current object center and
-are tried before generated candidates. They are not filtered or repositioned
-by grasp-band width. The existing configured 49-degree opening and closure
-sequence remains authoritative; the demonstrated opening angle is recorded as
-metadata because no calibrated jaw-angle-to-gap model is available. A taught
-candidate must pass full-pose pre-grasp planning and a complete
-collision-checked Cartesian approach before execution. After reaching
-pre-grasp, a fresh detection relocates the taught pose and the final approach
-is recomputed from the actual arm state. If all taught candidates are rejected
-before movement, generated grasp candidates remain available. Their optional
-band handling is unchanged.
+At execution, a taught grasp is replayed by search, not by one fixed pose.
+The grasp is placed at the current object center and also rotated about the
+object's vertical axis in `taught_yaw_step_rad` steps, nearest the taught
+side first, up to the class range in `taught_class_yaw_ranges_rad` (cups and
+soda cans: all the way round) or `taught_default_yaw_range_rad`. For each
+rotation the coordinator asks MoveIt (`/compute_ik`, `/compute_cartesian_path`)
+for collision-free IK at the contact, collision-free IK at the pre-grasp
+(seeded from the contact solution, and from the joint angles recorded while
+teaching), and a complete straight path between them. If no rotation works
+from the taught pre-grasp distance, it retries with the approach starting
+closer, in 2 cm steps, down to `taught_min_pregrasp_standoff_m`. The first
+option that passes is used, and the arm is planned to its exact pre-grasp
+joint angles, so it arrives in the configuration that was checked. If none
+passes, the log names the grasp and the counts of each failure reason, and
+generated candidates are tried. After a fresh detection, a shift larger than
+`maximum_final_lateral_correction_m`, or an incomplete straight approach,
+re-runs the same search from the reached pose and moves to the new joint
+angles (once). The retreat returns to the joint angles where the final approach
+started. Taught grasps are tried before generated candidates and are not
+filtered or repositioned by grasp-band width. The existing configured
+49-degree opening and closure sequence remains authoritative; the demonstrated
+opening angle is recorded as metadata because no calibrated jaw-angle-to-gap
+model is available. Generated candidates and their optional band handling are
+unchanged.
+
+Capturing contact now also runs this check for the captured grasp, and `save`
+refuses until it passes ("still checking" for a moment, or the reason it
+failed). Saved grasps record the contact joint angles (`contact_joints`);
+grasps saved earlier still work without them.
 
 No additional Python or system package is required beyond the existing ROS 2
 dependencies. The new `unitree_arm/srv` interfaces require rebuilding

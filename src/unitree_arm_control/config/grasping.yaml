@@ -10,6 +10,7 @@ d1_grasp_coordinator:
     execute_trajectory_action: /execute_trajectory
     cartesian_path_service: /compute_cartesian_path
     forward_kinematics_service: /compute_fk
+    ik_service: /compute_ik
     gripper_service: /d1_arm_controller/set_joint
     arm_enable_service: /d1_arm_controller/set_arm_enabled
     arm_trajectory_action: /d1_arm_controller/follow_joint_trajectory
@@ -28,6 +29,19 @@ d1_grasp_coordinator:
     # Teaching: pre-grasp distance behind the taught contact, along the
     # gripper axis, when no pregrasp is captured (0.02-0.25 m).
     taught_pregrasp_standoff_m: 0.10
+    # Taught replay: try the taught grasp rotated about the object's vertical
+    # axis in these steps (nearest the taught side first), up to the class
+    # range, or the default range for unlisted classes. pi = all the way round.
+    taught_yaw_step_rad: 0.2618
+    taught_default_yaw_range_rad: 0.5236
+    taught_class_yaw_ranges_rad: ["cup=3.1416", "soda can=3.1416"]
+    # If no rotation works from the taught distance, start the approach
+    # closer in 2 cm steps, but never closer than this (open jaws must start
+    # clear of the object).
+    taught_min_pregrasp_standoff_m: 0.06
+    taught_ik_timeout_sec: 0.1
+    taught_joint_goal_tolerance_rad: 0.01
+    taught_search_timeout_sec: 30.0
     planner_id: ""
     # Execution only: leave a near laid-down pose before MoveIt planning.
     lay_down_raise_enabled: true

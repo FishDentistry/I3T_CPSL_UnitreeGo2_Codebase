@@ -156,3 +156,60 @@ def test_pregrasp_in_front_of_contact_is_rejected():
     ahead = _contact(reference, (0.51, 0.0, 0.10), (1.0, 0.0, 0.0))
     with pytest.raises(ValueError, match='behind the contact'):
         grasp_templates.straight_pregrasp(contact, 0.10, ahead)
+
+
+def test_yaw_offsets_try_taught_side_first_and_cover_range():
+    import math
+    offsets = grasp_templates.yaw_offsets(math.radians(30), math.radians(15))
+    assert offsets == pytest.approx(
+        [0.0] + [math.radians(v) for v in (15, -15, 30, -30)]
+    )
+    full = grasp_templates.yaw_offsets(math.pi, math.radians(15))
+    assert len(full) == 24
+    assert len({round(math.degrees(v)) % 360 for v in full}) == 24
+    assert grasp_templates.yaw_offsets(0.0, 0.1) == (0.0,)
+
+
+def test_rotated_reference_moves_grasp_around_object_center():
+    import math
+    template = _demonstration()
+    center = (0.50, 0.0, 0.10)
+    taught = grasp_templates.candidate_from_template(
+        template, grasp_templates.object_reference(center, (0.0, 0.0, 0.0))
+    )
+    turned = grasp_templates.candidate_from_template(
+        template,
+        grasp_templates.object_reference(
+            center, (0.0, 0.0, 0.0), math.pi / 2.0
+        ),
+        math.pi / 2.0,
+    )
+    # Pre-grasp was 15 cm on the arm side; a quarter turn puts it at -Y.
+    assert taught['pregrasp_point'] == pytest.approx((0.35, 0.0, 0.10))
+    assert turned['pregrasp_point'] == pytest.approx((0.50, -0.15, 0.10))
+    assert turned['grasp_point'] == pytest.approx(taught['grasp_point'])
+    assert turned['yaw_offset'] == pytest.approx(math.pi / 2.0)
+    assert grasping.approach_axis_error(
+        turned['orientation'], turned['approach_direction']
+    ) == pytest.approx(0.0)
+
+
+def test_class_yaw_ranges_parse_and_reject_bad_values():
+    import math
+    ranges = grasp_templates.parse_class_yaw_ranges(
+        ['Cup=3.1416', 'soda can=1.0']
+    )
+    assert ranges['cup'] == pytest.approx(math.pi)
+    assert ranges['soda can'] == pytest.approx(1.0)
+    for bad in (['cup'], ['cup=-1'], ['cup=4'], ['cup=1', 'CUP=2']):
+        with pytest.raises(ValueError):
+            grasp_templates.parse_class_yaw_ranges(bad)
+
+
+def test_optional_contact_joints_are_validated():
+    template = _demonstration()
+    template['contact_joints'] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    grasp_templates.validate_template(template)
+    template['contact_joints'] = [0.1, 0.2]
+    with pytest.raises(ValueError, match='contact_joints'):
+        grasp_templates.validate_template(template)
