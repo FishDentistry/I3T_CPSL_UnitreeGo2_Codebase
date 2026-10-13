@@ -21,6 +21,7 @@ from moveit_msgs.msg import JointConstraint
 from moveit_msgs.msg import MoveItErrorCodes
 from moveit_msgs.msg import OrientationConstraint
 from moveit_msgs.msg import PositionConstraint
+from moveit_msgs.msg import RobotState
 from moveit_msgs.srv import GetCartesianPath
 from moveit_msgs.srv import GetPositionFK
 from moveit_msgs.srv import GetPositionIK
@@ -1048,6 +1049,9 @@ class D1GraspCoordinator(Node):
             template['contact_joints'] = [
                 float(value) for value in self._teaching['contact_joints']
             ]
+        template['taught_object_center'] = [
+            float(value) for value in self._teaching['reference'][0]
+        ]
         try:
             self._template_library.add(
                 self._teaching['object_class'], template
@@ -2540,8 +2544,102 @@ class D1GraspCoordinator(Node):
         self._active['candidate'] = candidate
         grasp_pose = self._candidate_pose(candidate, 'grasp_point')
         self._active['grasp_pose'] = grasp_pose
+        start_state = self._prepare_approach_feedforward(actual_pregrasp)
+        if start_state is not None and candidate.get('taught'):
+            # The straight line now starts at the intended pre-grasp, whose
+            # wrist orientation is the taught one, not the sagged reading.
+            candidate = dict(candidate)
+            candidate['orientation'] = candidate['taught_orientation']
+            self._active['candidate'] = candidate
+            grasp_pose = self._candidate_pose(candidate, 'grasp_point')
+            self._active['grasp_pose'] = grasp_pose
         self._begin_final_approach(
-            grasp_pose, 'approach', GraspStatus.STAGE_APPROACHING, message
+            grasp_pose, 'approach', GraspStatus.STAGE_APPROACHING, message,
+            start_state=start_state,
+        )
+
+    def _prepare_approach_feedforward(self, actual_pregrasp):
+        """Measure servo sag at pre-grasp; return the sag-free start state."""
+        self._active['approach_feedforward'] = None
+        if not self._approach_correction_enabled:
+            return None
+        commanded = self._active.get('pregrasp_commanded_joints')
+        measured = self._arm_joint_radians()
+        completed = self._active.get('pregrasp_completed_at')
+        if (commanded is None or measured is None or completed is None
+                or self._latest_arm_receipt <= completed):
+            return None
+        limit = self._approach_correction_max_offset_rad
+        offset = [max(-limit, min(limit, c - m))
+                  for c, m in zip(commanded, measured)]
+        target = self._active.get('pregrasp_target_point')
+        if target is not None:
+            delta = tuple(a - t for a, t in zip(actual_pregrasp, target))
+            where = '{:.1f} cm from its planned position (dz {:+.1f} cm)'.format(
+                100.0 * grasping.distance_from_origin(delta), 100.0 * delta[2]
+            )
+        else:
+            where = 'with servo sag'
+        if max(abs(value) for value in offset) < 0.001:
+            self._grasp_log('pre-grasp reached {}; no sag compensation '
+                            'needed'.format(where))
+            return None
+        self._active['approach_feedforward'] = offset
+        self._active['approach_feedforward_start'] = measured
+        self._grasp_log(
+            'pre-grasp reached {}; compensating the whole approach for servo '
+            'sag by [{}] deg so the gripper moves in on the intended '
+            'line'.format(where, ', '.join(
+                '{:+.2f}'.format(math.degrees(value)) for value in offset
+            ))
+        )
+        state = RobotState()
+        state.is_diff = True
+        state.joint_state.name = list(D1_ARM_JOINT_NAMES)
+        state.joint_state.position = [float(value) for value in commanded]
+        state.joint_state.velocity = []
+        state.joint_state.effort = []
+        return state
+
+    def _apply_approach_feedforward(self, solution):
+        """Shift an approach path by the sag offset, with a lead-in."""
+        offset = self._active.get('approach_feedforward')
+        start = self._active.get('approach_feedforward_start')
+        if offset is None or start is None:
+            return
+        joint_path = solution.joint_trajectory
+        names = list(joint_path.joint_names)
+        index = {name: names.index(name) for name in D1_ARM_JOINT_NAMES}
+        extra = [0.0] * len(names)
+        for joint, value in zip(D1_ARM_JOINT_NAMES, offset):
+            extra[index[joint]] = value
+        # Lead-in: from the measured (sagged) start up onto the line, at the
+        # straight-move speed, so the controller's start checks are met.
+        speed = D1_ARM_MIN_VELOCITY_LIMIT * self._cartesian_velocity_scaling
+        first = list(joint_path.points[0].positions)
+        jump = max(abs(first[index[j]] + extra[index[j]] - s)
+                   for j, s in zip(D1_ARM_JOINT_NAMES, start))
+        lead = max(0.3, 2.0 * jump / speed)
+        lead_nanoseconds = int(round(lead * 1e9))
+        for point in joint_path.points:
+            point.positions = [value + add for value, add in zip(
+                point.positions, extra
+            )]
+            total = (point.time_from_start.sec * 1000000000
+                     + point.time_from_start.nanosec + lead_nanoseconds)
+            point.time_from_start = Duration(
+                sec=total // 1000000000, nanosec=total % 1000000000
+            )
+            point.velocities = []
+            point.accelerations = []
+        begin = JointTrajectoryPoint()
+        measured = dict(zip(D1_ARM_JOINT_NAMES, start))
+        begin.positions = [float(measured.get(name, first[i]))
+                           for i, name in enumerate(names)]
+        begin.time_from_start = Duration(sec=0, nanosec=0)
+        joint_path.points = [begin] + list(joint_path.points)
+        trajectory.validate_trajectory(
+            joint_path.joint_names, joint_path.points, D1_ARM_JOINT_NAMES
         )
 
     def _begin_final_approach(
@@ -2888,6 +2986,15 @@ class D1GraspCoordinator(Node):
             candidate, 'pregrasp_point'
         )
         self._grasp_publisher.publish(accepted_pose)
+        if purpose == 'approach' and self._active.get('approach_feedforward'):
+            try:
+                self._apply_approach_feedforward(response.solution)
+            except (trajectory.TrajectoryError, ValueError, KeyError) as error:
+                self._finish_failure(
+                    'could not apply sag compensation to the approach: '
+                    '{}; no contact motion was executed'.format(error)
+                )
+                return
         self._execute_robot_trajectory(
             response.solution,
             purpose,
@@ -3151,14 +3258,36 @@ class D1GraspCoordinator(Node):
             return
         self._active['phase'] = 'executing_' + purpose
         self._active['trajectory_purpose'] = purpose
+        if purpose in ('pregrasp', 'reposition_pregrasp'):
+            # Commanded pre-grasp joints: the servos settle short of these
+            # under gravity, and the approach compensates for the difference.
+            self._active['pregrasp_commanded_joints'] = (
+                self._trajectory_endpoint(trajectory)
+            )
+            candidate = self._active.get('candidate') or {}
+            self._active['pregrasp_target_point'] = candidate.get(
+                'pregrasp_point'
+            )
+        elif purpose == 'align_pregrasp':
+            # An in-place rotation planned from the sagged pose; its endpoint
+            # is not a sag-free reference, so do not compensate from it.
+            self._active['pregrasp_commanded_joints'] = None
         if purpose == 'approach':
             # Retreat later returns to exactly where the approach starts,
             # a configuration the arm has just occupied without collision.
             self._active['retreat_joints'] = self._arm_joint_radians()
-            self._active['approach_final_joints'] = self._trajectory_endpoint(
-                trajectory
+            endpoint = self._trajectory_endpoint(trajectory)
+            feedforward = self._active.get('approach_feedforward')
+            if endpoint is not None and feedforward is not None:
+                # The executed path already carries the sag offset; keep the
+                # uncompensated endpoint as the target the correction checks.
+                endpoint = [value - extra
+                            for value, extra in zip(endpoint, feedforward)]
+            self._active['approach_final_joints'] = endpoint
+            self._active['correction_offset'] = (
+                list(feedforward) if feedforward is not None
+                else [0.0] * len(D1_ARM_JOINT_NAMES)
             )
-            self._active['correction_offset'] = [0.0] * len(D1_ARM_JOINT_NAMES)
             self._active['correction_attempts'] = 0
         candidate = self._active.get('candidate')
         self._grasp_log('ARM MOVING ({}) with {}'.format(
@@ -3221,6 +3350,8 @@ class D1GraspCoordinator(Node):
                 )
             )
             return
+        if purpose in ('pregrasp', 'reposition_pregrasp'):
+            self._active['pregrasp_completed_at'] = self._now_seconds()
         if purpose == 'pregrasp':
             self._begin_reacquisition()
         elif purpose in ('reposition_pregrasp', 'align_pregrasp'):
@@ -4078,6 +4209,17 @@ class D1GraspCoordinator(Node):
         self._grasp_log('FOUND {}: reachable after checking {} option(s); '
                         'planning to its checked pre-grasp joint angles'.format(
                             self._grasp_kind(candidate), result['checked']))
+        taught_center = candidate['template'].get('taught_object_center')
+        if taught_center is not None:
+            now_center = self._active['object_point']
+            self._grasp_log(
+                'mapped object center is dx {:+.1f} dy {:+.1f} dz {:+.1f} cm '
+                'from where it was when this grasp was taught (if the object '
+                'is back in the same spot, dz shows perception height '
+                'drift)'.format(*(100.0 * (n - t) for n, t in zip(
+                    now_center, taught_center
+                )))
+            )
         self._publish_active_stage(
             GraspStatus.STAGE_PLANNING,
             'taught grasp {} is reachable (rotated {:+.0f} deg about the '

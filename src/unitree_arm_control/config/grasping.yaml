@@ -96,10 +96,13 @@ d1_grasp_coordinator:
     # a faster approach; lower if the gripper sags below the line on the way in.
     cartesian_velocity_scaling: 0.05
     cartesian_acceleration_scaling: 0.05
-    # After the final approach, the servos settle short of the target (mostly
-    # low, under gravity) by up to the controller's goal tolerance. If the
-    # gripper is farther than the threshold, re-send the approach endpoint
-    # offset by the measured joint error (each joint at most max_offset).
+    # The servos settle short of commanded angles under gravity (up to the
+    # controller's goal tolerance), so the gripper sits low. At pre-grasp the
+    # measured joint shortfall is added to the whole approach path, which is
+    # planned from the intended pre-grasp, so the gripper moves in on the
+    # intended line. After the approach, if the gripper is still farther than
+    # the threshold from the target, the endpoint is re-sent with a refined
+    # offset. Each joint's offset is at most max_offset.
     approach_correction_enabled: true
     approach_correction_threshold_m: 0.004
     approach_correction_max_offset_rad: 0.02

@@ -703,7 +703,12 @@ the horizontal position, and the log reports how far it differed. Straight
 moves (final approach, wrist alignment) are retimed by the coordinator at
 `cartesian_velocity_scaling` because Foxy's Cartesian service times them at
 full joint speed. When the approach finishes, the log reports the gripper's
-distance from the grasp target. If that is more than
+distance from the grasp target. Servo sag is compensated before contact: at
+pre-grasp the coordinator measures each joint's shortfall from its commanded
+angle, plans the straight approach from the intended (sag-free) pre-grasp, and
+adds that shortfall to every point of the approach, after a short lead-in that
+lifts the gripper onto the line. Otherwise the approach would start low and sag
+again on the way in. If the final distance is still more than
 `approach_correction_threshold_m` (4 mm), the coordinator corrects for servo
 sag before closing: it re-sends the approach endpoint offset by the measured
 joint error (at most `approach_correction_max_offset_rad` per joint, up to
@@ -726,7 +731,10 @@ coordinator was launched with a different `grasp_templates_path`.
 Capturing contact now also runs this check for the captured grasp, and `save`
 refuses until it passes ("still checking" for a moment, or the reason it
 failed). Saved grasps record the contact joint angles (`contact_joints`);
-grasps saved earlier still work without them.
+grasps saved earlier still work without them. Saved grasps also record where
+the object center was when they were taught (`taught_object_center`); at grasp
+time the log reports how far today's mapped center is from it, so a height
+difference with the object back in the same spot shows perception drift.
 
 No additional Python or system package is required beyond the existing ROS 2
 dependencies. The new `unitree_arm/srv` interfaces require rebuilding

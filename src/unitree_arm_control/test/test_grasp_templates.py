@@ -261,3 +261,12 @@ def test_cli_lists_and_removes_without_ros(tmp_path):
         assert grasp_teach.main(['remove', 'cup', 'side', '--path', str(path)]) == 1
     assert 'no grasp named side' in err.getvalue()
     assert list(grasp_templates.GraspTemplateLibrary(str(path)).classes) == ['mug']
+
+
+def test_optional_taught_object_center_is_validated():
+    template = _demonstration()
+    template['taught_object_center'] = [0.5, 0.0, 0.1]
+    grasp_templates.validate_template(template)
+    template['taught_object_center'] = [0.5, 0.0]
+    with pytest.raises(ValueError, match='taught_object_center'):
+        grasp_templates.validate_template(template)

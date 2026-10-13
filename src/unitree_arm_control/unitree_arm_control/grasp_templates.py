@@ -178,6 +178,11 @@ def validate_template(template):
         raise ValueError('recorded gripper opening must be positive and finite')
     if not isinstance(template.get('enabled', True), bool):
         raise ValueError('template enabled must be boolean')
+    if template.get('taught_object_center') is not None:
+        # Object center (planning frame) when the grasp was taught; used only
+        # to report perception drift.
+        _finite_tuple(template['taught_object_center'], 3,
+                      'taught_object_center')
     if template.get('contact_joints') is not None:
         # Arm joint angles (radians, J0-J5) recorded at the demonstrated
         # contact. Optional: older templates do not have them.
