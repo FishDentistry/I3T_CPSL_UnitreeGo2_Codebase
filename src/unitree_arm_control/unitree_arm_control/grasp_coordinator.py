@@ -1224,6 +1224,31 @@ class D1GraspCoordinator(Node):
             )
         return None
 
+    def _band_alignment_target(self, candidate, orientation):
+        if candidate['band_width'] is None:
+            return None
+        if self._band_pointing_problem(candidate, orientation) is not None:
+            # Position-only transit may reach the band with an arbitrary tool
+            # heading. Rotate at pre-grasp to the measured approach direction,
+            # choosing the nearer of the two level-jaw wrist rolls.
+            options = (
+                grasping.quaternion_from_approach(
+                    candidate['approach_direction']
+                ),
+                grasping.quaternion_from_approach(
+                    candidate['approach_direction'], math.pi
+                ),
+            )
+            return min(
+                options,
+                key=lambda option: grasping.quaternion_angular_distance(
+                    option, orientation
+                ),
+            )
+        if self._band_alignment_problem(candidate, orientation) is not None:
+            return grasping.level_gripper_opening(orientation)
+        return None
+
     def _start_next_pregrasp_candidate(self):
         if self._active is None:
             return
@@ -1558,24 +1583,15 @@ class D1GraspCoordinator(Node):
         candidate['orientation'] = tuple(value / norm for value in values)
         self._active['candidate'] = candidate
         self._active['pregrasp_pose'] = predicted_pose
-        pointing_problem = self._band_pointing_problem(
+        requested = self._band_alignment_target(
             candidate, candidate['orientation']
         )
-        if pointing_problem is not None:
-            self._preflight_failure(pointing_problem)
-            return
-        alignment_problem = self._band_alignment_problem(
-            candidate, candidate['orientation']
-        )
-        if alignment_problem is not None:
+        if requested is not None:
             # The transit plan may reach a safe pre-grasp with the wrist not
-            # yet aligned. Validate a separate rotation there before checking
-            # the straight contact segment; do not demand exact orientation
-            # of the long transit plan.
+            # yet pointing at the band or with the jaws not level. Validate a
+            # separate rotation there before checking the straight contact
+            # segment; do not demand exact orientation of the transit plan.
             aligned_pose = copy.deepcopy(predicted_pose)
-            requested = grasping.level_gripper_opening(
-                candidate['orientation']
-            )
             aligned_pose.pose.orientation.x = requested[0]
             aligned_pose.pose.orientation.y = requested[1]
             aligned_pose.pose.orientation.z = requested[2]
@@ -1824,35 +1840,26 @@ class D1GraspCoordinator(Node):
     def _align_or_approach_from_pregrasp(
             self, actual_pregrasp, achieved_orientation, message):
         candidate = self._active['candidate']
-        pointing_problem = self._band_pointing_problem(
-            candidate, achieved_orientation
-        )
-        if pointing_problem is not None:
-            self._finish_failure(
-                pointing_problem + '; no contact motion was executed'
-            )
-            return
         if candidate['band_width'] is not None:
             # The reached pose, not the nominal pre-grasp goal, starts both
             # the in-place wrist adjustment and band-contact approach.
             self._active['pregrasp_pose'] = self._target_pose(
                 actual_pregrasp, achieved_orientation
             )
-        alignment_problem = self._band_alignment_problem(
+        requested = self._band_alignment_target(
             candidate, achieved_orientation
         )
-        if alignment_problem is not None:
+        if requested is not None:
             alignment_pose = self._target_pose(
-                actual_pregrasp,
-                grasping.level_gripper_opening(achieved_orientation),
+                actual_pregrasp, requested,
             )
             self._active['cartesian_start_state'] = None
             self._active['cartesian_best_fraction'] = 0.0
             self._request_cartesian_path(
                 alignment_pose, 'align_pregrasp',
                 GraspStatus.STAGE_APPROACHING,
-                'aligning the open gripper at pre-grasp before the straight '
-                'band approach',
+                'aligning the open gripper with the measured band at '
+                'pre-grasp before the straight approach',
             )
             return
         candidate = dict(candidate)
@@ -2558,8 +2565,14 @@ class D1GraspCoordinator(Node):
                 actual_wrist = self._wrist_point_for_line_check(
                     actual_pregrasp, achieved_orientation,
                 )
+                alignment_orientation = (
+                    self._active['cartesian_probe_pose'].pose.orientation
+                )
                 target_wrist = self._wrist_point_for_line_check(
-                    candidate['pregrasp_point'], candidate['orientation'],
+                    candidate['pregrasp_point'], (
+                        alignment_orientation.x, alignment_orientation.y,
+                        alignment_orientation.z, alignment_orientation.w,
+                    ),
                 )
                 line_error = grasping.approach_line_error(
                     actual_wrist, target_wrist,
@@ -2581,6 +2594,15 @@ class D1GraspCoordinator(Node):
                     'contact motion was executed'.format(
                         line_error, alignment_limit
                     )
+                )
+                return
+            pointing_problem = self._band_pointing_problem(
+                candidate, achieved_orientation
+            )
+            if pointing_problem is not None:
+                self._finish_failure(
+                    'wrist alignment did not reach the band approach: '
+                    + pointing_problem + '; no contact motion was executed'
                 )
                 return
             alignment_problem = self._band_alignment_problem(
