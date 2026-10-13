@@ -1614,6 +1614,27 @@ class D1GraspCoordinator(Node):
             ),
             pose,
         )
+        orientation_options = None
+        if candidate.get('taught'):
+            orientation_tolerance = self._taught_orientation_tolerance_rad
+        elif candidate['band_width'] is not None:
+            # Plan the transit to arrive already pointing along the band
+            # approach with level jaws (either wrist roll). A position-only
+            # goal let the random planner end at an arbitrary wrist heading,
+            # and the large in-place rotation needed afterwards usually had no
+            # complete Cartesian path, so band candidates failed or succeeded
+            # by chance from run to run.
+            orientation_tolerance = self._band_alignment_tolerance_rad
+            orientation_options = (
+                grasping.quaternion_from_approach(
+                    candidate['approach_direction']
+                ),
+                grasping.quaternion_from_approach(
+                    candidate['approach_direction'], math.pi
+                ),
+            )
+        else:
+            orientation_tolerance = self._grasp_orientation_tolerance_rad
         future = self._move_group.send_goal_async(
             self._move_group_goal(
                 pose,
@@ -1621,13 +1642,8 @@ class D1GraspCoordinator(Node):
                     self._band_pregrasp_position_tolerance_m
                     if self._fixed_approach(candidate) else None
                 ),
-                orientation_tolerance=(
-                    self._taught_orientation_tolerance_rad
-                    if candidate.get('taught') else (
-                        None if candidate['band_width'] is not None
-                        else self._grasp_orientation_tolerance_rad
-                    )
-                ),
+                orientation_tolerance=orientation_tolerance,
+                orientation_options=orientation_options,
             ),
             feedback_callback=lambda message, token=self._active['token']:
                 self._move_group_feedback(message, token),
@@ -1640,7 +1656,8 @@ class D1GraspCoordinator(Node):
 
     def _move_group_goal(
             self, target_pose, position_tolerance=None,
-            orientation_tolerance=None, path_constraints=None):
+            orientation_tolerance=None, path_constraints=None,
+            orientation_options=None):
         if position_tolerance is None:
             position_tolerance = self._position_tolerance_m
         primitive = SolidPrimitive()
@@ -1657,29 +1674,45 @@ class D1GraspCoordinator(Node):
         position.constraint_region.primitive_poses = [region_pose]
         position.weight = 1.0
 
-        constraints = Constraints()
-        constraints.name = (
-            'semantic_pose_target'
-            if orientation_tolerance is not None
-            else 'semantic_position_target'
-        )
-        constraints.position_constraints = [position]
-        if orientation_tolerance is not None:
-            orientation = OrientationConstraint()
-            orientation.header = copy.deepcopy(target_pose.header)
-            orientation.link_name = self._tip_link
-            orientation.orientation = copy.deepcopy(
-                target_pose.pose.orientation
+        if orientation_tolerance is None:
+            quaternions = (None,)
+        elif orientation_options:
+            quaternions = tuple(orientation_options)
+        else:
+            quaternions = ((
+                target_pose.pose.orientation.x,
+                target_pose.pose.orientation.y,
+                target_pose.pose.orientation.z,
+                target_pose.pose.orientation.w,
+            ),)
+        goal_constraints = []
+        # MoveIt treats several goal constraint sets as alternatives.
+        for quaternion in quaternions:
+            constraints = Constraints()
+            constraints.name = (
+                'semantic_pose_target'
+                if quaternion is not None
+                else 'semantic_position_target'
             )
-            orientation.absolute_x_axis_tolerance = orientation_tolerance
-            orientation.absolute_y_axis_tolerance = orientation_tolerance
-            orientation.absolute_z_axis_tolerance = orientation_tolerance
-            orientation.weight = 1.0
-            constraints.orientation_constraints = [orientation]
+            constraints.position_constraints = [copy.deepcopy(position)]
+            if quaternion is not None:
+                orientation = OrientationConstraint()
+                orientation.header = copy.deepcopy(target_pose.header)
+                orientation.link_name = self._tip_link
+                orientation.orientation.x = float(quaternion[0])
+                orientation.orientation.y = float(quaternion[1])
+                orientation.orientation.z = float(quaternion[2])
+                orientation.orientation.w = float(quaternion[3])
+                orientation.absolute_x_axis_tolerance = orientation_tolerance
+                orientation.absolute_y_axis_tolerance = orientation_tolerance
+                orientation.absolute_z_axis_tolerance = orientation_tolerance
+                orientation.weight = 1.0
+                constraints.orientation_constraints = [orientation]
+            goal_constraints.append(constraints)
 
         goal = MoveGroup.Goal()
         goal.request.start_state.is_diff = True
-        goal.request.goal_constraints = [constraints]
+        goal.request.goal_constraints = goal_constraints
         goal.request.pipeline_id = ''
         goal.request.planner_id = self._planner_id
         goal.request.group_name = self._planning_group
@@ -1980,6 +2013,12 @@ class D1GraspCoordinator(Node):
             'Approach candidate {} ({}) failed: {}'.format(
                 self._active['candidate_index'] + 1, band_label, reason
             )
+        )
+        self._publish_active_stage(
+            GraspStatus.STAGE_PLANNING,
+            'candidate {} ({}) rejected: {}'.format(
+                self._active['candidate_index'] + 1, band_label, reason
+            ),
         )
         self._active['candidate_index'] += 1
         self._start_next_pregrasp_candidate()
