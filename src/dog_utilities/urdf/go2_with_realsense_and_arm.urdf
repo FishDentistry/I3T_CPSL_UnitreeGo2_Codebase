@@ -127,9 +127,12 @@ Stephen Brawner (brawner@gmail.com)
       </material>
     </visual>
     <collision>
+      <!-- Sized to the face camera (visual is 0.01 m) with ~1 cm margin. The
+           previous 0.05 x 0.09 m cylinder duplicated Head_upper and projected
+           several cm past the face, falsely blocking reachable approaches. -->
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <cylinder radius="0.05" length="0.09" />
+        <cylinder radius="0.02" length="0.03" />
       </geometry>
     </collision>
   </link>
