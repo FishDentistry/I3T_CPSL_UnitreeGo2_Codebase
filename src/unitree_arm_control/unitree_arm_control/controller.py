@@ -69,7 +69,7 @@ class D1ArmController(Node):
         self.declare_parameter('feedback_topic', '/arm_Feedback')
         self.declare_parameter('joint_states_topic', '/joint_states')
         self.declare_parameter('gripper_closed_degrees', 0.0)
-        self.declare_parameter('gripper_open_degrees', 49.0)
+        self.declare_parameter('gripper_open_degrees', 65.0)
         self.declare_parameter('gripper_max_travel_m', 0.03)
         self.declare_parameter('commanding_enabled', False)
         self.declare_parameter('require_fresh_feedback', True)
@@ -107,6 +107,9 @@ class D1ArmController(Node):
         self._last_joint_feedback_time = None
         self._latest_joint_positions = None
         self._latest_angles_degrees = None
+        # Last gripper (J6) command sent through set_joint; held during arm
+        # trajectories so a grasped object stays squeezed.
+        self._commanded_gripper_degrees = None
         self._pending_commands = {}
         self._feedback_warning_active = False
         self._lay_down_operation = None
@@ -471,10 +474,7 @@ class D1ArmController(Node):
             start_positions = tuple(self._latest_joint_positions)
             held_gripper_degrees = None
             if 'd1_gripper_joint' not in names:
-                held_gripper_degrees = min(
-                    self._latest_angles_degrees[6],
-                    protocol.GRIPPER_MAX_COMMAND_DEGREES,
-                )
+                held_gripper_degrees = self._held_gripper_degrees()
             waypoints = tuple(
                 trajectory.expand_positions(
                     names,
@@ -649,10 +649,9 @@ class D1ArmController(Node):
             return
         try:
             angles = list(self._latest_angles_degrees)
-            # Feedback may overshoot the command ceiling slightly. Keep the
-            # measured arm pose, but never turn that overshoot into a J6
-            # command above the ceiling.
-            angles[6] = min(angles[6], protocol.GRIPPER_MAX_COMMAND_DEGREES)
+            # Keep the measured arm pose. For J6 keep the last gripper command
+            # (so a held object stays squeezed), capped at the ceiling.
+            angles[6] = self._held_gripper_degrees()
             sequence = self._sequences.next()
             payload = protocol.set_joint_angles_command(
                 sequence,
@@ -898,9 +897,22 @@ class D1ArmController(Node):
             payload, sequence, description, response
         )
 
+    def _held_gripper_degrees(self):
+        """Gripper angle to keep sending while the arm moves.
+
+        Hold the last gripper command, not the measured angle: with the jaws
+        stalled on an object, commanding the measured angle removes the
+        squeeze and the object can slip during a lift. Before any gripper
+        command, fall back to the measured angle as before.
+        """
+        target = self._commanded_gripper_degrees
+        if target is None:
+            target = self._latest_angles_degrees[6]
+        return min(target, protocol.GRIPPER_MAX_COMMAND_DEGREES)
+
     def _set_joint_callback(self, request, response):
         enforce_limits = self._bool_parameter('enforce_joint_limits')
-        return self._build_and_publish(
+        response = self._build_and_publish(
             lambda sequence: protocol.set_joint_command(
                 sequence,
                 request.joint_id,
@@ -910,6 +922,9 @@ class D1ArmController(Node):
             'set joint {}'.format(request.joint_id),
             response,
         )
+        if response.published and int(request.joint_id) == 6:
+            self._commanded_gripper_degrees = float(request.angle_degrees)
+        return response
 
     def _set_joint_angles_callback(self, request, response):
         enforce_limits = self._bool_parameter('enforce_joint_limits')

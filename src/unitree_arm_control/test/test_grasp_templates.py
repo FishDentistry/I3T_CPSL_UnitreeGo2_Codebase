@@ -138,6 +138,34 @@ def test_angled_and_top_down_contacts_are_accepted():
         grasp_templates.validate_template(_template_with(pregrasp, contact))
 
 
+def test_contact_off_center_or_slightly_past_it_is_accepted():
+    reference = grasp_templates.object_reference(
+        (0.50, 0.0, 0.10), (0.0, 0.0, 0.0)
+    )
+    cases = (
+        # Top-down on a rim 4 cm beside the center, pre-grasp 3 cm above.
+        ((0.50, 0.04, 0.10), (0.0, 0.0, -1.0), 0.03),
+        # Side grasp whose tool point is 2 cm past the detected center.
+        ((0.52, 0.0, 0.10), (1.0, 0.0, 0.0), 0.04),
+        # Top-down leaning 15 degrees back toward the arm.
+        ((0.50, 0.0, 0.11), (-0.27, 0.0, -1.0), 0.06),
+    )
+    for point, approach, standoff in cases:
+        contact = _contact(reference, point, approach)
+        pregrasp, _ = grasp_templates.straight_pregrasp(contact, standoff)
+        grasp_templates.validate_template(_template_with(pregrasp, contact))
+
+
+def test_approach_ending_far_past_the_center_is_rejected():
+    reference = grasp_templates.object_reference(
+        (0.50, 0.0, 0.10), (0.0, 0.0, 0.0)
+    )
+    contact = _contact(reference, (0.56, 0.0, 0.10), (1.0, 0.0, 0.0))
+    pregrasp, _ = grasp_templates.straight_pregrasp(contact, 0.04)
+    with pytest.raises(ValueError, match='past the center'):
+        grasp_templates.validate_template(_template_with(pregrasp, contact))
+
+
 def test_approach_back_toward_arm_is_rejected():
     reference = grasp_templates.object_reference(
         (0.50, 0.0, 0.10), (0.0, 0.0, 0.0)
@@ -269,4 +297,15 @@ def test_optional_taught_object_center_is_validated():
     grasp_templates.validate_template(template)
     template['taught_object_center'] = [0.5, 0.0]
     with pytest.raises(ValueError, match='taught_object_center'):
+        grasp_templates.validate_template(template)
+
+
+def test_snug_jaw_reading_is_accepted_but_must_be_finite():
+    # Jaws snug on a thin object can read zero or slightly negative.
+    template = _demonstration()
+    for value in (0.0, -0.4, 3.0):
+        template['gripper_open_degrees'] = value
+        grasp_templates.validate_template(template)
+    template['gripper_open_degrees'] = float('nan')
+    with pytest.raises(ValueError, match='finite'):
         grasp_templates.validate_template(template)

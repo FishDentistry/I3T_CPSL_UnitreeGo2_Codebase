@@ -54,9 +54,12 @@ JOINT_LIMITS_DEGREES = (
     None,
 )
 
-# Application-side opening ceiling for the mounted D1 gripper. This is not a
-# mechanical limit; powered opening has been observed to stop near 50 degrees.
-GRIPPER_MAX_COMMAND_DEGREES = 50.0
+# Application-side opening ceiling for the mounted D1 gripper. With the arm
+# released, the jaws pushed fully open by hand read 66.4 degrees (mechanical
+# stop), and a powered 49-degree command was reached exactly, so the old
+# 50-degree ceiling left the jaws short of fully open. Stay just under the stop
+# so the servo is never commanded to push into it.
+GRIPPER_MAX_COMMAND_DEGREES = 66.0
 
 
 class ProtocolError(ValueError):
@@ -154,7 +157,7 @@ def _require_number(value, field_name):
 def joint_state_positions_from_degrees(
         angles_degrees,
         gripper_closed_degrees=0.0,
-        gripper_open_degrees=49.0,
+        gripper_open_degrees=65.0,
         gripper_max_travel_m=0.03):
     """Convert D1 feedback to URDF joint positions.
 
@@ -198,7 +201,7 @@ def joint_state_positions_from_degrees(
 def d1_degrees_from_joint_state_positions(
         joint_positions,
         gripper_closed_degrees=0.0,
-        gripper_open_degrees=49.0,
+        gripper_open_degrees=65.0,
         gripper_max_travel_m=0.03):
     """Convert URDF joint positions to the seven D1 command values.
 

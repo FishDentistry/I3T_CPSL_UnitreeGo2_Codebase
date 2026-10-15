@@ -162,20 +162,46 @@ def validate_template(template):
     if not 0.02 <= distance <= 0.25:
         raise ValueError('contact must be 2-25 cm from pre-grasp')
     # The approach may come from the side, at an angle, or from above, but it
-    # must close on the object and must not reach back toward the arm mount.
-    if (grasping.distance_from_origin(pre_point)
-            - grasping.distance_from_origin(contact_point)) < 0.01:
-        raise ValueError('the approach must move toward the object center')
-    if delta[0] < -0.01:
-        raise ValueError('the approach must not move back toward the arm')
+    # must close on the object: starting at the pre-grasp, moving along the
+    # approach must bring the gripper nearer the object center. The contact
+    # itself may sit to the side of the detected center (a rim or handle, or
+    # a detection a few cm off) or slightly past it (the detected center lies
+    # on the visible surface, the tool point between the fingertips). An
+    # earlier check compared straight-line distances, which rejected those
+    # reasonable grasps whenever the contact was a few cm off the center.
+    direction = tuple(value / distance for value in delta)
+    closing = -sum(p * d for p, d in zip(pre_point, direction))
+    if closing < 0.01:
+        beyond = sum(c * d for c, d in zip(contact_point, direction))
+        raise ValueError(
+            'the approach must move toward the object center: the contact is '
+            '{:.1f} cm past the center along the gripper axis, which leaves '
+            'only {:.1f} cm of the {:.1f} cm approach moving toward it'.format(
+                100.0 * beyond, 100.0 * closing, 100.0 * distance
+            )
+        )
+    # X points from the arm mount toward the object. A hand-taught top-down
+    # grasp is rarely exactly vertical, so allow the approach to lean back
+    # toward the arm by up to 30 degrees.
+    if direction[0] < -0.5:
+        raise ValueError(
+            'the approach must not move back toward the arm (it leans '
+            '{:.0f} degrees back; at most 30 is allowed)'.format(
+                math.degrees(math.asin(min(1.0, -direction[0])))
+            )
+        )
     if grasping.approach_axis_error(pre['orientation'], delta) > 0.35:
         raise ValueError('gripper forward axis must face the contact point')
     if grasping.quaternion_angular_distance(
             pre['orientation'], contact['orientation']) > 0.10:
         raise ValueError('pre-grasp and contact wrist orientations differ')
+    # Recorded jaw angle at the demonstration. It is metadata only (replay
+    # always opens to the configured gripper_open_degrees), and the feedback
+    # can read zero or slightly negative with the jaws snug on a thin object,
+    # so only require a finite number.
     open_angle = float(template['gripper_open_degrees'])
-    if not math.isfinite(open_angle) or open_angle <= 0.0:
-        raise ValueError('recorded gripper opening must be positive and finite')
+    if not math.isfinite(open_angle):
+        raise ValueError('recorded gripper opening must be finite')
     if not isinstance(template.get('enabled', True), bool):
         raise ValueError('template enabled must be boolean')
     if template.get('taught_object_center') is not None:

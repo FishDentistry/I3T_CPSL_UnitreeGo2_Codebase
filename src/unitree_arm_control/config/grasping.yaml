@@ -116,8 +116,9 @@ d1_grasp_coordinator:
 
     # Recheck the target after the pre-grasp before planning the final motion.
     fresh_detection_age_sec: 5.0
-    # Select depth-supported horizontal bands when available. The configured
-    # ceiling matches the approximate measured 49-degree jaw opening.
+    # Select depth-supported horizontal bands when available. The width limit
+    # was set from the jaw gap at the old 49-degree opening; the jaws now open
+    # to 65 degrees, so it is conservative.
     use_grasp_band: true
     maximum_grasp_band_width_m: 0.07
     reacquire_timeout_sec: 10.0
@@ -137,7 +138,9 @@ d1_grasp_coordinator:
     # accepted when the command reaches closed, or when feedback stalls after
     # meaningful closure. Set require_grasp_obstruction true to require stall.
     gripper_joint_id: 6
-    gripper_open_degrees: 49.0
+    # Full opening: the hand-pushed mechanical stop reads 66.4 degrees. Must
+    # match the controller's gripper_open_degrees launch argument.
+    gripper_open_degrees: 65.0
     gripper_closed_degrees: 0.0
     gripper_tolerance_degrees: 2.0
     minimum_gripper_closure_degrees: 3.0
@@ -146,3 +149,11 @@ d1_grasp_coordinator:
     gripper_operation_timeout_sec: 8.0
     require_grasp_obstruction: false
     hold_duration_sec: 3.0
+    # Lift test after the hold: raise the held object straight up, hold it,
+    # report whether the jaws closed further (object dropped), then release
+    # (while raised, or back at the grasp height if lower_before_release).
+    lift_test_enabled: true
+    lift_height_m: 0.03
+    lift_hold_sec: 2.0
+    lift_lower_before_release: false
+    lift_slip_degrees: 2.0

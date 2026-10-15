@@ -329,6 +329,13 @@ class D1GraspCoordinator(Node):
         # object): stop there, correct onto the line, then make the last leg
         # with the offset measured while moving inward. 0 disables the split.
         self.declare_parameter('approach_checkpoint_m', 0.05)
+        # Lift test after the hold: raise the gripper straight up, hold, check
+        # the jaws did not close further (object dropped), then release.
+        self.declare_parameter('lift_test_enabled', True)
+        self.declare_parameter('lift_height_m', 0.03)
+        self.declare_parameter('lift_hold_sec', 2.0)
+        self.declare_parameter('lift_lower_before_release', False)
+        self.declare_parameter('lift_slip_degrees', 2.0)
 
         self.declare_parameter('planning_time_sec', 5.0)
         self.declare_parameter('planning_attempts', 5)
@@ -354,7 +361,7 @@ class D1GraspCoordinator(Node):
         self.declare_parameter('cartesian_acceleration_scaling', 0.05)
 
         self.declare_parameter('gripper_joint_id', 6)
-        self.declare_parameter('gripper_open_degrees', 49.0)
+        self.declare_parameter('gripper_open_degrees', 65.0)
         self.declare_parameter('gripper_closed_degrees', 0.0)
         self.declare_parameter('gripper_tolerance_degrees', 2.0)
         self.declare_parameter('minimum_gripper_closure_degrees', 3.0)
@@ -386,6 +393,7 @@ class D1GraspCoordinator(Node):
         bool_names = (
             'execution_enabled', 'require_grasp_obstruction',
             'approach_correction_enabled',
+            'lift_test_enabled', 'lift_lower_before_release',
             'use_grasp_band',
             'lay_down_raise_enabled',
         )
@@ -416,6 +424,7 @@ class D1GraspCoordinator(Node):
             'approach_correction_max_offset_rad',
             'approach_correction_move_sec', 'approach_correction_settle_sec',
             'approach_checkpoint_m',
+            'lift_height_m', 'lift_hold_sec', 'lift_slip_degrees',
             'planning_time_sec', 'velocity_scaling',
             'acceleration_scaling', 'fresh_detection_age_sec',
             'maximum_grasp_band_width_m',
@@ -573,7 +582,10 @@ class D1GraspCoordinator(Node):
                 or self._approach_correction_attempts < 0
                 or self._approach_correction_move_sec <= 0.0
                 or self._approach_correction_settle_sec < 0.0
-                or not 0.0 <= self._approach_checkpoint_m <= 0.2):
+                or not 0.0 <= self._approach_checkpoint_m <= 0.2
+                or not 0.0 < self._lift_height_m <= 0.10
+                or self._lift_hold_sec < 0.0
+                or self._lift_slip_degrees <= 0.0):
             raise RuntimeError(
                 'approach correction parameters are invalid (max offset must '
                 'be in (0, 0.05] rad)'
@@ -2684,7 +2696,8 @@ class D1GraspCoordinator(Node):
             return [copy.deepcopy(pose.pose)] if pose is not None else []
         start = copy.deepcopy(start_pose.pose)
         target = copy.deepcopy(pose.pose)
-        if purpose in {'align_pregrasp', 'alignment_preflight'}:
+        if (purpose in {'align_pregrasp', 'alignment_preflight'}
+                or purpose in {'lift', 'lower'}):
             # The request start_state already supplies the current pose. An
             # explicit start waypoint can produce duplicate zero-time points
             # when MoveIt time-parameterizes an in-place wrist rotation.
@@ -2917,6 +2930,18 @@ class D1GraspCoordinator(Node):
             return
 
         accepted_pose = self._active['cartesian_probe_pose']
+        if purpose in ('lift', 'lower'):
+            self._execute_robot_trajectory(
+                response.solution, purpose,
+                GraspStatus.STAGE_HOLDING if purpose == 'lift'
+                else GraspStatus.STAGE_RELEASING,
+                'lifting the object {:.1f} cm'.format(
+                    100.0 * self._lift_height_m
+                ) if purpose == 'lift' else
+                'lowering the object back before releasing',
+                accepted_pose,
+            )
+            return
         if purpose == 'alignment_preflight':
             try:
                 aligned_state = grasping.trajectory_endpoint_state(
@@ -3079,6 +3104,15 @@ class D1GraspCoordinator(Node):
         return True
 
     def _cartesian_path_failure(self, purpose, description):
+        if purpose in ('lift', 'lower'):
+            self._grasp_log('{} skipped: {}; releasing where the gripper '
+                            'is'.format(purpose, description), 'warn')
+            if purpose == 'lift':
+                self._active['lift_result'] = 'not lifted ({})'.format(
+                    description
+                )
+            self._release_object('{} could not be planned'.format(purpose))
+            return
         if purpose == 'alignment_preflight':
             self._preflight_failure(
                 'no complete wrist alignment at planned pre-grasp; '
@@ -3422,11 +3456,26 @@ class D1GraspCoordinator(Node):
         elif purpose in ('approach', 'approach_checkpoint'):
             # Measure only after feedback from the finished move has arrived.
             self._settle_correction()
+        elif purpose == 'lift':
+            self._active['phase'] = 'holding_lifted'
+            self._active['deadline'] = self._now_seconds() + self._lift_hold_sec
+            self._grasp_log('lifted {:.1f} cm; holding for {:.1f}s'.format(
+                100.0 * self._lift_height_m, self._lift_hold_sec
+            ))
+            self._publish_active_stage(
+                GraspStatus.STAGE_HOLDING,
+                'object lifted {:.1f} cm; holding for {:.1f}s'.format(
+                    100.0 * self._lift_height_m, self._lift_hold_sec
+                ),
+            )
+        elif purpose == 'lower':
+            self._release_object('lowered back to the grasp height')
         else:
+            lift = self._active.get('lift_result')
             self._finish_success(
                 GraspStatus.STAGE_RELEASED,
-                'object released and the arm retreated to pre-grasp; no lift '
-                'was attempted',
+                'object released and the arm retreated to pre-grasp; '
+                + ('lift test: ' + lift if lift else 'no lift was attempted'),
             )
 
     @staticmethod
@@ -3859,12 +3908,13 @@ class D1GraspCoordinator(Node):
             self._update_gripper_operation(phase, now)
             return
         if phase == 'holding' and now >= self._active['deadline']:
-            self._command_gripper(
-                self._gripper_open_degrees,
-                'wait_open_before_retreat',
-                GraspStatus.STAGE_RELEASING,
-                'hold complete; opening the gripper to release the object',
-            )
+            if self._lift_test_enabled:
+                self._start_lift()
+            else:
+                self._release_object('hold complete')
+            return
+        if phase == 'holding_lifted' and now >= self._active['deadline']:
+            self._finish_lift_hold()
 
     def _update_gripper_operation(self, phase, now):
         if now > self._active['deadline']:
@@ -3963,13 +4013,87 @@ class D1GraspCoordinator(Node):
         self._active['deadline'] = (
             self._now_seconds() + self._hold_duration_sec
         )
+        self._active['grasp_gripper_angle'] = self._latest_gripper_angle
+        self._active['grasp_detail'] = detail
+        self._active['lift_result'] = None
         self._publish_active_stage(
             GraspStatus.STAGE_HOLDING,
-            '{}; holding for {:.1f}s without lifting'.format(
-                detail, self._hold_duration_sec
+            '{}; holding for {:.1f}s{}'.format(
+                detail, self._hold_duration_sec,
+                ' before the lift test' if self._lift_test_enabled
+                else ' without lifting',
             ),
             self._active['grasp_pose'],
         )
+
+    def _release_object(self, reason):
+        self._command_gripper(
+            self._gripper_open_degrees,
+            'wait_open_before_retreat',
+            GraspStatus.STAGE_RELEASING,
+            '{}; opening the gripper to release the object'.format(reason),
+        )
+
+    def _start_lift(self):
+        try:
+            transform = self._lookup_transform(
+                self._planning_frame, self._tip_link
+            )
+            here = self._point_tuple(transform.transform.translation)
+            orientation = self._current_tip_orientation()
+        except Exception as error:
+            self._active['lift_result'] = 'not lifted (could not read the ' \
+                'gripper pose: {})'.format(error)
+            self._release_object('lift skipped')
+            return
+        self._active['lift_start_point'] = here
+        self._active['lift_orientation'] = orientation
+        target = self._target_pose(
+            (here[0], here[1], here[2] + self._lift_height_m), orientation
+        )
+        self._grasp_log('lift test: raising the object {:.1f} cm'.format(
+            100.0 * self._lift_height_m
+        ))
+        self._active['cartesian_start_state'] = None
+        self._active['cartesian_best_fraction'] = 0.0
+        self._request_cartesian_path(
+            target, 'lift', GraspStatus.STAGE_HOLDING,
+            'planning a straight {:.1f} cm lift'.format(
+                100.0 * self._lift_height_m
+            ),
+        )
+
+    def _finish_lift_hold(self):
+        held = self._active.get('grasp_gripper_angle')
+        current = self._latest_gripper_angle
+        closed = self._gripper_closed_degrees
+        if held is None or current is None:
+            verdict = 'lifted; could not read the gripper to confirm the hold'
+        elif abs(held - closed) <= self._gripper_tolerance_degrees:
+            verdict = ('lifted; the jaws were already fully closed, so the '
+                       'gripper angle cannot show whether the object is held')
+        elif abs(current - closed) < abs(held - closed) - self._lift_slip_degrees:
+            verdict = ('LIKELY DROPPED: the jaws closed from {:.1f} to {:.1f} '
+                       'deg while lifted'.format(held, current))
+        else:
+            verdict = 'object held while lifted (jaws stayed at {:.1f} deg)'.format(
+                current
+            )
+        self._active['lift_result'] = verdict
+        self._grasp_log('lift test: ' + verdict,
+                        'warn' if verdict.startswith('LIKELY') else 'info')
+        if self._lift_lower_before_release and (
+                self._active.get('lift_start_point') is not None):
+            start = self._active['lift_start_point']
+            self._active['cartesian_start_state'] = None
+            self._active['cartesian_best_fraction'] = 0.0
+            self._request_cartesian_path(
+                self._target_pose(start, self._active['lift_orientation']),
+                'lower', GraspStatus.STAGE_RELEASING,
+                'lowering the object back before releasing',
+            )
+            return
+        self._release_object('lift test done')
 
     def _start_retreat(self):
         joints = self._active.get('retreat_joints')
@@ -4517,7 +4641,9 @@ class D1GraspCoordinator(Node):
         # delay or hide the original failure if this secondary call fails.
         if self._execution_enabled and active.get('phase') in (
                 'wait_close', 'holding', 'wait_open_before_retreat',
-                'computing_retreat', 'executing_retreat'):
+                'computing_retreat', 'executing_retreat', 'computing_lift',
+                'executing_lift', 'holding_lifted', 'computing_lower',
+                'executing_lower', 'planning_retreat'):
             request = SetJoint.Request()
             request.joint_id = self._gripper_joint_id
             request.angle_degrees = self._gripper_open_degrees
