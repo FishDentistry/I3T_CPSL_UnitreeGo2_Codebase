@@ -20,14 +20,14 @@ arm link transforms.
 
 J0 through J5 are converted from degrees to radians. The D1 documentation
 specifies the gripper stroke but not the J6 angle-to-stroke calibration, so
-J6 uses an adjustable linear mapping. The defaults map 0 to 65 degrees onto
+J6 uses an adjustable linear mapping. The defaults map 0 to 49 degrees onto
 0 to 0.03 metres of per-finger travel and clamp values outside that range.
 To use measured endpoints instead:
 
 ```bash
 ros2 launch unitree_arm_control d1_arm.launch.py \
   gripper_closed_degrees:=0.0 \
-  gripper_open_degrees:=65.0 \
+  gripper_open_degrees:=49.0 \
   gripper_max_travel_m:=0.03
 ```
 
@@ -46,8 +46,7 @@ recently. No command is published automatically at startup.
 
 Joints 0 through 5 are checked against the published D1-550 mechanical angle
 limits. Joint 6 (the gripper) is checked for a finite value and against the
-application-side 66-degree opening ceiling (just under the 66.4-degree
-mechanical stop measured with the jaws pushed open by hand); D1 variants do not expose a
+application-side 50-degree opening ceiling; D1 variants do not expose a
 consistent mechanical command range/unit for it.
 
 ## Build and verify on the robot workspace
@@ -541,8 +540,8 @@ original center; the semantic map position and stable object identity are
 unchanged. After pre-grasp, the final approach waits for a fresh observation
 of the band nearest the selected target rather than switching silently to the
 old center point. The installed configuration sets the width limit to `0.07`
-m, approximately the measured jaw opening at the old 49-degree opening
-command (the jaws now open to 65 degrees, so the limit is conservative); the node's parameter default is `0.06` m. This estimate is a
+m, approximately the measured jaw opening at the configured 49-degree
+command; the node's parameter default is `0.06` m. This estimate is a
 camera-visible width, not proof of jaw clearance or collision-free contact.
 When no reliable band is available before planning, the previous center-point
 behavior remains available. The depth-band calculation uses the existing
@@ -572,14 +571,12 @@ rejected before execution.
 `approach_corridor_radius_m` defines the half-width of the constrained MoveIt
 fallback used when that exact Cartesian segment is incomplete. Its default is
 `0.015` metres.
-The default opening command is 65 degrees. The controller and grasp
+The default opening command is 49 degrees. The controller and grasp
 coordinator use the same endpoint calibration, and arm wrapper commands
-reject J6 targets above 66 degrees. With the arm released, the jaws pushed
-fully open by hand read 66.4 degrees, so the ceiling keeps the servo from
-being commanded into the mechanical stop. (The earlier 49/50-degree values
-left a visible gap on each side of the open jaws.) If powered opening on your
-gripper stops short of 65 degrees, lower `gripper_open_degrees` in both
-`grasping.yaml` and the controller launch argument.
+reject J6 targets above 50 degrees. This is an application-side
+ceiling based on powered-operation observations, not a mechanical limit.
+The one-degree margin accommodates small feedback overshoot; it is not the
+default opening target.
 
 Grounding DINO provides a class, bounding box, depth-derived object center,
 and an optional estimated narrow band rather than an object mesh or complete
@@ -695,7 +692,7 @@ re-runs the same search from the reached pose and moves to the new joint
 angles (once). The retreat returns to the joint angles where the final approach
 started. Taught grasps are tried before generated candidates and are not
 filtered or repositioned by grasp-band width. The existing configured
-65-degree opening and closure sequence remains authoritative; the demonstrated
+49-degree opening and closure sequence remains authoritative; the demonstrated
 opening angle is recorded as metadata because no calibrated jaw-angle-to-gap
 model is available. Generated candidates and their optional band handling are
 unchanged.
