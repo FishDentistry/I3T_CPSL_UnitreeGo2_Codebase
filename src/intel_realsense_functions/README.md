@@ -26,6 +26,21 @@ Run the node with:
 ros2 run intel_realsense_functions getCameraFrames
 ```
 
+The image and camera-info timers use `timer_callback_period_sec`, which
+defaults to `0.1` seconds. Override it directly with ROS arguments:
+
+```bash
+ros2 run intel_realsense_functions getCameraFrames --ros-args \
+  -p timer_callback_period_sec:=0.2
+```
+
+When using the main dog launch file, pass the corresponding launch argument:
+
+```bash
+ros2 launch go2_launcher dog.launch.py \
+  realsense_timer_period_sec:=0.2
+```
+
 ### `groundingDinoNode`
 
 `groundingDinoNode` listens for text detection targets, applies Grounding DINO

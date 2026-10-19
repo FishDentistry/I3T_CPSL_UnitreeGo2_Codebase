@@ -5,6 +5,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.parameter_descriptions import ParameterValue
 import os
 
 def generate_launch_description():
@@ -20,6 +21,9 @@ def generate_launch_description():
     )
 
     collect_realsense = LaunchConfiguration('collect_realsense')
+    realsense_timer_period_sec = LaunchConfiguration(
+        'realsense_timer_period_sec'
+    )
     internal_board_ip = LaunchConfiguration('internal_board_ip')
     launch_arm = LaunchConfiguration('launch_arm')
     arm_command_enabled = LaunchConfiguration('arm_command_enabled')
@@ -51,6 +55,14 @@ def generate_launch_description():
     return LaunchDescription([
 
         DeclareLaunchArgument('collect_realsense', default_value='true'),
+
+        DeclareLaunchArgument(
+            'realsense_timer_period_sec',
+            default_value='0.1',
+            description=(
+                'Seconds between RealSense image and camera-info callbacks.'
+            )
+        ),
 
         DeclareLaunchArgument(
             'launch_arm',
@@ -187,6 +199,11 @@ def generate_launch_description():
             executable='getCameraFrames',
             name='get_intel_realsense_frames',
             output='screen',
+            parameters=[{
+                'timer_callback_period_sec': ParameterValue(
+                    realsense_timer_period_sec, value_type=float
+                )
+            }],
             condition=IfCondition(collect_realsense)
         ),
         Node(

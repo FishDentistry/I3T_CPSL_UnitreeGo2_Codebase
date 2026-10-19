@@ -1,5 +1,7 @@
 
 #!/usr/bin/env python3
+import math
+
 import rclpy
 from rclpy.node import Node
 
@@ -14,6 +16,15 @@ from rclpy.qos import QoSProfile, QoSDurabilityPolicy
 class GetCameraFrames(Node):
     def __init__(self):
         super().__init__('Get_camera_frames')
+
+        self.declare_parameter('timer_callback_period_sec', 0.1)
+        timer_period = float(
+            self.get_parameter('timer_callback_period_sec').value
+        )
+        if not math.isfinite(timer_period) or timer_period <= 0.0:
+            raise ValueError(
+                'timer_callback_period_sec must be finite and positive'
+            )
 
         # ---- CONFIG (use lower bandwidth defaults) ----
         self.color_w, self.color_h, self.color_fps = 640, 480, 15
@@ -59,8 +70,10 @@ class GetCameraFrames(Node):
         self.cam_info.distortion_model = 'none'
 
         # Timers
-        self.create_timer(0.1, lambda: self.camIntrPub.publish(self.cam_info))
-        self.create_timer(0.1, self.imagePubTimerCallback)
+        self.create_timer(
+            timer_period, lambda: self.camIntrPub.publish(self.cam_info)
+        )
+        self.create_timer(timer_period, self.imagePubTimerCallback)
 
         self.consecutive_timeouts = 0
 
