@@ -66,9 +66,26 @@ class EmbeddingBackend:
 class SpeechBrainBackend(EmbeddingBackend):
     name = 'speechbrain'
     SOURCE = 'speechbrain/spkrec-ecapa-voxceleb'
+    #: Files SpeechBrain needs for this model (its hyperparams.yaml loads the
+    #: other four). Once all are in the model directory, no download is needed.
+    MODEL_FILES = ('hyperparams.yaml', 'embedding_model.ckpt',
+                   'mean_var_norm_emb.ckpt', 'classifier.ckpt',
+                   'label_encoder.txt')
+
+    @classmethod
+    def is_downloaded(cls, model_dir: str) -> bool:
+        return all(os.path.isfile(os.path.join(model_dir, name))
+                   for name in cls.MODEL_FILES)
 
     def __init__(self, model_dir: Optional[str] = None,
                  device: str = 'cpu') -> None:
+        model_dir = model_dir or os.path.join(
+            DEFAULT_DATA_DIR, 'models', 'spkrec-ecapa-voxceleb')
+        if self.is_downloaded(model_dir):
+            # Work fully offline once downloaded. SpeechBrain otherwise asks
+            # Hugging Face for an optional custom.py on every load. Must be
+            # set before huggingface_hub is first imported.
+            os.environ.setdefault('HF_HUB_OFFLINE', '1')
         try:
             from speechbrain.inference.speaker import EncoderClassifier
         except ImportError:  # SpeechBrain < 1.0
@@ -76,11 +93,21 @@ class SpeechBrainBackend(EmbeddingBackend):
         import torch
 
         self._torch = torch
-        model_dir = model_dir or os.path.join(
-            DEFAULT_DATA_DIR, 'models', 'spkrec-ecapa-voxceleb')
-        self._model = EncoderClassifier.from_hparams(
-            source=self.SOURCE, savedir=model_dir,
-            run_opts={'device': device})
+        try:
+            self._model = EncoderClassifier.from_hparams(
+                source=self.SOURCE, savedir=model_dir,
+                run_opts={'device': device})
+        except Exception as exc:
+            if 'ReduceOp' in str(exc):
+                # SpeechBrain 1.0.3+ needs torch.distributed, which NVIDIA's
+                # Jetson PyTorch build does not include.
+                raise RuntimeError(
+                    'This SpeechBrain version is incompatible with PyTorch '
+                    'built without distributed support (such as the Jetson '
+                    'build). Install SpeechBrain 1.0.2: python3 -m pip '
+                    'install -c ~/go2-constraints.txt "speechbrain==1.0.2"'
+                ) from exc
+            raise
         self._model.eval()
 
     def embed(self, audio: np.ndarray) -> np.ndarray:

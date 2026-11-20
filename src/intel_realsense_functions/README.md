@@ -218,14 +218,27 @@ python3 -m pip install --upgrade "pip==24.3.1" wheel ninja
 
 The displayed Python version must be 3.8.x.
 
+Without a virtual environment, upgrade pip for the system Python 3.8 the same
+way. Ubuntu 20.04 ships pip 20.0.2, whose older dependency resolver and wheel
+support cause problems with the packages below. Always invoke pip as
+`python3 -m pip` afterwards; the `pip3` command can keep pointing at the old
+version:
+
+```bash
+python3 -m pip install --upgrade "pip==24.3.1" wheel ninja
+python3 -m pip --version
+```
+
 Install a matching PyTorch and torchvision pair before Grounding DINO. Do not
 replace a working Jetson build with the generic packages from PyPI: those wheels
-are not compatible with the Jetson's ARM64 CUDA platform.
+are not compatible with the Jetson's ARM64 CUDA platform and have no GPU
+support there.
 
-For the repository's JetPack 5.1.2 deployment target, the setup uses the
-following known-compatible Python 3.8 wheels. If these versions are already
-installed and the verification command below succeeds, do not uninstall or
-reinstall them:
+For the repository's Jetson deployment target (JetPack 5.1.x, L4T R35, for
+example the expansion board's JetPack 5.1.1 / L4T R35.3.1; check with
+`cat /etc/nv_tegra_release`), the setup uses the following known-compatible
+Python 3.8 wheels. If these versions are already installed and the
+verification command below succeeds, do not uninstall or reinstall them:
 
 ```bash
 python3 -m pip install \
@@ -235,8 +248,11 @@ python3 -m pip install --no-deps \
 ```
 
 `--no-deps` on the torchvision installation prevents pip from replacing the
-Jetson-specific PyTorch wheel with a generic build. Standard x86-64 CPU-only
-development systems may instead use:
+Jetson-specific PyTorch wheel with a generic build.
+
+Standard x86-64 CPU-only development systems may instead use the command
+below. **Do not run it on the Jetson:** it installs the generic `torch 2.1.2`
+and `torchvision 0.16.2`, replacing the Jetson builds and disabling CUDA.
 
 ```bash
 python3 -m pip install \
@@ -244,13 +260,57 @@ python3 -m pip install \
   --index-url https://download.pytorch.org/whl/cpu
 ```
 
-Install Python 3.8-compatible supporting packages:
+Confirm the expected builds are installed before continuing. On the Jetson this
+must print `2.1.0a0+41361538.nv23.06 0.16.2+c6f3977 11.4 True`:
 
 ```bash
-python3 -m pip install \
+python3 -c "import torch, torchvision; print(torch.__version__, torchvision.__version__, torch.version.cuda, torch.cuda.is_available())"
+```
+
+### Protecting the PyTorch installation
+
+Several packages used by this repository depend on `torch` or `torchvision`,
+and some require an exact generic release. For example, every torchaudio
+wheel on PyPI pins one specific PyPI `torch` version, so installing a package
+that needs torchaudio (such as SpeechBrain in `dog_voice_commands`) makes pip
+silently replace the Jetson build with a generic one, and CUDA stops working.
+
+To prevent this, record the installed versions in a constraints file
+immediately after installing PyTorch and torchvision:
+
+```bash
+python3 -c "import torch, torchvision; print(f'torch=={torch.__version__}\ntorchvision=={torchvision.__version__}')" \
+  > ~/go2-constraints.txt
+```
+
+Pass this file with `-c ~/go2-constraints.txt` to **every** later
+`pip install` in this repository, including those in other packages' READMEs.
+With it, pip stops with a version-conflict error instead of replacing PyTorch.
+If a package then fails to install because of a `torch` or `torchvision`
+conflict, install that package alone with `--no-deps`.
+
+### Supporting packages and Grounding DINO
+
+Install Python 3.8-compatible supporting packages, then add the resulting
+NumPy version to the constraints file:
+
+```bash
+python3 -m pip install -c ~/go2-constraints.txt \
   "numpy<2" "Pillow<11" "transformers==4.30.2" \
   "timm==0.9.12" "addict==2.4.0" "yapf==0.40.1" \
   "pycocotools==2.0.7"
+echo "numpy==$(python3 -c 'import numpy; print(numpy.__version__)')" \
+  >> ~/go2-constraints.txt
+```
+
+For CUDA execution, `CUDA_HOME` must refer to the CUDA toolkit used by the
+installed PyTorch build before Grounding DINO is installed, because the
+installation compiles its CUDA extension. JetPack normally exposes it at
+`/usr/local/cuda`; verify and set it if it is not already defined:
+
+```bash
+test -x /usr/local/cuda/bin/nvcc
+export CUDA_HOME=/usr/local/cuda
 ```
 
 Clone the official Grounding DINO repository, select the release commit used by
@@ -269,30 +329,44 @@ wget -O dino_weights/groundingdino_swint_ogc.pth \
   https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
 ```
 
-For CUDA execution, `CUDA_HOME` must refer to the CUDA toolkit used by the
-installed PyTorch build before `pip install -e .` is run. JetPack normally
-exposes it at `/usr/local/cuda`; verify and set it before installing Grounding
-DINO if it is not already defined:
-
-```bash
-test -x /usr/local/cuda/bin/nvcc
-export CUDA_HOME=/usr/local/cuda
-```
-
 The official
 [Grounding DINO installation instructions](https://github.com/IDEA-Research/GroundingDINO#hammer_and_wrench-install)
 describe the CUDA extension build and `_C` extension troubleshooting.
 
+### Verifying the environment
+
 Verify the environment before building the ROS package:
 
 ```bash
-python3 -c "import numpy, torch, torchvision, groundingdino; print(numpy.__version__); print(torch.__version__); print(torchvision.__version__); print(torch.cuda.is_available())"
+python3 -c "import numpy, torch, torchvision, groundingdino; print(numpy.__version__); print(torch.__version__); print(torchvision.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
+python3 -c "import torch, groundingdino._C; print('Grounding DINO CUDA extension OK')"
 ```
 
-On the JetPack 5.1.2 target this must report NumPy `1.23.5`, the Jetson-specific
-PyTorch build, torchvision `0.16.2`, and CUDA availability as `True`. Do not
-proceed with GPU deployment if the installed Torch build is CPU-only or CUDA is
-unavailable.
+On the Jetson target this must report NumPy `1.23.5`, PyTorch
+`2.1.0a0+41361538.nv23.06`, torchvision `0.16.2+c6f3977`, CUDA `11.4`, CUDA
+availability as `True`, and the extension line. The second command imports
+`torch` first on purpose: the extension links against PyTorch's own shared
+libraries, which are only loaded by `import torch`. Do not proceed with GPU
+deployment if the installed Torch build is CPU-only or CUDA is unavailable.
+
+If CUDA is unavailable, check which build is being imported:
+
+- **PyTorch reports `2.1.2` (no `+nv` suffix) or CUDA `None`:** a generic build
+  has replaced the Jetson wheel. Run
+  `python3 -c "import torch; print(torch.__file__)"` to see where it is
+  installed, then uninstall every copy of `torch` and `torchvision` (repeat
+  `python3 -m pip uninstall -y torch torchvision` until pip reports they are
+  not installed; use `sudo` as well if a copy is under `/usr/local`).
+  Reinstall the two Jetson wheels above, recreate `~/go2-constraints.txt`, and
+  rebuild the Grounding DINO extension with
+  `python3 -m pip install --no-deps -e .` from its directory, with `CUDA_HOME`
+  set.
+- **The Jetson build is installed but CUDA is still unavailable:** check that
+  the user is in the `video` and `render` groups (`groups`) and that
+  `CUDA_VISIBLE_DEVICES` is not set to an empty value
+  (`env | grep CUDA_VISIBLE_DEVICES`).
+
+### Building the ROS package
 
 When using a virtual environment, build with its Python interpreter so
 the generated ROS executable points to that environment. If Grounding DINO was

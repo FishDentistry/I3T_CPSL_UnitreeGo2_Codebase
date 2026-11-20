@@ -63,8 +63,10 @@ class GrammarRecognizer:
                 f'README for download instructions.')
 
         self._model = Model(model_path)
+        # Returns the word's symbol ID, or -1 if the model cannot recognize
+        # it. (The Python binding names it vosk_model_find_word.)
         unknown = [w for w in vocabulary.words()
-                   if self._model.find_word(w) < 0]
+                   if self._model.vosk_model_find_word(w) < 0]
         if unknown and logger is not None:
             logger.warn(
                 'The speech model does not know these words, so phrases '

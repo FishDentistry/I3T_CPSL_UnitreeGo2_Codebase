@@ -17,7 +17,7 @@ import numpy as np
 import yaml
 
 from .audio import (parse_device, read_wav, record_seconds, rms_dbfs,
-                    trim_silence, write_wav)
+                    supported_capture_rate, trim_silence, write_wav)
 from .speaker_verifier import (DEFAULT_PROFILE_PATH, DEFAULT_THRESHOLDS,
                                SpeakerProfile, SpeakerVerifier, load_backend)
 
@@ -64,8 +64,9 @@ def _add_audio_args(parser: argparse.ArgumentParser) -> None:
              ' Default: system default input.')
     parser.add_argument(
         '--capture-rate', type=int, default=16000,
-        help='Rate to open the microphone at; audio is resampled to 16 kHz. '
-             'Use 44100 or 48000 if the device rejects 16000.')
+        help='Rate to try first when opening the microphone (default 16000). '
+             'If the device rejects it, its native rate is used instead; '
+             'audio is always resampled to 16 kHz.')
 
 
 def _add_model_args(parser: argparse.ArgumentParser) -> None:
@@ -78,6 +79,14 @@ def _add_model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--compute-device', default='cpu',
                         help='Torch device for the embedding model, e.g. '
                              '"cpu" or "cuda".')
+
+
+def _resolve_rate(device, requested: int) -> int:
+    rate = supported_capture_rate(device, requested)
+    if rate != requested:
+        print(f'Microphone does not support {requested} Hz; recording at '
+              f'{rate} Hz and resampling to 16 kHz.')
+    return rate
 
 
 def _record_prompted(prompt: str, seconds: float, device, capture_rate: int
@@ -159,6 +168,7 @@ def enroll_main(argv=None) -> int:
             print(f'  {os.path.basename(path)}: {len(audio) / 16000:.2f}s')
     else:
         device = parse_device(args.device)
+        args.capture_rate = _resolve_rate(device, args.capture_rate)
         if args.save_audio:
             os.makedirs(args.save_audio, exist_ok=True)
         print(
@@ -245,6 +255,7 @@ def verify_main(argv=None) -> int:
         return 0
 
     device = parse_device(args.device)
+    args.capture_rate = _resolve_rate(device, args.capture_rate)
     print('Press Ctrl+C to stop. Try your own voice and other people\'s.')
     try:
         n = 1

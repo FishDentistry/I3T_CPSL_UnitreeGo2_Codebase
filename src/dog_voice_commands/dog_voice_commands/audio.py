@@ -164,6 +164,38 @@ def parse_device(device: str) -> DeviceSpec:
     return device
 
 
+def supported_capture_rate(device: DeviceSpec = None,
+                           requested: int = TARGET_SAMPLE_RATE,
+                           sd=None) -> int:
+    """Return a capture rate the input device accepts.
+
+    Tries ``requested`` first, then the device's default rate, then 48000 and
+    44100 Hz. Many USB microphones opened directly through ALSA only accept
+    their native rate (usually 44100 or 48000 Hz), not 16000 Hz; audio
+    captured at another rate is resampled to 16 kHz by this module.
+    """
+    if sd is None:
+        import sounddevice as sd
+
+    candidates = [int(requested)]
+    try:
+        info = sd.query_devices(device, 'input')
+        candidates.append(int(info['default_samplerate']))
+    except Exception:
+        pass
+    candidates += [48000, 44100]
+
+    last_error = None
+    for rate in dict.fromkeys(candidates):
+        try:
+            sd.check_input_settings(device=device, channels=1,
+                                    dtype='int16', samplerate=rate)
+            return rate
+        except Exception as exc:  # PortAudioError, ValueError
+            last_error = exc
+    raise last_error
+
+
 class MicrophoneStream:
     """Microphone capture that yields 16 kHz ``int16`` chunks.
 
@@ -177,6 +209,8 @@ class MicrophoneStream:
                  chunk_ms: int = 100, max_queue_chunks: int = 100) -> None:
         self.device = device
         self.capture_rate = int(capture_rate)
+        self.chunk_ms = chunk_ms
+        self.requested_rate = self.capture_rate
         self.blocksize = int(self.capture_rate * chunk_ms / 1000)
         self._queue: 'queue.Queue[bytes]' = queue.Queue(max_queue_chunks)
         self._stream = None
@@ -199,6 +233,11 @@ class MicrophoneStream:
     def start(self) -> None:
         import sounddevice as sd
 
+        rate = supported_capture_rate(self.device, self.capture_rate, sd)
+        if rate != self.capture_rate:
+            self.requested_rate = self.capture_rate
+            self.capture_rate = rate
+            self.blocksize = int(rate * self.chunk_ms / 1000)
         self._stream = sd.RawInputStream(
             samplerate=self.capture_rate, blocksize=self.blocksize,
             device=self.device, channels=1, dtype='int16',

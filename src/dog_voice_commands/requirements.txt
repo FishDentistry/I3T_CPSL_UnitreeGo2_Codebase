@@ -1,4 +1,10 @@
-# Python dependencies for dog_voice_commands (install with pip; see README).
+# Python dependencies for dog_voice_commands, for reference.
+#
+# Do not run `pip install -r requirements.txt` on the Go2 expansion board
+# (Jetson). It can replace the Jetson PyTorch build with a CPU-only one. Follow
+# the installation steps in README.md instead, which build torchaudio from
+# source and pass the constraints file (-c ~/go2-constraints.txt) created by the
+# Grounding DINO setup in intel_realsense_functions/README.md.
 vosk>=0.3.44
 sounddevice>=0.4.6
 numpy
@@ -6,6 +12,7 @@ scipy
 PyYAML
 
 # Speaker verification backend (default). Requires PyTorch + torchaudio.
-# SpeechBrain 1.1+ requires PyTorch 2.7.1+, which is not available for
-# Ubuntu 20.04 / JetPack 5; the 1.0.x series works with older PyTorch.
-speechbrain>=1.0.0,<1.1
+# Exactly 1.0.2: 1.0.3 imports torch.distributed.ReduceOp at load time, which
+# the Jetson PyTorch build (no distributed support) does not provide, and 1.1+
+# requires PyTorch 2.7.1+, which is not available for Ubuntu 20.04 / JetPack 5.
+speechbrain==1.0.2

@@ -80,3 +80,14 @@ def test_update_user_params(tmp_path):
         params = yaml.safe_load(handle)['voice_command_node'][
             'ros__parameters']
     assert params == {'audio_device': 'USB', 'speaker_threshold': 0.5}
+
+
+def test_speechbrain_model_download_check(tmp_path):
+    from dog_voice_commands.speaker_verifier import SpeechBrainBackend
+
+    assert not SpeechBrainBackend.is_downloaded(str(tmp_path))
+    for name in SpeechBrainBackend.MODEL_FILES[:-1]:
+        (tmp_path / name).write_text('x')
+    assert not SpeechBrainBackend.is_downloaded(str(tmp_path))
+    (tmp_path / SpeechBrainBackend.MODEL_FILES[-1]).write_text('x')
+    assert SpeechBrainBackend.is_downloaded(str(tmp_path))

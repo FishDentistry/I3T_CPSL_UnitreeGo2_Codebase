@@ -28,6 +28,7 @@ ros2 launch go2_launcher dog.launch.py launch_voice_commands:=true
 
 | Step | When |
 |---|---|
+| Complete the [Grounding DINO installation](../intel_realsense_functions/README.md#grounding-dino-installation-for-python-38) (PyTorch, torchvision, NumPy) | Once, before anything below |
 | Install dependencies, download the speech model, build | Once |
 | Enroll your voice (also saves your microphone choice) | Once; repeat only for a new owner, microphone, or mounting position |
 | Choose and save a verification threshold | Once |
@@ -113,6 +114,13 @@ A cooldown (3 s by default) stops one command from firing repeatedly.
 - Ubuntu 20.04 with ROS 2 Foxy (other ROS 2 distributions should work but
   are untested).
 - Python 3.8 or newer.
+- **The [Grounding DINO installation](../intel_realsense_functions/README.md#grounding-dino-installation-for-python-38)
+  in `intel_realsense_functions`, completed first.** It installs the
+  Jetson-specific PyTorch, torchvision, and NumPy versions that the rest of
+  the repository depends on, and this package's speaker verification uses
+  that same PyTorch. Installing the voice dependencies first can replace
+  them with incompatible generic builds and break Grounding DINO's CUDA
+  support.
 - The `go2_interfaces`, `unitree_go`, and `dog_utilities` packages from
   this repository (`dog_utilities` provides the `go2WebRtcBridge` node that
   delivers commands to the robot).
@@ -130,47 +138,134 @@ A cooldown (3 s by default) stops one command from firing repeatedly.
 All commands assume the repository root is
 `~/I3T_CPSL_UnitreeGo2_Codebase`; adjust paths to match your checkout.
 
+### Before you begin: PyTorch and Grounding DINO
+
+Complete the
+[Grounding DINO installation for Python 3.8](../intel_realsense_functions/README.md#grounding-dino-installation-for-python-38)
+in the `intel_realsense_functions` README **before** following the steps
+below, and make sure its verification command reports CUDA availability as
+`True`. That setup installs the PyTorch build this package uses for speaker
+verification. Doing it in the other order lets `pip` install a generic,
+CPU-only PyTorch that breaks Grounding DINO's GPU support.
+
+That setup also creates `~/go2-constraints.txt`, which pins the installed
+PyTorch, torchvision, and NumPy versions (see
+[Protecting the PyTorch installation](../intel_realsense_functions/README.md#protecting-the-pytorch-installation)).
+Every `pip` command below passes it with `-c`, so `pip` stops with an error
+instead of replacing them. Check that it exists, and that pip is the version
+that setup installs (24.3.1, not Ubuntu 20.04's 20.0.2), before continuing:
+
+```bash
+cat ~/go2-constraints.txt
+python3 -m pip --version
+```
+
+If you installed Grounding DINO in a virtual environment, activate it before
+running any of the commands below, so that this package's dependencies are
+installed into the same environment:
+
+```bash
+source ~/.venvs/go2-groundingdino-py38/bin/activate
+```
+
 ### 1. System packages
 
 ```bash
 sudo apt update
-sudo apt install -y libportaudio2 python3-pip python3-numpy python3-scipy python3-yaml
+sudo apt install -y libportaudio2 libsndfile1 python3-pip python3-dev build-essential \
+  python3-numpy python3-scipy python3-yaml
 ```
 
 ### 2. Python packages
 
 ```bash
 cd ~/I3T_CPSL_UnitreeGo2_Codebase/src/dog_voice_commands
-python3 -m pip install --user vosk sounddevice
+python3 -m pip install -c ~/go2-constraints.txt vosk sounddevice
 ```
 
 Then install **one** speaker-verification backend.
 
+> **Go2 expansion board (Jetson Orin) note:** never let `pip` replace the
+> PyTorch installed in [Before you begin](#before-you-begin-pytorch-and-grounding-dino).
+> The PyPI builds have no GPU support on the Jetson and are incompatible with
+> the installed torchvision and Grounding DINO extension. Always pass
+> `-c ~/go2-constraints.txt`, as below. The CPU is fast enough for speaker
+> verification, so `compute_device: cpu` (the default) is fine.
+
 **SpeechBrain (recommended, more accurate).** Requires PyTorch and
-torchaudio.
+torchaudio. NVIDIA does not publish torchaudio for the Jetson, and the PyPI
+torchaudio wheels each require a generic PyTorch, so on the expansion board
+build torchaudio from source against the installed PyTorch first. Use the
+torchaudio release that matches PyTorch: v2.1.0 for the PyTorch 2.1 build
+from the Grounding DINO setup. The build takes roughly 20 to 40 minutes.
 
 ```bash
-python3 -m pip install --user "speechbrain>=1.0.0,<1.1"
+# Jetson only: build torchaudio against the installed PyTorch
+sudo apt-get install -y git ninja-build
+python3 -m pip install -c ~/go2-constraints.txt "cmake>=3.18" wheel
+export PATH="$HOME/.local/bin:$PATH"   # use pip's CMake, not Ubuntu's 3.16
+cmake --version
+git clone --branch v2.1.0 --recursive https://github.com/pytorch/audio.git ~/torchaudio
+cd ~/torchaudio
+USE_CUDA=0 USE_FFMPEG=0 BUILD_SOX=0 \
+  python3 -m pip install --no-build-isolation --no-deps -v .
+cd ~
+python3 -c "import torchaudio; print(torchaudio.__version__)"
+echo "torchaudio==$(python3 -c 'import torchaudio; print(torchaudio.__version__)')" \
+  >> ~/go2-constraints.txt
 ```
 
-SpeechBrain 1.1 and newer require PyTorch 2.7.1+, which is not available for
-Ubuntu 20.04 on Jetson, so stay on the 1.0 series there. On x86 machines,
-`pip` installs a compatible PyTorch automatically.
+`--no-build-isolation` and `--no-deps` make the build use the installed
+PyTorch instead of downloading a different one. torchaudio requires CMake
+3.18 or newer; Ubuntu 20.04's is 3.16, so `cmake --version` must report the
+pip-installed version before you build. The build switches turn off parts
+that speaker verification does not use: `USE_CUDA=0` skips torchaudio's own
+GPU kernels (PyTorch keeps full CUDA support), and `USE_FFMPEG=0` and
+`BUILD_SOX=0` skip audio-file decoding, which would otherwise need FFmpeg and
+download and compile SoX. Run the final `import torchaudio` check from your
+home directory, not from inside `~/torchaudio`, where Python would import
+the unbuilt source tree instead.
+
+Then install SpeechBrain:
+
+```bash
+python3 -m pip install -c ~/go2-constraints.txt "speechbrain==1.0.2"
+```
+
+Use exactly SpeechBrain 1.0.2. NVIDIA's Jetson PyTorch is built without
+PyTorch's distributed-training module, and SpeechBrain 1.0.3 imports
+`torch.distributed.ReduceOp` when it loads, so 1.0.3 fails on the Jetson
+with `cannot import name 'ReduceOp' from 'torch.distributed'`. Version 1.0.2
+has the same model-loading API and only uses distributed features after
+checking that they are available.
+
+SpeechBrain 1.1 and newer also require PyTorch 2.7.1+, which is not
+available for Ubuntu 20.04 on Jetson. Because torchaudio
+was built without SoX and FFmpeg, SpeechBrain logs a warning that it "could
+not find any working torchaudio backend" when it starts. This is expected and
+harmless: this package passes audio to SpeechBrain in memory and never asks
+it to load audio files. On x86-64
+development machines, skip the torchaudio source build: with the constraints
+file in place, `pip` installs the torchaudio release that matches the
+installed PyTorch.
 
 **Resemblyzer (lighter alternative).** Requires PyTorch only, so it is easier
 on boards where torchaudio is hard to install. It is less discriminative and
 needs a higher threshold.
 
 ```bash
-python3 -m pip install --user resemblyzer
+python3 -m pip install -c ~/go2-constraints.txt librosa webrtcvad
+python3 -m pip install --no-deps resemblyzer
 ```
 
-> **Go2 expansion board (Jetson Orin) note:** do not let `pip` install
-> PyTorch from PyPI on the Jetson; that build has no GPU support and may not
-> match JetPack. Install NVIDIA's PyTorch wheel for your JetPack version
-> first (see NVIDIA's *Installing PyTorch for Jetson Platform* guide), then
-> install the backend. The CPU is fast enough for verification, so
-> `compute_device: cpu` (the default) is fine.
+Its remaining dependencies (PyTorch, NumPy, SciPy, librosa, and webrtcvad)
+are already installed at this point. `--no-deps` stops pip from also
+installing the obsolete `typing` backport that Resemblyzer lists, which can
+shadow the standard library's `typing` module. `webrtcvad` is compiled during
+installation, which is why step 1 installs `python3-dev` and
+`build-essential`. If you use Resemblyzer, enroll with
+`--backend resemblyzer` (see [Enrolling your voice](#enrolling-your-voice)).
+
 
 [`requirements.txt`](requirements.txt) lists the same dependencies for
 reference.
@@ -199,18 +294,50 @@ colcon build --symlink-install --packages-up-to dog_voice_commands
 source install/setup.bash
 ```
 
+If PyTorch is installed in a virtual environment, build with that
+environment's Python instead, as described for `intel_realsense_functions`,
+so the installed `voice_command_node` runs with an interpreter that can
+import PyTorch:
+
+```bash
+source ~/.venvs/go2-groundingdino-py38/bin/activate
+python3 "$(command -v colcon)" build --symlink-install --packages-up-to dog_voice_commands
+source install/setup.bash
+```
+
 ### 5. Find your microphone
 
 ```bash
 ros2 run dog_voice_commands list_audio_devices
 ```
 
-Run this on the expansion board with the USB microphone plugged in. Note a
-distinctive part of your microphone's name (for example `USB`). You will pass
-it to `enroll_speaker` as `--device`, which then saves it for every later
-launch. Prefer part of the name over the index, because indices can change
-when devices are plugged in or the board reboots. If no device is given, the
-system default input is used.
+Run this on the expansion board with the USB microphone plugged in. It
+prints each input device with an index and its full name, for example:
+
+```text
+    0  NVIDIA Jetson Orin NX APE: - (hw:1,0)  (16 ch, 44100 Hz default)
+    5  USB PnP Sound Device: Audio (hw:2,0)  (1 ch, 44100 Hz default)
+```
+
+You will pass your microphone to `enroll_speaker` as `--device`, which then
+saves it for every later launch. The value does **not** have to be the full
+name. It is a search string, matched as follows:
+
+- **Case-insensitive search for each word.** Each space-separated word must
+  appear in the device's name, in the same order. `usb`, `pnp sound`, and
+  `USB PnP Sound Device` all select device 5 above.
+- **Must match exactly one input device.** If it matches more than one, the
+  tools stop with a `Multiple input devices found` error that lists the
+  matches; add another word from the name to narrow it down. If it matches
+  none, they stop with a `No input device matching` error.
+- **A number is treated as a device index** (`--device 5`).
+
+Prefer a short, distinctive part of the name, such as `usb` or `pnp`. Avoid
+the index and the `(hw:2,0)` part of the name: both depend on the order in
+which the system detects audio devices, which can change when devices are
+plugged in or the board reboots. Quote values that contain spaces
+(`--device "pnp sound"`). If no device is given, the system default input is
+used.
 
 ---
 
@@ -242,14 +369,33 @@ When it finishes, the tool prints how consistently your samples match each
 other. It also saves the microphone (`--device`, `--capture-rate`) and the
 backend to the per-machine settings file (see
 [Configuration](#configuration)), so you do not need to pass them when
-launching. The first run downloads the embedding model (about 80 MB for
-SpeechBrain) to `~/.local/share/dog_voice_commands/models/`.
+launching.
+
+The first run downloads the SpeechBrain embedding model (about 80 MB) from
+Hugging Face to `~/.local/share/dog_voice_commands/models/spkrec-ecapa-voxceleb/`,
+so the board needs internet access for it. After that, the model is loaded
+from disk and voice commands work without internet access. Resemblyzer
+needs no download, because its model ships with the package.
+
+Hugging Face limits anonymous downloads per IP address. On networks where
+many devices share one public address, such as university or company
+networks, the download can fail with `429 Client Error: Too Many Requests`.
+If it does, either wait and retry later, or create a free Hugging Face
+account, create a **Read** access token under *Settings → Access tokens*, and
+pass it for the one run that downloads the model:
+
+```bash
+HF_TOKEN=hf_your_token_here ros2 run dog_voice_commands enroll_speaker --device usb
+```
+
+The token is only needed for this download, and does not need to be saved
+on the robot. Do not commit it to the repository.
 
 **Useful options**
 
 | Option | Purpose |
 |---|---|
-| `--device NAME` | Microphone to record with; also saved as `audio_device` for launches. |
+| `--device NAME` | Microphone to record with: one or more words from its name, or its index (see [Find your microphone](#5-find-your-microphone)). Also saved as `audio_device` for launches. |
 | `--samples N` | Number of recordings (default 12). |
 | `--seconds S` | Length of each recording (default 3.0). |
 | `--backend resemblyzer` | Enroll for the Resemblyzer backend. It must match `speaker_backend` at run time. |
@@ -452,7 +598,7 @@ precedence:
 | `commands_file` | *(packaged `commands.yaml`)* | Vocabulary file with wake phrases and commands. |
 | `vosk_model_path` | `~/.local/share/dog_voice_commands/models/vosk-model-small-en-us-0.15` | Vosk model directory. Must support runtime grammars. |
 | `min_word_confidence` | `0.6` | Utterances with a lower mean word confidence are ignored. |
-| `audio_device` | `""` | Microphone index or name substring; empty means system default. |
+| `audio_device` | `""` | Microphone to use: words from its name or its index, matched as described in [Find your microphone](#5-find-your-microphone). Empty means system default. |
 | `capture_sample_rate` | `16000` | Rate to open the microphone at. Audio is resampled to 16 kHz. |
 | `arm_timeout_sec` | `4.0` | Time allowed between a lone wake phrase and the command. |
 | `cooldown_sec` | `3.0` | Minimum time between accepted commands. |
@@ -560,6 +706,26 @@ point `vosk_model_path` at it.
 **`No speaker profile at ...`**
 Run `enroll_speaker` first. To test recognition without verification, launch
 with `speaker_verification:=false` and `dry_run:=true`.
+
+**`Multiple input devices found` or `No input device matching`**
+The `--device` / `audio_device` value matched several microphones, or none.
+Run `list_audio_devices` and choose words that appear only in your
+microphone's name (see [Find your microphone](#5-find-your-microphone)). To
+change the saved value, re-run `enroll_speaker` with the new `--device`, or
+edit `audio_device` in `~/.local/share/dog_voice_commands/params.yaml`.
+
+**`429 Client Error: Too Many Requests` from huggingface.co**
+Hugging Face rate-limited the speaker-model download from your network's
+public IP address. See
+[Enrolling your voice](#enrolling-your-voice): wait and retry, or pass a
+Hugging Face access token with `HF_TOKEN=...` for the run that downloads the
+model. This only affects the first download; once the model is on disk, the
+node does not contact Hugging Face.
+
+**`cannot import name 'ReduceOp' from 'torch.distributed'`**
+SpeechBrain 1.0.3 or newer is installed, which does not work with the Jetson
+PyTorch build. Install 1.0.2 with
+`python3 -m pip install -c ~/go2-constraints.txt "speechbrain==1.0.2"`.
 
 **The USB microphone is not listed**
 Unplug and replug it, then check `arecord -l`. If it appears there but not

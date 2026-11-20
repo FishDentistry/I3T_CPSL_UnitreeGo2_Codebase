@@ -108,6 +108,11 @@ If everything builds correctly, run `find . -name "pyrealsense2*.so"` within the
 ## Livox Setup
 Most of this process is taken care of by mounting the Livox according to the official docs from Unitree or whatever the target platform is. The interfacing of the Livox with the robot should be taken care of by the packages in this repo. However, you may need to change the `ip` parameter within the `src/CPSL_ROS_livox_ros_driver2/config/HAP_config.json` file to the IP of your Livox device (IP can be found on a sticker on the physical device).
 
+## Python Environment: PyTorch and Grounding DINO
+Object detection (`intel_realsense_functions`), semantic mapping, and voice-command speaker verification (`dog_voice_commands`) all use the same Python 3.8 PyTorch installation. On the expansion board this must be NVIDIA's Jetson build of PyTorch, because the generic PyTorch packages from PyPI have no GPU support there. Set it up by following [Grounding DINO installation for Python 3.8](src/intel_realsense_functions/README.md#grounding-dino-installation-for-python-38) in the `intel_realsense_functions` README before installing the Python dependencies of any other package.
+
+That setup creates a pip constraints file, `~/go2-constraints.txt`, that pins the installed PyTorch, torchvision, and NumPy versions. Pass it with `-c ~/go2-constraints.txt` to every later `pip install` for this repository. Without it, installing a package that depends on PyTorch can silently replace the Jetson build with a CPU-only one. If CUDA stops working after installing something, see the troubleshooting notes at the end of that section.
+
 ## Go2 Internal IP Configuration
 For the Go2 to receive commands from this repo (velocity commands from packages such as Nav2, or actions such as sitting from voice commands), they must be forwarded to the Go2’s internal board, which handles the robot’s movement. The internal board accepts only one WebRTC connection at a time, so a single node, `Go2WebRtcBridge.py` (executable `go2WebRtcBridge`) in the `dog_utilities` package, owns that connection. Other nodes send through it: `CmdVelTranslator.py` translates `cmd_vel` messages and publishes them to the bridge on `go2/webrtc_send`, and sport-mode actions are published to it on `go2/sport_cmd`.
 
@@ -116,7 +121,7 @@ The bridge accepts an `internal_board_ip` parameter, which can be specified eith
 By default, this parameter is set to the internal board’s Ethernet IP address because the internal and external boards are connected by Ethernet. Alternatively, if the internal board is connected to the same Wi-Fi network as the external board, its Wi-Fi IP address can be supplied instead. This is useful if for some reason you're sending commands and running the bridge from a device that is not the external board.
 
 ## Voice Commands
-The `dog_voice_commands` package lets the Go2 respond to "Hey Yeller" followed by "sit", "shake", "lay down", or "stand up" (which only runs when the robot is sitting or lying down), and only when spoken by its enrolled owner. Recognition runs offline on the expansion board with a USB microphone. Enable it with `launch_voice_commands:=true` on the main launch file after completing the setup and voice enrollment in [`src/dog_voice_commands/README.md`](src/dog_voice_commands/README.md).
+The `dog_voice_commands` package lets the Go2 respond to "Hey Yeller" followed by "sit", "shake", "lay down", or "stand up" (which only runs when the robot is sitting or lying down), and only when spoken by its enrolled owner. Recognition runs offline on the expansion board with a USB microphone. Enable it with `launch_voice_commands:=true` on the main launch file after completing the [Python environment setup](#python-environment-pytorch-and-grounding-dino) above, then the setup and voice enrollment in [`src/dog_voice_commands/README.md`](src/dog_voice_commands/README.md).
 
 
 ## Unitree D1 arm

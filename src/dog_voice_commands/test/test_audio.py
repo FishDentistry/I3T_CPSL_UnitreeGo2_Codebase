@@ -50,3 +50,47 @@ def test_wav_round_trip(tmp_path):
     path = str(tmp_path / 'a.wav')
     write_wav(path, audio)
     np.testing.assert_array_equal(read_wav(path), audio)
+
+
+class _FakeSd:
+    """Mimics sounddevice for a mic that only accepts some rates."""
+
+    def __init__(self, accepted, default_rate):
+        self.accepted = set(accepted)
+        self.default_rate = default_rate
+        self.tried = []
+
+    def query_devices(self, device, kind):
+        return {'default_samplerate': float(self.default_rate)}
+
+    def check_input_settings(self, device, channels, dtype, samplerate):
+        self.tried.append(samplerate)
+        if samplerate not in self.accepted:
+            raise RuntimeError('Invalid sample rate [PaErrorCode -9997]')
+
+
+def test_capture_rate_keeps_supported_request():
+    from dog_voice_commands.audio import supported_capture_rate
+    sd = _FakeSd(accepted={16000, 48000}, default_rate=48000)
+    assert supported_capture_rate('usb', 16000, sd) == 16000
+
+
+def test_capture_rate_falls_back_to_device_default():
+    from dog_voice_commands.audio import supported_capture_rate
+    sd = _FakeSd(accepted={44100}, default_rate=44100)
+    assert supported_capture_rate('usb', 16000, sd) == 44100
+    assert sd.tried == [16000, 44100]
+
+
+def test_capture_rate_raises_when_nothing_works():
+    import pytest
+    from dog_voice_commands.audio import supported_capture_rate
+    sd = _FakeSd(accepted=set(), default_rate=22050)
+    with pytest.raises(RuntimeError):
+        supported_capture_rate('usb', 16000, sd)
+
+
+def test_resample_44100_to_16000():
+    from dog_voice_commands.audio import resample
+    out = resample(np.zeros(44100, dtype=np.int16), 44100, 16000)
+    assert len(out) == 16000

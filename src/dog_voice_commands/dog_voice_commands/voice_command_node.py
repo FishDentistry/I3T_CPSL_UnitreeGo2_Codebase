@@ -160,6 +160,10 @@ class VoiceCommandNode(Node):
 
     def start(self) -> None:
         self._mic.start()
+        if self._mic.capture_rate != self._mic.requested_rate:
+            self.get_logger().info(
+                f'Microphone does not support {self._mic.requested_rate} Hz; '
+                f'capturing at {self._mic.capture_rate} Hz and resampling.')
         self._worker.start()
 
     def shutdown(self) -> None:
