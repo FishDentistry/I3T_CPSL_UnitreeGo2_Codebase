@@ -402,7 +402,7 @@ on the robot. Do not commit it to the repository.
 | `--append` | Add samples to an existing profile. |
 | `--from-dir DIR` | Enroll from existing 16-bit PCM WAV files instead of recording, for example recordings made on another computer. |
 | `--save-audio DIR` | Keep the trimmed recordings as WAV files. |
-| `--capture-rate 48000` | For microphones that cannot record at 16 kHz. |
+| `--capture-rate RATE` | Sample rate to try first (default 16000). Usually unnecessary: if the microphone rejects it, the tools switch to its native rate automatically. |
 | `--profile PATH` | Profile location (default `~/.local/share/dog_voice_commands/speaker_profile.npz`). |
 
 > **Privacy.** The profile contains voice embeddings, a biometric
@@ -455,19 +455,41 @@ anything to the robot:
 ros2 launch dog_voice_commands voice_commands.launch.py dry_run:=true
 ```
 
+At startup the node logs which microphone it opened and which phrases it
+listens for. The small English speech model does not know the word
+"yeller", so the node normally logs that it is listening for
+similar-sounding phrases such as "hey yellow" instead. This is expected: say
+"Hey Yeller" as usual, and it is recognized as "hey yellow". See
+[Customizing commands](#customizing-commands) to change the aliases.
+
 In a second terminal, watch what the node hears and decides:
 
 ```bash
 ros2 topic echo /voice_command_node/events
 ```
 
-Each recognized utterance produces a JSON event, for example:
+Every utterance the node hears produces a JSON event, including speech it
+does not recognize, for example:
 
 ```json
-{"event": "dry_run", "text": "hey yeller sit", "command": "sit", "api_ids": [1009], "confidence": 0.94, "speaker_score": 0.62}
-{"event": "wrong_posture", "text": "hey yeller stand up", "command": "stand_up", "posture": "standing", "confidence": 0.93, "speaker_score": 0.58}
-{"event": "rejected_speaker", "text": "hey yeller sit", "command": "sit", "confidence": 0.91, "speaker_score": 0.18, "reason": "score 0.180 below threshold 0.450"}
+{"event": "dry_run", "text": "hey yellow sit", "command": "sit", "api_ids": [1009], "confidence": 0.94, "speaker_score": 0.62}
+{"event": "ignored", "text": "sit", "confidence": 0.9, "reason": "command without the wake phrase"}
+{"event": "unrecognized", "text": "[unk]"}
+{"event": "wrong_posture", "text": "hey yellow stand up", "command": "stand_up", "posture": "standing", "confidence": 0.93, "speaker_score": 0.58}
+{"event": "rejected_speaker", "text": "hey yellow sit", "command": "sit", "confidence": 0.91, "speaker_score": 0.18, "reason": "score 0.180 below threshold 0.450"}
 ```
+
+If no events appear at all while you speak, check that audio is reaching the
+node:
+
+```bash
+ros2 topic echo /voice_command_node/audio_level
+```
+
+This prints the loudest input level of each half second, in dBFS. Silence is
+typically below -60, and normal speech at 1-2 m is roughly -40 to -20. If the
+values do not rise when you speak, the node is listening to the wrong device
+or the microphone is muted; see [Troubleshooting](#troubleshooting).
 
 ### 2. Live, with the main robot launch
 
@@ -599,7 +621,7 @@ precedence:
 | `vosk_model_path` | `~/.local/share/dog_voice_commands/models/vosk-model-small-en-us-0.15` | Vosk model directory. Must support runtime grammars. |
 | `min_word_confidence` | `0.6` | Utterances with a lower mean word confidence are ignored. |
 | `audio_device` | `""` | Microphone to use: words from its name or its index, matched as described in [Find your microphone](#5-find-your-microphone). Empty means system default. |
-| `capture_sample_rate` | `16000` | Rate to open the microphone at. Audio is resampled to 16 kHz. |
+| `capture_sample_rate` | `16000` | Sample rate to try first when opening the microphone. If the microphone rejects it, the node uses the microphone's native rate (then 48000, then 44100 Hz). Audio is always resampled to 16 kHz. `enroll_speaker` saves the rate that worked. |
 | `arm_timeout_sec` | `4.0` | Time allowed between a lone wake phrase and the command. |
 | `cooldown_sec` | `3.0` | Minimum time between accepted commands. |
 | `speaker_verification` | `true` | Require the enrolled owner's voice. If `false`, **anyone** can command the robot. |
@@ -627,13 +649,16 @@ startup with instructions rather than silently accepting every voice.
 | Topic | Type | Description |
 |---|---|---|
 | `/go2/sport_cmd` | `go2_interfaces/msg/Go2Cmd` | Sport-mode API ID of each accepted command. |
-| `~/events` | `std_msgs/msg/String` | JSON diagnostic event for each recognized utterance. |
+| `~/events` | `std_msgs/msg/String` | JSON diagnostic event for each utterance the node hears. |
+| `~/audio_level` | `std_msgs/msg/Float32` | Loudest microphone input level of each half second, in dBFS. |
 
 Event types: `accepted`, `dry_run`, `armed` (wake phrase heard, waiting for
-command), `rejected_speaker`, `cooldown`, `expired` (command came after the
-arm window), `low_confidence`, `wrong_posture` (a posture-dependent command
-was heard in a posture it does not run from), and `no_robot_state` (no recent
-`SportModeState` was available).
+command), `ignored` (heard, but not a command; `reason` says why),
+`unrecognized` (speech that matches none of the phrases), `rejected_speaker`,
+`cooldown`, `expired` (command came after the arm window), `low_confidence`,
+`wrong_posture` (a posture-dependent command was heard in a posture it does
+not run from), and `no_robot_state` (no recent `SportModeState` was
+available).
 
 **Subscribed**
 
@@ -733,9 +758,21 @@ in `list_audio_devices`, make sure the user is in the `audio` group
 (`sudo usermod -aG audio $USER`, then log out and back in).
 
 **`Invalid sample rate` or `Error opening InputStream`**
-The microphone does not support 16 kHz capture. Set
-`capture_sample_rate: 48000` (or `44100`), and pass the same value to
-`enroll_speaker` / `verify_speaker` with `--capture-rate`.
+Many USB microphones opened directly through ALSA only record at their
+native rate, usually 44100 or 48000 Hz. The tools and node normally detect
+this and switch to the native rate on their own, printing a message when
+they do. If the error still appears, none of 16000, the device's default
+rate, 48000, or 44100 Hz worked. Check the microphone's default rate in
+`list_audio_devices` and pass it explicitly with `--capture-rate`, or set
+`capture_sample_rate` in the per-machine settings file.
+
+**No events at all while speaking**
+Watch `ros2 topic echo /voice_command_node/audio_level` while you speak. If
+the level stays below about -60 dBFS (the node also logs a warning after 10
+seconds of this), no audio is arriving: check the microphone named in the
+node's startup log, the `audio_device` setting, and the gain in `alsamixer`.
+If the level rises but there are still no events, Vosk is not detecting the
+end of an utterance; pause briefly after each phrase.
 
 **Nothing is recognized**
 Check the input with `arecord -l` and `arecord -D plughw:<card>,0 -f S16_LE -r 16000 -d 3 test.wav`

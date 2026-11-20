@@ -26,11 +26,11 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from go2_interfaces.msg import Go2Cmd
 from rclpy.node import Node
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32, String
 from unitree_go.msg import SportModeState
 
 from .audio import (TARGET_SAMPLE_RATE, MicrophoneStream, RingBuffer,
-                    parse_device)
+                    parse_device, rms_dbfs)
 from .command_parser import (CommandParser, CommandVocabulary,
                              ParseResult)
 from .posture import DEFAULT_LYING_HEIGHT_M, UNKNOWN, classify
@@ -41,6 +41,11 @@ from .speaker_verifier import (DEFAULT_PROFILE_PATH, DEFAULT_THRESHOLDS,
 #: Audio kept around word boundaries when cutting an utterance for
 #: speaker verification.
 SEGMENT_PAD_SEC = 0.15
+
+#: Input quieter than this for SILENCE_WARN_SEC triggers a warning that the
+#: microphone may be muted or the wrong device.
+SILENCE_DBFS = -60.0
+SILENCE_WARN_SEC = 10.0
 
 
 def _default_commands_file() -> str:
@@ -126,13 +131,36 @@ class VoiceCommandNode(Node):
         self._stop = threading.Event()
         self._worker = threading.Thread(target=self._run, daemon=True)
 
-        phrases = ', '.join(
-            f'"{self._recognizer.vocabulary.wake_phrases[0]} {c.phrases[0]}"'
-            for c in self._recognizer.vocabulary.commands)
+        # Audio level monitoring, for diagnosing microphone problems.
+        self._level_lock = threading.Lock()
+        self._level_peak = float('-inf')
+        self._quiet_since = None
+        self._silence_warned = False
+        self._level_pub = self.create_publisher(Float32, '~/audio_level', 10)
+        self.create_timer(0.5, self._publish_level)
+
+        self._log_vocabulary(vocabulary)
         self.get_logger().info(
-            f'Listening for: {phrases}. Publishing to '
-            f'{g("command_topic").value}'
-            f'{" (DRY RUN)" if self._dry_run else ""}.')
+            f'Publishing commands to {g("command_topic").value}'
+            f'{" (DRY RUN: nothing will be sent)" if self._dry_run else ""}.')
+
+    def _log_vocabulary(self, configured: CommandVocabulary) -> None:
+        active = self._recognizer.vocabulary
+        wake = ', '.join(f'"{w}"' for w in active.wake_phrases)
+        dropped = [w for w in configured.wake_phrases
+                   if w not in active.wake_phrases]
+        if dropped:
+            self.get_logger().info(
+                'The speech model does not know every word in '
+                + ', '.join(f'"{w}"' for w in dropped)
+                + f', so it listens for the similar-sounding {wake} instead. '
+                'Say the wake phrase normally; these are what the model '
+                'hears it as.')
+        else:
+            self.get_logger().info(f'Wake phrases: {wake}.')
+        self.get_logger().info(
+            'Commands: ' + ', '.join(
+                f'"{c.phrases[0]}"' for c in active.commands) + '.')
 
     # ------------------------------------------------------------------
     # Setup helpers
@@ -160,11 +188,43 @@ class VoiceCommandNode(Node):
 
     def start(self) -> None:
         self._mic.start()
+        self.get_logger().info(
+            f'Microphone: "{self._mic.device_name}" at '
+            f'{self._mic.capture_rate} Hz. Input level is published on '
+            f'{self.get_name()}/audio_level (dBFS).')
         if self._mic.capture_rate != self._mic.requested_rate:
             self.get_logger().info(
                 f'Microphone does not support {self._mic.requested_rate} Hz; '
                 f'capturing at {self._mic.capture_rate} Hz and resampling.')
         self._worker.start()
+
+    def _track_level(self, chunk: np.ndarray) -> None:
+        level = rms_dbfs(chunk)
+        now = time.monotonic()
+        with self._level_lock:
+            self._level_peak = max(self._level_peak, level)
+        if level >= SILENCE_DBFS:
+            if self._silence_warned:
+                self.get_logger().info('Microphone input detected again.')
+            self._quiet_since = None
+            self._silence_warned = False
+            return
+        if self._quiet_since is None:
+            self._quiet_since = now
+        elif (not self._silence_warned
+              and now - self._quiet_since >= SILENCE_WARN_SEC):
+            self._silence_warned = True
+            self.get_logger().warn(
+                f'Microphone input has been below {SILENCE_DBFS:.0f} dBFS '
+                f'for {SILENCE_WARN_SEC:.0f} s. Check that the right device '
+                f'is selected ("{self._mic.device_name}") and that it is not '
+                f'muted (alsamixer).')
+
+    def _publish_level(self) -> None:
+        with self._level_lock:
+            peak, self._level_peak = self._level_peak, float('-inf')
+        if peak != float('-inf'):
+            self._level_pub.publish(Float32(data=float(round(peak, 1))))
 
     def shutdown(self) -> None:
         self._stop.set()
@@ -205,6 +265,7 @@ class VoiceCommandNode(Node):
             if chunk is None:
                 continue
             self._buffer.append(chunk)
+            self._track_level(chunk)
             transcript = self._recognizer.accept(chunk)
             if transcript is not None:
                 try:
@@ -237,6 +298,16 @@ class VoiceCommandNode(Node):
         if not self._enabled:
             return
 
+        # Vosk reports speech outside the grammar as "[unk]". Keep it in the
+        # text, so "hey yeller [unk]" is not mistaken for a bare wake phrase,
+        # but leave it out of the confidence score.
+        if all(token == '[unk]' for token in transcript.text.split()):
+            self._event('unrecognized', transcript.text)
+            return
+        known = [w for w in transcript.words if w.word != '[unk]']
+        transcript = Transcript(text=transcript.text,
+                                words=known or transcript.words)
+
         conf = transcript.mean_confidence
         if transcript.words and conf < self._min_conf:
             self._event('low_confidence', transcript.text, confidence=conf)
@@ -252,6 +323,12 @@ class VoiceCommandNode(Node):
         if result.kind != 'command':
             if result.kind == 'expired':
                 self._event('expired', result.text, confidence=conf)
+            elif result.command is not None:
+                self._event('ignored', result.text, confidence=conf,
+                            reason='command without the wake phrase')
+            else:
+                self._event('ignored', result.text, confidence=conf,
+                            reason='not a recognized command')
             self._wake_audio = None
             return
 

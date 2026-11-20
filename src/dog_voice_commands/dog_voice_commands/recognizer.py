@@ -97,7 +97,7 @@ class GrammarRecognizer:
     def _parse(raw: str) -> Optional[Transcript]:
         result = json.loads(raw)
         text = result.get('text', '').strip()
-        if not text or text == '[unk]':
+        if not text:
             return None
         words = [Word(w['word'], float(w['start']), float(w['end']),
                       float(w.get('conf', 1.0)))

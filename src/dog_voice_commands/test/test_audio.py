@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from dog_voice_commands.audio import (RingBuffer, read_wav, resample,
                                       rms_dbfs, trim_silence, write_wav)
@@ -94,3 +95,37 @@ def test_resample_44100_to_16000():
     from dog_voice_commands.audio import resample
     out = resample(np.zeros(44100, dtype=np.int16), 44100, 16000)
     assert len(out) == 16000
+
+
+def _tone(rate, seconds=1.0, freq=440.0):
+    t = np.arange(int(rate * seconds)) / rate
+    return (0.5 * 32767 * np.sin(2 * np.pi * freq * t)).astype(np.int16)
+
+
+@pytest.mark.parametrize('rate', [48000, 44100])
+def test_stream_resampler_chunking_invariant(rate):
+    from dog_voice_commands.audio import StreamResampler
+    audio = _tone(rate)
+    whole = StreamResampler(rate).process(audio)
+    stream = StreamResampler(rate)
+    block = rate // 10  # 100 ms, as the microphone delivers it
+    chunked = np.concatenate([stream.process(audio[i:i + block])
+                              for i in range(0, len(audio), block)])
+    assert len(chunked) == len(whole)
+    assert np.max(np.abs(chunked.astype(int) - whole.astype(int))) <= 1
+    assert abs(len(whole) - 16000) <= 1
+
+
+@pytest.mark.parametrize('rate', [48000, 44100])
+def test_stream_resampler_preserves_tone(rate):
+    from dog_voice_commands.audio import StreamResampler
+    out = StreamResampler(rate).process(_tone(rate, freq=1000.0))
+    spectrum = np.abs(np.fft.rfft(out[1600:].astype(float)))
+    peak_hz = np.argmax(spectrum) * 16000 / len(out[1600:])
+    assert abs(peak_hz - 1000.0) < 5.0
+
+
+def test_stream_resampler_passthrough():
+    from dog_voice_commands.audio import StreamResampler
+    audio = _tone(16000, 0.1)
+    np.testing.assert_array_equal(StreamResampler(16000).process(audio), audio)

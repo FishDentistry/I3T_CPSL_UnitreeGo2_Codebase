@@ -34,6 +34,60 @@ def resample(audio: np.ndarray, source_rate: int,
     return out
 
 
+class StreamResampler:
+    """Resample a continuous ``int16`` stream chunk by chunk.
+
+    Resampling each chunk independently (as :func:`resample` would) treats
+    every chunk edge as silence, which adds a click at each chunk boundary
+    and degrades speech recognition. This resampler keeps its filter state
+    and fractional read position between chunks, so the output is the same
+    whether the stream arrives in one piece or many.
+
+    An 8th-order Butterworth low-pass at 90% of the target Nyquist frequency
+    removes content that would alias, then samples are linearly
+    interpolated at the target rate.
+    """
+
+    def __init__(self, source_rate: int,
+                 target_rate: int = TARGET_SAMPLE_RATE) -> None:
+        self.source_rate = int(source_rate)
+        self.target_rate = int(target_rate)
+        self.passthrough = self.source_rate == self.target_rate
+        if self.passthrough:
+            return
+        from scipy.signal import butter
+
+        if self.target_rate > self.source_rate:
+            raise ValueError('StreamResampler only downsamples')
+        cutoff = 0.9 * (self.target_rate / 2.0) / (self.source_rate / 2.0)
+        self._sos = butter(8, cutoff, output='sos')
+        self._zi = np.zeros((self._sos.shape[0], 2))
+        self._step = self.source_rate / self.target_rate
+        self._pos = 0.0          # Next output position in the buffer below.
+        self._prev = None        # Last filtered sample of the previous chunk.
+
+    def process(self, chunk: np.ndarray) -> np.ndarray:
+        if self.passthrough:
+            return np.asarray(chunk, dtype=np.int16)
+        from scipy.signal import sosfilt
+
+        filtered, self._zi = sosfilt(
+            self._sos, np.asarray(chunk, dtype=np.float64), zi=self._zi)
+        if self._prev is not None:
+            # Index 0 is the last sample of the previous chunk, so
+            # interpolation is continuous across the boundary.
+            filtered = np.concatenate(([self._prev], filtered))
+        last = len(filtered) - 1
+        if last < 0:
+            return np.zeros(0, dtype=np.int16)
+        positions = np.arange(self._pos, last + 1e-9, self._step)
+        out = np.interp(positions, np.arange(len(filtered)), filtered)
+        self._pos = (positions[-1] + self._step - last) if positions.size \
+            else self._pos - last
+        self._prev = filtered[-1]
+        return np.clip(np.round(out), -32768, 32767).astype(np.int16)
+
+
 def int16_to_float(audio: np.ndarray) -> np.ndarray:
     """Convert ``int16`` PCM to ``float32`` in ``[-1, 1)``."""
     return audio.astype(np.float32) / 32768.0
@@ -210,6 +264,8 @@ class MicrophoneStream:
         self.device = device
         self.capture_rate = int(capture_rate)
         self.chunk_ms = chunk_ms
+        self.device_name = ''
+        self._resampler = StreamResampler(self.capture_rate)
         self.requested_rate = self.capture_rate
         self.blocksize = int(self.capture_rate * chunk_ms / 1000)
         self._queue: 'queue.Queue[bytes]' = queue.Queue(max_queue_chunks)
@@ -238,10 +294,16 @@ class MicrophoneStream:
             self.requested_rate = self.capture_rate
             self.capture_rate = rate
             self.blocksize = int(rate * self.chunk_ms / 1000)
+        self._resampler = StreamResampler(self.capture_rate)
         self._stream = sd.RawInputStream(
             samplerate=self.capture_rate, blocksize=self.blocksize,
             device=self.device, channels=1, dtype='int16',
             callback=self._callback)
+        try:
+            self.device_name = sd.query_devices(
+                self._stream.device, 'input')['name']
+        except Exception:
+            self.device_name = str(self._stream.device)
         self._stream.start()
 
     def stop(self) -> None:
@@ -257,7 +319,7 @@ class MicrophoneStream:
         except queue.Empty:
             return None
         audio = np.frombuffer(raw, dtype=np.int16)
-        return resample(audio, self.capture_rate)
+        return self._resampler.process(audio)
 
     def flush(self) -> None:
         """Discard any queued audio."""
