@@ -98,16 +98,20 @@
 # if __name__ == '__main__':
 #     main()
 
-import asyncio
-import threading
-
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from geometry_msgs.msg import Twist
+from std_msgs.msg import String
 
 from scripts.go2_func import gen_mov_command
-from scripts.webrtc_driver import Go2Connection
+
+
+# The WebRTC connection to the Go2 internal board is owned by the
+# go2WebRtcBridge node (Go2WebRtcBridge.py), because the board accepts only
+# one client. This node translates cmd_vel into move commands and hands them
+# to the bridge on the go2/webrtc_send topic.
+DEFAULT_INTERNAL_BOARD_IP = '192.168.123.161'
 
 
 class CmdVelTranslator(Node):
@@ -115,24 +119,32 @@ class CmdVelTranslator(Node):
         super().__init__('cmd_vel_translator')
         qos_profile = QoSProfile(depth=10)
 
-        # Default Go2 internal-board Ethernet IP.
+        # Kept only so existing launch files and commands that set it keep
+        # working. The robot IP is now configured on go2_webrtc_bridge.
         self.declare_parameter(
             'internal_board_ip',
-            '192.168.123.161'
+            DEFAULT_INTERNAL_BOARD_IP
         )
-
-        self.internal_board_ip = (
+        internal_board_ip = (
             self.get_parameter('internal_board_ip')
             .get_parameter_value()
             .string_value
         )
+        if internal_board_ip != DEFAULT_INTERNAL_BOARD_IP:
+            self.get_logger().warn(
+                "CmdVelTranslator no longer connects to the robot, so its "
+                "internal_board_ip parameter has no effect. Set "
+                "internal_board_ip on go2_webrtc_bridge instead."
+            )
 
-        self.webrtcConn = None
-        self.loop = None
+        self.webrtc_pub = self.create_publisher(
+            String,
+            'go2/webrtc_send',
+            qos_profile
+        )
 
         self.get_logger().info(
-            f"CmdVelTranslator using internal_board_ip: "
-            f"{self.internal_board_ip}"
+            "CmdVelTranslator forwarding cmd_vel to go2/webrtc_send"
         )
 
         self.create_subscription(
@@ -143,12 +155,6 @@ class CmdVelTranslator(Node):
         )
 
     def cmd_vel_cb(self, msg):
-        if (
-            self.webrtcConn is None
-            or self.webrtcConn.data_channel is None
-        ):
-            return
-
         x = msg.linear.x
         y = msg.linear.y
         z = msg.angular.z
@@ -160,82 +166,22 @@ class CmdVelTranslator(Node):
                 round(z, 2)
             )
 
-            # Schedule the send on the asyncio loop to avoid thread issues.
-            def safe_send():
-                try:
-                    self.webrtcConn.data_channel.send(cmd)
-                except Exception as e:
-                    self.get_logger().error(
-                        f"Failed to send via data_channel: {e}"
-                    )
-
-            if self.loop is not None:
-                self.loop.call_soon_threadsafe(safe_send)
-
-    async def run(self):
-        self.get_logger().info(
-            f"Creating Go2Connection to "
-            f"{self.internal_board_ip}..."
-        )
-
-        try:
-            self.webrtcConn = Go2Connection(
-                robot_ip=self.internal_board_ip,
-                robot_num="1",
-                token="",
-            )
-
-            await self.webrtcConn.connect()
-
-            self.get_logger().info(
-                f"Successfully connected to the robot at "
-                f"{self.internal_board_ip}!"
-            )
-
-        except Exception as e:
-            self.get_logger().error(
-                f"Connection to {self.internal_board_ip} failed: {e}"
-            )
+            # The bridge sends this on the robot's WebRTC data channel.
+            self.webrtc_pub.publish(String(data=cmd))
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = CmdVelTranslator()
 
-    # Spin ROS in a separate thread.
-    def ros_spin():
-        try:
-            rclpy.spin(node)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            if rclpy.ok():
-                rclpy.shutdown()
-
-    ros_thread = threading.Thread(
-        target=ros_spin,
-        daemon=True
-    )
-    ros_thread.start()
-
-    # Run asyncio in the main thread.
-    async def async_main():
-        node.loop = asyncio.get_running_loop()
-        await node.run()
-
-        # Keep the loop alive to allow aiortc to run background tasks.
-        while rclpy.ok():
-            await asyncio.sleep(1)
-
     try:
-        asyncio.run(async_main())
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
+        node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-
-        ros_thread.join()
 
 
 if __name__ == '__main__':

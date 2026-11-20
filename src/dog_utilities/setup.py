@@ -27,7 +27,8 @@ setup(
         'console_scripts': [
             'transformUpdater = dog_utilities.DogTransformUpdater:main',
             'lidarScanRelay = dog_utilities.LidarScanRelay:main',
-            'cmdVelTranslator = dog_utilities.CmdVelTranslator:main'
+            'cmdVelTranslator = dog_utilities.CmdVelTranslator:main',
+            'go2WebRtcBridge = dog_utilities.Go2WebRtcBridge:main'
         ],
     },
 )

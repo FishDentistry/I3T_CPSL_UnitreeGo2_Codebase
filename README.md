@@ -11,6 +11,7 @@ This section outlines how to get the expansion board component of the Go2 dog (a
 3. A Type-C USB hub with an Ethernet port 
 4. An HDMI cable that can be plugged into the aforementioned USB hub
 5. An Ubuntu host PC with Ethernet port or equivalent
+6. (If using voice commands) A USB microphone
 
 ### Step 1: 
 Follow the quick start section of the Unitree docs as found in the [Unitree Docs](https://support.unitree.com/home/en/developer/Quick_start) and the app binding section. **Ensure you connect to the dog through the app through the Wi-Fi mode**. Once connected through the app, record the Go2's IP (Device/Data/Automatic Machine Inspection) as it will be needed later.
@@ -108,9 +109,14 @@ If everything builds correctly, run `find . -name "pyrealsense2*.so"` within the
 Most of this process is taken care of by mounting the Livox according to the official docs from Unitree or whatever the target platform is. The interfacing of the Livox with the robot should be taken care of by the packages in this repo. However, you may need to change the `ip` parameter within the `src/CPSL_ROS_livox_ros_driver2/config/HAP_config.json` file to the IP of your Livox device (IP can be found on a sticker on the physical device).
 
 ## Go2 Internal IP Configuration
-For the Go2 to receive velocity commands from packages such as Nav2, the `cmd_vel` messages must be translated and forwarded to the Go2’s internal board, which handles the robot’s movement. The `CmdVelTranslator.py` node in the `dog_utilities` package therefore accepts an `internal_board_ip` parameter, which can be specified either when launching the main launch file or when running the node directly.
+For the Go2 to receive commands from this repo (velocity commands from packages such as Nav2, or actions such as sitting from voice commands), they must be forwarded to the Go2’s internal board, which handles the robot’s movement. The internal board accepts only one WebRTC connection at a time, so a single node, `Go2WebRtcBridge.py` (executable `go2WebRtcBridge`) in the `dog_utilities` package, owns that connection. Other nodes send through it: `CmdVelTranslator.py` translates `cmd_vel` messages and publishes them to the bridge on `go2/webrtc_send`, and sport-mode actions are published to it on `go2/sport_cmd`.
 
-By default, this parameter is set to the internal board’s Ethernet IP address because the internal and external boards are connected by Ethernet. Alternatively, if the internal board is connected to the same Wi-Fi network as the external board, its Wi-Fi IP address can be supplied instead. This is useful if for some reason you're sending commands and running the translator script from a device that is not the external board.
+The bridge accepts an `internal_board_ip` parameter, which can be specified either when launching the main launch file (`internal_board_ip:=...`) or when running the bridge directly (`ros2 run dog_utilities go2WebRtcBridge --ros-args -p internal_board_ip:=...`). Only one bridge should run at a time.
+
+By default, this parameter is set to the internal board’s Ethernet IP address because the internal and external boards are connected by Ethernet. Alternatively, if the internal board is connected to the same Wi-Fi network as the external board, its Wi-Fi IP address can be supplied instead. This is useful if for some reason you're sending commands and running the bridge from a device that is not the external board.
+
+## Voice Commands
+The `dog_voice_commands` package lets the Go2 respond to "Hey Yeller" followed by "sit", "shake", "lay down", or "stand up" (which only runs when the robot is sitting or lying down), and only when spoken by its enrolled owner. Recognition runs offline on the expansion board with a USB microphone. Enable it with `launch_voice_commands:=true` on the main launch file after completing the setup and voice enrollment in [`src/dog_voice_commands/README.md`](src/dog_voice_commands/README.md).
 
 
 ## Unitree D1 arm

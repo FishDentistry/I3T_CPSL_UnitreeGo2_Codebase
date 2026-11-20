@@ -1,0 +1,11 @@
+# Python dependencies for dog_voice_commands (install with pip; see README).
+vosk>=0.3.44
+sounddevice>=0.4.6
+numpy
+scipy
+PyYAML
+
+# Speaker verification backend (default). Requires PyTorch + torchaudio.
+# SpeechBrain 1.1+ requires PyTorch 2.7.1+, which is not available for
+# Ubuntu 20.04 / JetPack 5; the 1.0.x series works with older PyTorch.
+speechbrain>=1.0.0,<1.1

@@ -40,6 +40,8 @@ def generate_launch_description():
         'grasp_execution_enabled'
     )
     grasp_templates_path = LaunchConfiguration('grasp_templates_path')
+    launch_voice_commands = LaunchConfiguration('launch_voice_commands')
+    voice_audio_device = LaunchConfiguration('voice_audio_device')
 
     arm_launch_file = os.path.join(
         get_package_share_directory('unitree_arm_control'),
@@ -50,6 +52,11 @@ def generate_launch_description():
         get_package_share_directory('unitree_arm_control'),
         'launch',
         'd1_moveit.launch.py'
+    )
+    voice_launch_file = os.path.join(
+        get_package_share_directory('dog_voice_commands'),
+        'launch',
+        'voice_commands.launch.py'
     )
 
     return LaunchDescription([
@@ -129,6 +136,24 @@ def generate_launch_description():
             )
         ),
 
+        DeclareLaunchArgument(
+            'launch_voice_commands',
+            default_value='false',
+            description=(
+                'Launch owner-verified voice commands (dog_voice_commands).'
+            )
+        ),
+
+        DeclareLaunchArgument(
+            'voice_audio_device',
+            default_value='',
+            description=(
+                'Microphone name substring or index for voice commands. '
+                'Empty uses the device saved by enroll_speaker (or the '
+                'system default input if none was saved).'
+            )
+        ),
+
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -161,14 +186,29 @@ def generate_launch_description():
             name='lidar_scan_relay',
             output='screen'
         ),
+        # Sole owner of the WebRTC connection to the internal board, which
+        # accepts only one client. Other nodes send through it.
         Node(
             package='dog_utilities',
-            executable='cmdVelTranslator',
-            name='cmd_vel_translator',
+            executable='go2WebRtcBridge',
+            name='go2_webrtc_bridge',
             output='screen',
             parameters=[{
                 'internal_board_ip': internal_board_ip
             }]
+        ),
+        Node(
+            package='dog_utilities',
+            executable='cmdVelTranslator',
+            name='cmd_vel_translator',
+            output='screen'
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(voice_launch_file),
+            condition=IfCondition(launch_voice_commands),
+            launch_arguments={
+                'audio_device': voice_audio_device,
+            }.items()
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(arm_launch_file),

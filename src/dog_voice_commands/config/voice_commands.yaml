@@ -1,0 +1,39 @@
+# Runtime parameters for voice_command_node. Override any of these on the
+# command line, e.g.  ros2 launch dog_voice_commands voice_commands.launch.py \
+#                       params_file:=/path/to/my_params.yaml
+voice_command_node:
+  ros__parameters:
+    # Vocabulary file. Empty = the packaged config/commands.yaml.
+    commands_file: ""
+
+    # Speech recognition (Vosk). Must be a model that supports runtime
+    # grammars, such as vosk-model-small-en-us-0.15.
+    vosk_model_path: "~/.local/share/dog_voice_commands/models/vosk-model-small-en-us-0.15"
+    min_word_confidence: 0.6
+
+    # Microphone. audio_device is an index or a name substring from
+    # `ros2 run dog_voice_commands list_audio_devices`; empty = default.
+    audio_device: ""
+    capture_sample_rate: 16000
+
+    # Interaction timing.
+    arm_timeout_sec: 4.0     # Time allowed between "Hey Yeller" and the command.
+    cooldown_sec: 3.0        # Minimum time between accepted commands.
+
+    # Owner verification.
+    speaker_verification: true
+    speaker_backend: "speechbrain"          # or "resemblyzer"
+    speaker_profile_path: "~/.local/share/dog_voice_commands/speaker_profile.npz"
+    speaker_threshold: -1.0                 # < 0 = backend default (0.45 / 0.75)
+    compute_device: "cpu"                   # or "cuda"
+
+    # Robot posture, used by posture-dependent commands such as "stand up".
+    sport_state_topic: "lf/sportmodestate"
+    state_timeout_sec: 2.0   # Posture older than this counts as unknown.
+    lying_height_m: 0.2      # Joint-locked below this body height = lying.
+    step_delay_sec: 2.5      # Time between actions in a multi-step command.
+
+    # Output.
+    command_topic: "/go2/sport_cmd"
+    start_enabled: true
+    dry_run: false

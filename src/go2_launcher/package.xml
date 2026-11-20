@@ -8,6 +8,7 @@
   <license>TODO: License declaration</license>
 
   <exec_depend>unitree_arm_control</exec_depend>
+  <exec_depend>dog_voice_commands</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

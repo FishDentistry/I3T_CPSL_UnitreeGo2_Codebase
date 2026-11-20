@@ -1,0 +1,36 @@
+# Vocabulary for dog_voice_commands.
+#
+# Phrases are matched after lower-casing and stripping punctuation. Every word
+# must exist in the Vosk model's vocabulary; phrases with unknown words are
+# disabled at startup (the node logs which ones).
+#
+# Each command defines exactly one of:
+#   api_id:        a Go2 sport-mode API ID, sent whenever the command is heard
+#   from_posture:  the postures the command may run from, each with the API
+#                  IDs to send in order. In any other posture (or if the
+#                  robot's posture is unknown) the command is refused.
+#                  Postures: standing, sitting, lying, damped, other.
+# API IDs are listed in dog_utilities/scripts/go2_constants.py (ROBOT_CMD).
+
+wake_phrases:
+  - hey yeller
+  # "Yeller" is not a dictionary word, so speech models often hear it as one
+  # of these. Remove any alias that causes false triggers in your setting.
+  - hey yellow
+  - hey yell er
+
+commands:
+  sit:
+    api_id: 1009        # Sit
+    phrases: [sit, sit down]
+  shake:
+    api_id: 1016        # Hello: raises a front paw to "shake"
+    phrases: [shake, shake hands]
+  lay_down:
+    api_id: 1005        # StandDown: lowers the body to the ground
+    phrases: [lay down, lie down]
+  stand_up:
+    phrases: [stand up]
+    from_posture:
+      sitting: [1010]         # RiseSit
+      lying: [1004, 1002]     # StandUp (joints locked), then BalanceStand
