@@ -47,8 +47,11 @@ SEGMENT_PAD_SEC = 0.15
 SILENCE_DBFS = -60.0
 SILENCE_WARN_SEC = 10.0
 
-#: Report an error if the microphone delivers nothing this long after opening.
+#: Report an error if the microphone delivers nothing for this long.
 NO_AUDIO_SEC = 5.0
+
+#: Log a one-time summary of audio and recognition activity after this long.
+AUDIO_REPORT_SEC = 10.0
 
 
 def _default_commands_file() -> str:
@@ -137,6 +140,7 @@ class VoiceCommandNode(Node):
         # Audio level monitoring, for diagnosing microphone problems.
         self._level_lock = threading.Lock()
         self._level_peak = float('-inf')
+        self._level_count = 0
         self._quiet_since = None
         self._silence_warned = False
         self._level_pub = self.create_publisher(Float32, '~/audio_level', 10)
@@ -223,11 +227,23 @@ class VoiceCommandNode(Node):
                 f'is selected ("{self._mic.device_name}") and that it is not '
                 f'muted (alsamixer).')
 
+    def _report_audio(self, blocks: int, peak: float, utterances: int,
+                      elapsed: float) -> None:
+        expected = elapsed / (self._mic.chunk_ms / 1000.0)
+        self.get_logger().info(
+            f'Audio check after {elapsed:.0f} s: {blocks} audio blocks '
+            f'received (about {expected:.0f} expected), peak level '
+            f'{peak:.1f} dBFS, {utterances} utterance(s) recognized, '
+            f'{self._level_count} audio_level message(s) published, '
+            f'{self._mic.overflows} overflow(s), '
+            f'{self._mic.dropped_chunks} dropped block(s).')
+
     def _publish_level(self) -> None:
         with self._level_lock:
             peak, self._level_peak = self._level_peak, float('-inf')
         if peak != float('-inf'):
             self._level_pub.publish(Float32(data=float(round(peak, 1))))
+            self._level_count += 1
 
     def shutdown(self) -> None:
         self._stop.set()
@@ -264,30 +280,44 @@ class VoiceCommandNode(Node):
     # ------------------------------------------------------------------
     def _run(self) -> None:
         started = time.monotonic()
+        last_audio = started
         received = 0
-        warned_no_audio = False
+        utterances = 0
+        peak = float('-inf')
+        stalled = False
+        reported = False
         last_error = None
         while not self._stop.is_set():
             try:
                 chunk = self._mic.read(timeout=0.5)
+                now = time.monotonic()
+                if not reported and now - started >= AUDIO_REPORT_SEC:
+                    reported = True
+                    self._report_audio(received, peak, utterances,
+                                       now - started)
                 if chunk is None:
-                    if (received == 0 and not warned_no_audio
-                            and time.monotonic() - started > NO_AUDIO_SEC):
-                        warned_no_audio = True
+                    if not stalled and now - last_audio > NO_AUDIO_SEC:
+                        stalled = True
+                        what = ('has not delivered any audio' if received == 0
+                                else 'stopped delivering audio')
                         self.get_logger().error(
-                            f'No audio received from "{self._mic.device_name}" '
-                            f'{NO_AUDIO_SEC:.0f} s after opening it. The '
-                            f'device opened but is not delivering samples; '
-                            f'see "No audio received" in the README '
-                            f'troubleshooting section.')
+                            f'Microphone "{self._mic.device_name}" {what} '
+                            f'for {now - last_audio:.0f} s; see "No audio '
+                            f'received" in the README troubleshooting section.')
                     continue
                 if received == 0:
                     self.get_logger().info('Receiving audio from microphone.')
+                elif stalled:
+                    self.get_logger().info('Microphone audio resumed.')
+                stalled = False
+                last_audio = now
                 received += 1
+                peak = max(peak, rms_dbfs(chunk))
                 self._buffer.append(chunk)
                 self._track_level(chunk)
                 transcript = self._recognizer.accept(chunk)
                 if transcript is not None:
+                    utterances += 1
                     self._handle(transcript)
             except Exception as exc:  # Keep listening on any failure.
                 message = f'{type(exc).__name__}: {exc}'
