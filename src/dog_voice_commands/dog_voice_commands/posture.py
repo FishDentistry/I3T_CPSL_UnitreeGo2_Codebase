@@ -10,9 +10,12 @@ Unitree as::
     3 locomotion             8 recoveryStand    13 frontPounce
     4 reserve                9 reserve
 
-``StandDown`` (the "lay down" action) and ``StandUp`` both leave the robot
-in a joint-locked pose, low and high respectively, so ``jointLock`` is
-split into lying or standing using ``body_height``.
+The mode alone does not identify the posture reliably. ``StandDown`` (the
+"lay down" action) and ``StandUp`` both leave the robot in ``jointLock``,
+low and high respectively, and a Go2 lying on the ground has been observed
+reporting mode 0 ("idle, default stand") with a body height of about
+0.08 m. So for the standing and joint-locked modes, ``body_height`` decides
+between standing and lying.
 """
 
 from __future__ import annotations
@@ -47,13 +50,11 @@ DEFAULT_LYING_HEIGHT_M = 0.2
 def classify(mode: int, body_height: float,
              lying_height_m: float = DEFAULT_LYING_HEIGHT_M) -> str:
     """Return the posture name for a ``SportModeState`` reading."""
-    if mode in _STANDING_MODES:
-        return STANDING
     if mode == MODE_SIT:
         return SITTING
     if mode == MODE_LIE_DOWN:
         return LYING
-    if mode == MODE_JOINT_LOCK:
+    if mode in _STANDING_MODES or mode == MODE_JOINT_LOCK:
         return LYING if body_height < lying_height_m else STANDING
     if mode == MODE_DAMPING:
         return DAMPED

@@ -7,6 +7,8 @@ from dog_voice_commands.posture import (DAMPED, LYING, OTHER, SITTING,
 
 @pytest.mark.parametrize('mode,height,expected', [
     (0, 0.32, STANDING),
+    (0, 0.0816, LYING),    # Observed on a Go2 lying down: idle mode, low body
+    (1, 0.08, LYING),
     (1, 0.32, STANDING),
     (3, 0.30, STANDING),
     (10, 0.20, SITTING),

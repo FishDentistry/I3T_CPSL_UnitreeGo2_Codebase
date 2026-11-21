@@ -126,8 +126,9 @@ A cooldown (3 s by default) stops one command from firing repeatedly.
   delivers commands to the robot).
 - The Go2's own ROS 2 topics visible on the expansion board, as set up in
   the [repository README](../../README.md#go2-expansion-board-networking-setup).
-  "Stand up" reads `lf/sportmodestate`; check with
-  `ros2 topic echo /lf/sportmodestate --once`.
+  "Stand up" reads `lf/sportmodestate`; check that
+  `ros2 topic echo /lf/sportmodestate --no-arr` prints messages (Ctrl+C to
+  stop).
 - PortAudio, Vosk, sounddevice, and a speaker-embedding backend (installed
   below).
 
@@ -338,6 +339,16 @@ which the system detects audio devices, which can change when devices are
 plugged in or the board reboots. Quote values that contain spaces
 (`--device "pnp sound"`). If no device is given, the system default input is
 used.
+
+> **Note:** depending on the microphone and system configuration, the name
+> it is listed under can change. For example, if the microphone is selected
+> as the input in the system sound settings, it may only be listed as
+> `default` (or `pulse`). This is likely because the system sound server
+> then holds the microphone's hardware device open and offers it through
+> these virtual devices instead. If the node stops finding your microphone,
+> run `list_audio_devices` again (with the node stopped) and update the
+> `audio_device` line in `~/.local/share/dog_voice_commands/params.yaml`. No
+> re-enrollment is needed for the same microphone.
 
 ---
 
@@ -578,12 +589,14 @@ other commands leave it in:
 | Lying (after "lay down") | `StandUp` (1004), then `BalanceStand` (1002) `step_delay_sec` later |
 | Anything else | Nothing; the command is refused |
 
-The posture comes from `SportModeState.mode`: 10 (sit) counts as sitting,
-and 5 (lieDown) counts as lying. Mode 6 (jointLock), which both
-`StandDown` and `StandUp` produce, counts as lying when `body_height` is
-below `lying_height_m` (0.2 m by default) and as standing otherwise.
-Damping mode (7), the soft emergency stop, is deliberately excluded:
-recover from it with the remote.
+The posture comes from the robot's `SportModeState`. Mode 10 (sit) counts
+as sitting, and mode 5 (lieDown) counts as lying. For the standing modes
+(0 to 3) and mode 6 (jointLock), the mode alone is not reliable: a Go2
+lying on the ground can report mode 0, "idle, default stand", and both
+`StandDown` and `StandUp` produce mode 6. In those modes the measured
+`body_height` decides instead: below `lying_height_m` (0.2 m by default)
+counts as lying, otherwise standing. Damping mode (7), the soft emergency
+stop, is deliberately excluded: recover from it with the remote.
 
 Shake (`Hello`) is only performed from standing, and returns to standing on
 its own. Sport API
@@ -766,11 +779,15 @@ rate, 48000, or 44100 Hz worked. Check the microphone's default rate in
 `list_audio_devices` and pass it explicitly with `--capture-rate`, or set
 `capture_sample_rate` in the per-machine settings file.
 
-**`No audio received from "..."`, or `audio_level` prints nothing**
-The microphone opened but is not delivering any samples, so nothing reaches
-speech recognition. Test the microphone outside ROS, with the same device
-and rate as the node's startup log (replace `usb` and `44100` if yours
-differ):
+**`Microphone ... stopped delivering audio` (or `has not delivered any audio`), or `audio_level` prints nothing**
+The microphone opened but stopped delivering samples, so nothing reaches
+speech recognition. The node reopens the stream automatically when this
+happens and logs `Microphone audio resumed.` once audio returns. Ten seconds
+after startup it also logs an `Audio check` line; the seconds of audio
+received there should be close to the elapsed time. If the error keeps
+repeating, stop the node (the microphone can only be opened by one program
+at a time) and test the microphone outside ROS, with the same device and
+rate as the node's startup log (replace `usb` and `44100` if yours differ):
 
 ```bash
 python3 - <<'PY'
@@ -781,16 +798,17 @@ def cb(indata, frames, t, status):
     a = np.frombuffer(indata, dtype=np.int16) / 32768.0
     blocks[0] += 1
     peak[0] = max(peak[0], 20 * np.log10(max(np.sqrt(np.mean(a ** 2)), 1e-10)))
-with sd.RawInputStream(samplerate=44100, blocksize=4410, device="usb",
+with sd.RawInputStream(samplerate=44100, device="usb",
                        channels=1, dtype="int16", callback=cb):
     for _ in range(5):
         time.sleep(1); print(f"{blocks[0]} blocks, peak {peak[0]:.1f} dBFS"); peak[0] = -200.0
 PY
 ```
 
-About 10 blocks per second means the microphone works outside ROS. Then
-check the node's log for `Error in audio processing` lines, which describe
-what failed inside the node. If the block count stays at 0, another program
+A block count that keeps rising every second means the microphone works
+outside ROS. Then check the node's log for `Error in audio processing` or
+`Error in microphone callback` lines, which describe what failed inside the
+node. If the block count stays at 0, another program
 may be holding the microphone (check with `fuser -v /dev/snd/*`), or the
 device needs to be unplugged and reconnected.
 
@@ -820,16 +838,18 @@ use, or lower `speaker_threshold`.
 
 **"Stand up" is always refused with `no_robot_state`**
 The node is not receiving `SportModeState`. Check
-`ros2 topic echo /lf/sportmodestate --once` on the machine running the
-node. If nothing arrives, revisit the expansion-board network and
+`ros2 topic echo /lf/sportmodestate --no-arr` (Ctrl+C to stop) on the
+machine running the node. If nothing arrives, revisit the expansion-board network and
 CycloneDDS setup in the [repository README](../../README.md).
 
 **"Stand up" is refused with `wrong_posture` while the robot is lying down**
-Check the posture the node sees in the event, and compare it with
-`ros2 topic echo /lf/sportmodestate --field mode --once` and
-`--field body_height`. If the robot is joint-locked (mode 6) and its body
-height is above `lying_height_m`, raise `lying_height_m` in the
-per-machine settings file.
+The `wrong_posture` event and the node's log show the posture it decided
+on, with the robot's reported `sport_mode` and `body_height` behind it. If
+the robot is lying down but its reported body height is above
+`lying_height_m`, raise `lying_height_m` in the per-machine settings file.
+To watch the raw values directly, run
+`ros2 topic echo /lf/sportmodestate --no-arr | grep -E "^(mode|body_height):"`
+(Ctrl+C to stop).
 
 **"Stand up" from lying stops with the robot standing stiffly**
 `StandUp` locks the joints; `BalanceStand` follows `step_delay_sec` later.

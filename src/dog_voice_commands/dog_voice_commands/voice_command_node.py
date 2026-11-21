@@ -96,6 +96,8 @@ class VoiceCommandNode(Node):
         self._step_delay = float(g('step_delay_sec').value)
         self._posture = UNKNOWN
         self._posture_time = -float('inf')
+        self._mode = None
+        self._body_height = None
         self._sequence_lock = threading.Lock()
         self._pending_steps = []  # Timers for queued sequence steps.
 
@@ -229,14 +231,15 @@ class VoiceCommandNode(Node):
 
     def _report_audio(self, blocks: int, peak: float, utterances: int,
                       elapsed: float) -> None:
-        expected = elapsed / (self._mic.chunk_ms / 1000.0)
+        seconds = self._mic.samples_received / float(self._mic.capture_rate)
         self.get_logger().info(
-            f'Audio check after {elapsed:.0f} s: {blocks} audio blocks '
-            f'received (about {expected:.0f} expected), peak level '
-            f'{peak:.1f} dBFS, {utterances} utterance(s) recognized, '
-            f'{self._level_count} audio_level message(s) published, '
-            f'{self._mic.overflows} overflow(s), '
-            f'{self._mic.dropped_chunks} dropped block(s).')
+            f'Audio check after {elapsed:.0f} s: {seconds:.1f} s of audio '
+            f'received in {blocks} block(s) (should be close to '
+            f'{elapsed:.0f} s), peak level {peak:.1f} dBFS, {utterances} '
+            f'utterance(s) recognized, {self._level_count} audio_level '
+            f'message(s) published, {self._mic.overflows} overflow(s), '
+            f'{self._mic.dropped_chunks} dropped block(s), '
+            f'{self._mic.restarts} stream restart(s).')
 
     def _publish_level(self) -> None:
         with self._level_lock:
@@ -256,7 +259,9 @@ class VoiceCommandNode(Node):
     # Callbacks
     # ------------------------------------------------------------------
     def _on_sport_state(self, msg: SportModeState) -> None:
-        self._posture = classify(int(msg.mode), float(msg.body_height),
+        self._mode = int(msg.mode)
+        self._body_height = float(msg.body_height)
+        self._posture = classify(self._mode, self._body_height,
                                  self._lying_height)
         self._posture_time = time.monotonic()
 
@@ -287,6 +292,8 @@ class VoiceCommandNode(Node):
         stalled = False
         reported = False
         last_error = None
+        last_callback_error = None
+        last_restart = float('-inf')
         while not self._stop.is_set():
             try:
                 chunk = self._mic.read(timeout=0.5)
@@ -295,15 +302,30 @@ class VoiceCommandNode(Node):
                     reported = True
                     self._report_audio(received, peak, utterances,
                                        now - started)
+                if self._mic.callback_error and \
+                        self._mic.callback_error != last_callback_error:
+                    last_callback_error = self._mic.callback_error
+                    self.get_logger().error(
+                        f'Error in microphone callback: {last_callback_error}')
                 if chunk is None:
-                    if not stalled and now - last_audio > NO_AUDIO_SEC:
-                        stalled = True
+                    if now - last_audio > NO_AUDIO_SEC and \
+                            now - last_restart > NO_AUDIO_SEC:
                         what = ('has not delivered any audio' if received == 0
                                 else 'stopped delivering audio')
                         self.get_logger().error(
                             f'Microphone "{self._mic.device_name}" {what} '
-                            f'for {now - last_audio:.0f} s; see "No audio '
-                            f'received" in the README troubleshooting section.')
+                            f'for {now - last_audio:.0f} s (stream '
+                            f'{self._mic.state()}); reopening it. See "No '
+                            f'audio received" in the README troubleshooting '
+                            f'section if this repeats.')
+                        stalled = True
+                        last_restart = now
+                        try:
+                            self._mic.restart()
+                        except Exception as exc:
+                            self.get_logger().error(
+                                f'Could not reopen the microphone: '
+                                f'{type(exc).__name__}: {exc}')
                     continue
                 if received == 0:
                     self.get_logger().info('Receiving audio from microphone.')
@@ -423,10 +445,12 @@ class VoiceCommandNode(Node):
         if steps is None:
             allowed = ', '.join(command.allowed_postures)
             self.get_logger().info(
-                f'Ignoring "{command.name}": robot is {posture}; it only '
-                f'runs when the robot is {allowed}.')
+                f'Ignoring "{command.name}": robot is {posture} (sport mode '
+                f'{self._mode}, body height {self._body_height:.3f} m); it '
+                f'only runs when the robot is {allowed}.')
             self._event('wrong_posture', result.text, command=command.name,
-                        posture=posture, confidence=conf,
+                        posture=posture, sport_mode=self._mode,
+                        body_height=self._body_height, confidence=conf,
                         speaker_score=score)
             return
 

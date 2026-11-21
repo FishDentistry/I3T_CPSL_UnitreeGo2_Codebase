@@ -129,3 +129,31 @@ def test_stream_resampler_passthrough():
     from dog_voice_commands.audio import StreamResampler
     audio = _tone(16000, 0.1)
     np.testing.assert_array_equal(StreamResampler(16000).process(audio), audio)
+
+
+def test_microphone_callback_never_raises():
+    from dog_voice_commands.audio import MicrophoneStream
+
+    class BadBuffer:
+        def __bytes__(self):
+            raise ValueError('bad buffer')
+
+    mic = MicrophoneStream(capture_rate=16000)
+    mic._callback(BadBuffer(), 10, None, None)  # Must not raise.
+    assert mic.callback_error == 'ValueError: bad buffer'
+
+
+def test_microphone_callback_queues_audio():
+    from dog_voice_commands.audio import MicrophoneStream
+
+    mic = MicrophoneStream(capture_rate=16000)
+    block = (np.arange(160) * 10).astype(np.int16)
+    mic._callback(memoryview(block.tobytes()), 160, None, None)
+    assert mic.samples_received == 160
+    np.testing.assert_array_equal(mic.read(timeout=0.1), block)
+    assert mic.read(timeout=0.01) is None
+
+
+def test_microphone_defaults_to_portaudio_blocksize():
+    from dog_voice_commands.audio import MicrophoneStream
+    assert MicrophoneStream().blocksize == 0

@@ -54,6 +54,9 @@ def _make_node(context):
         # silently win over launch arguments such as dry_run:=true.
         namespace='',
         output='screen',
+        # Python 3.8 fully buffers stderr when it is not a terminal, which
+        # can hide tracebacks from background threads under launch.
+        additional_env={'PYTHONUNBUFFERED': '1'},
         parameters=parameters,
     )]
 

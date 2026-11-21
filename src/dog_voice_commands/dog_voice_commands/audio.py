@@ -256,45 +256,52 @@ class MicrophoneStream:
     Audio is read by PortAudio (via ``sounddevice``) on its own thread and
     passed through a bounded queue so a slow consumer drops old audio rather
     than growing memory without bound.
+
+    By default PortAudio chooses the buffer size (``blocksize=0``), as
+    ``sounddevice.rec`` does. Forcing a fixed block size on a raw ALSA
+    hardware device can make some USB microphones stop delivering audio
+    shortly after the stream starts.
     """
 
     def __init__(self, device: DeviceSpec = None,
                  capture_rate: int = TARGET_SAMPLE_RATE,
-                 chunk_ms: int = 100, max_queue_chunks: int = 100) -> None:
+                 blocksize: int = 0, max_queue_chunks: int = 200) -> None:
         self.device = device
         self.capture_rate = int(capture_rate)
-        self.chunk_ms = chunk_ms
+        self.requested_rate = self.capture_rate
+        self.blocksize = int(blocksize)
         self.device_name = ''
         self._resampler = StreamResampler(self.capture_rate)
-        self.requested_rate = self.capture_rate
-        self.blocksize = int(self.capture_rate * chunk_ms / 1000)
         self._queue: 'queue.Queue[bytes]' = queue.Queue(max_queue_chunks)
         self._stream = None
         self.overflows = 0
         self.dropped_chunks = 0
+        self.samples_received = 0     # At the capture rate.
+        self.restarts = 0
+        #: Last exception raised inside the audio callback, if any. The
+        #: callback never lets an exception escape, because sounddevice
+        #: aborts the stream permanently when one does.
+        self.callback_error: Optional[str] = None
 
     def _callback(self, indata, frames, time_info, status) -> None:
-        if status and status.input_overflow:
-            self.overflows += 1
         try:
-            self._queue.put_nowait(bytes(indata))
-        except queue.Full:
-            self.dropped_chunks += 1
+            if status and status.input_overflow:
+                self.overflows += 1
+            data = bytes(indata)
+            self.samples_received += frames
             try:
-                self._queue.get_nowait()
-                self._queue.put_nowait(bytes(indata))
-            except (queue.Empty, queue.Full):
-                pass
+                self._queue.put_nowait(data)
+            except queue.Full:
+                self.dropped_chunks += 1
+                try:
+                    self._queue.get_nowait()
+                    self._queue.put_nowait(data)
+                except (queue.Empty, queue.Full):
+                    pass
+        except Exception as exc:  # Never abort the stream.
+            self.callback_error = f'{type(exc).__name__}: {exc}'
 
-    def start(self) -> None:
-        import sounddevice as sd
-
-        rate = supported_capture_rate(self.device, self.capture_rate, sd)
-        if rate != self.capture_rate:
-            self.requested_rate = self.capture_rate
-            self.capture_rate = rate
-            self.blocksize = int(rate * self.chunk_ms / 1000)
-        self._resampler = StreamResampler(self.capture_rate)
+    def _open(self, sd) -> None:
         self._stream = sd.RawInputStream(
             samplerate=self.capture_rate, blocksize=self.blocksize,
             device=self.device, channels=1, dtype='int16',
@@ -306,11 +313,47 @@ class MicrophoneStream:
             self.device_name = str(self._stream.device)
         self._stream.start()
 
-    def stop(self) -> None:
+    def start(self) -> None:
+        import sounddevice as sd
+
+        rate = supported_capture_rate(self.device, self.capture_rate, sd)
+        if rate != self.capture_rate:
+            self.requested_rate = self.capture_rate
+            self.capture_rate = rate
+        self._resampler = StreamResampler(self.capture_rate)
+        self._open(sd)
+
+    def state(self) -> str:
+        """Describe the PortAudio stream state, for diagnostics."""
+        if self._stream is None:
+            return 'not open'
+        try:
+            return ('active' if self._stream.active else
+                    'stopped' if self._stream.stopped else 'inactive')
+        except Exception as exc:
+            return f'unknown ({exc})'
+
+    def restart(self) -> None:
+        """Close and reopen the stream, keeping the same settings."""
+        import sounddevice as sd
+
+        self._close()
+        self.flush()
+        self._resampler = StreamResampler(self.capture_rate)
+        self.restarts += 1
+        self._open(sd)
+
+    def _close(self) -> None:
         if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+            stream, self._stream = self._stream, None
+            for action in (stream.abort, stream.close):
+                try:
+                    action()
+                except Exception:
+                    pass
+
+    def stop(self) -> None:
+        self._close()
 
     def read(self, timeout: float = 0.5) -> Optional[np.ndarray]:
         """Return the next 16 kHz chunk, or ``None`` on timeout."""
