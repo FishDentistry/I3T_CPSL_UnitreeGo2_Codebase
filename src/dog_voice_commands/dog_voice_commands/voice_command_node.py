@@ -47,6 +47,9 @@ SEGMENT_PAD_SEC = 0.15
 SILENCE_DBFS = -60.0
 SILENCE_WARN_SEC = 10.0
 
+#: Report an error if the microphone delivers nothing this long after opening.
+NO_AUDIO_SEC = 5.0
+
 
 def _default_commands_file() -> str:
     return os.path.join(get_package_share_directory('dog_voice_commands'),
@@ -260,18 +263,38 @@ class VoiceCommandNode(Node):
     # Audio processing
     # ------------------------------------------------------------------
     def _run(self) -> None:
+        started = time.monotonic()
+        received = 0
+        warned_no_audio = False
+        last_error = None
         while not self._stop.is_set():
-            chunk = self._mic.read(timeout=0.5)
-            if chunk is None:
-                continue
-            self._buffer.append(chunk)
-            self._track_level(chunk)
-            transcript = self._recognizer.accept(chunk)
-            if transcript is not None:
-                try:
+            try:
+                chunk = self._mic.read(timeout=0.5)
+                if chunk is None:
+                    if (received == 0 and not warned_no_audio
+                            and time.monotonic() - started > NO_AUDIO_SEC):
+                        warned_no_audio = True
+                        self.get_logger().error(
+                            f'No audio received from "{self._mic.device_name}" '
+                            f'{NO_AUDIO_SEC:.0f} s after opening it. The '
+                            f'device opened but is not delivering samples; '
+                            f'see "No audio received" in the README '
+                            f'troubleshooting section.')
+                    continue
+                if received == 0:
+                    self.get_logger().info('Receiving audio from microphone.')
+                received += 1
+                self._buffer.append(chunk)
+                self._track_level(chunk)
+                transcript = self._recognizer.accept(chunk)
+                if transcript is not None:
                     self._handle(transcript)
-                except Exception as exc:  # Keep listening on any failure.
-                    self.get_logger().error(f'Error handling speech: {exc}')
+            except Exception as exc:  # Keep listening on any failure.
+                message = f'{type(exc).__name__}: {exc}'
+                if message != last_error:  # Do not flood the log.
+                    self.get_logger().error(
+                        f'Error in audio processing: {message}')
+                    last_error = message
 
     def _segment(self, transcript: Transcript) -> np.ndarray:
         """Cut the audio for ``transcript`` out of the ring buffer."""

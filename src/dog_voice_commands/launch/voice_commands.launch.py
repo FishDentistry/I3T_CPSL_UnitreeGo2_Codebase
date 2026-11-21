@@ -47,6 +47,12 @@ def _make_node(context):
         package='dog_voice_commands',
         executable='voice_command_node',
         name='voice_command_node',
+        # The namespace must be set explicitly, even to ''. Without it,
+        # launch_ros writes the override dict above under the '/**' wildcard
+        # key, and rclpy applies wildcard parameters *before* the
+        # 'voice_command_node' entries in the YAML files, so the files would
+        # silently win over launch arguments such as dry_run:=true.
+        namespace='',
         output='screen',
         parameters=parameters,
     )]

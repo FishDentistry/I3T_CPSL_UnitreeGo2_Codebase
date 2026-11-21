@@ -766,6 +766,34 @@ rate, 48000, or 44100 Hz worked. Check the microphone's default rate in
 `list_audio_devices` and pass it explicitly with `--capture-rate`, or set
 `capture_sample_rate` in the per-machine settings file.
 
+**`No audio received from "..."`, or `audio_level` prints nothing**
+The microphone opened but is not delivering any samples, so nothing reaches
+speech recognition. Test the microphone outside ROS, with the same device
+and rate as the node's startup log (replace `usb` and `44100` if yours
+differ):
+
+```bash
+python3 - <<'PY'
+import time, numpy as np, sounddevice as sd
+blocks, peak = [0], [-200.0]
+def cb(indata, frames, t, status):
+    if status: print("status:", status)
+    a = np.frombuffer(indata, dtype=np.int16) / 32768.0
+    blocks[0] += 1
+    peak[0] = max(peak[0], 20 * np.log10(max(np.sqrt(np.mean(a ** 2)), 1e-10)))
+with sd.RawInputStream(samplerate=44100, blocksize=4410, device="usb",
+                       channels=1, dtype="int16", callback=cb):
+    for _ in range(5):
+        time.sleep(1); print(f"{blocks[0]} blocks, peak {peak[0]:.1f} dBFS"); peak[0] = -200.0
+PY
+```
+
+About 10 blocks per second means the microphone works outside ROS. Then
+check the node's log for `Error in audio processing` lines, which describe
+what failed inside the node. If the block count stays at 0, another program
+may be holding the microphone (check with `fuser -v /dev/snd/*`), or the
+device needs to be unplugged and reconnected.
+
 **No events at all while speaking**
 Watch `ros2 topic echo /voice_command_node/audio_level` while you speak. If
 the level stays below about -60 dBFS (the node also logs a warning after 10
